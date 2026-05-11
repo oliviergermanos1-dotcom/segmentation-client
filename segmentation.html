@@ -352,6 +352,27 @@ document.getElementById("file-input").addEventListener("change", async (e) => {
       setStatus("upload-status",
         `[${fi + 1}/${files.length}] "${file.name}" : conversion en cours...`, "info");
       await yieldUI();
+
+      // rustine : certains exports Dynamics/Siebel ecrivent un !ref tronque
+      // qui fait que SheetJS ignore toutes les donnees. On recalcule le
+      // range a partir des cellules reellement presentes dans la feuille.
+      const cellKeys = Object.keys(ws).filter(k => k[0] !== "!");
+      if (cellKeys.length) {
+        const range = { s: { r: Infinity, c: Infinity }, e: { r: -1, c: -1 } };
+        for (const k of cellKeys) {
+          const addr = XLSX.utils.decode_cell(k);
+          if (addr.r < range.s.r) range.s.r = addr.r;
+          if (addr.c < range.s.c) range.s.c = addr.c;
+          if (addr.r > range.e.r) range.e.r = addr.r;
+          if (addr.c > range.e.c) range.e.c = addr.c;
+        }
+        const computedRef = XLSX.utils.encode_range(range);
+        if (ws["!ref"] !== computedRef) {
+          console.warn(`[upload] !ref corrige : "${ws["!ref"]}" -> "${computedRef}"`);
+          ws["!ref"] = computedRef;
+        }
+      }
+
       const raw = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null, blankrows: false });
       console.log(`[upload] ${file.name}: ${raw.length} lignes brutes (incl. en-tete)`);
       console.log(`[upload] 3 premieres lignes:`, raw.slice(0, 3));
