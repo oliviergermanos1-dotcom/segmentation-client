@@ -208,7 +208,7 @@
 <!-- =============================================== -->
 <!-- ETAPE 4 : Regles de segmentation                -->
 <!-- =============================================== -->
-<div class="section" id="section-rules" style="display: none;">
+<div class="section" id="section-rules">
   <div class="section-head">
     <h2><span class="badge">4</span> Definir les regles de segmentation</h2>
   </div>
@@ -234,9 +234,10 @@
 
   <h3>Ajouter une regle</h3>
   <div class="row">
-    <input type="text" id="new-rule-name" placeholder="ex : VIP, Gold, Strategique..." style="flex: 1;">
-    <button id="btn-add-rule">Ajouter</button>
+    <input type="text" id="new-rule-name" placeholder="Tapez ici le nom du segment (ex : VIP, Gold, Strategique...)" style="flex: 1;">
+    <button id="btn-add-rule">Ajouter cette regle</button>
   </div>
+  <div id="add-rule-status"></div>
 
   <h3 style="margin-top: 20px;">Regles actuelles</h3>
   <div id="rules-list"></div>
@@ -245,7 +246,7 @@
 <!-- =============================================== -->
 <!-- ETAPE 5 : Classification                        -->
 <!-- =============================================== -->
-<div class="section" id="section-classify" style="display: none;">
+<div class="section" id="section-classify">
   <div class="section-head">
     <h2><span class="badge">5</span> Classifier et exporter</h2>
   </div>
@@ -274,6 +275,15 @@ const STATE = {
   segments: loadSegments(), // regles persistees
   classifiedData: []
 };
+
+// colonnes par defaut quand aucune donnee n'est encore agregee
+// (permet de definir des regles a l'avance)
+const DEFAULT_AGG_COLUMNS = [
+  "CA_EUR", "GM_EUR", "TEU", "Freight_Ton",
+  "Nb_operations", "Nb_mois_actifs",
+  "Premiere_activite", "Derniere_activite",
+  "Customer", "HQ CTO Customer Name", "Market Segment Name", "Reporting Entity Label"
+];
 
 const RULES_KEY = "segmentation-client-rules";
 const HEADER_MARKERS = ["Year", "Customer", "JobfileNumber"];
@@ -693,13 +703,28 @@ document.getElementById("btn-aggregate").addEventListener("click", () => {
 /* =============================================================
    ETAPE 4 : Regles
    ============================================================= */
-document.getElementById("btn-add-rule").addEventListener("click", () => {
-  const name = document.getElementById("new-rule-name").value.trim();
-  if (!name) return;
+function addRuleFromInput() {
+  const input = document.getElementById("new-rule-name");
+  const name = input.value.trim();
+  console.log(`[rules] btn-add-rule clicked, name="${name}"`);
+  if (!name) {
+    setStatus("add-rule-status", "Tapez d'abord un nom dans le champ a gauche.", "error");
+    input.focus();
+    return;
+  }
+  if (STATE.segments.some(s => s.name === name)) {
+    setStatus("add-rule-status", `Une regle "${name}" existe deja.`, "error");
+    return;
+  }
   STATE.segments.push({ name, logic: "AND", conditions: [] });
-  document.getElementById("new-rule-name").value = "";
+  input.value = "";
   saveSegments();
+  setStatus("add-rule-status", `Regle "${name}" ajoutee. Configurez ses conditions ci-dessous.`, "success");
   renderRules();
+}
+document.getElementById("btn-add-rule").addEventListener("click", addRuleFromInput);
+document.getElementById("new-rule-name").addEventListener("keydown", e => {
+  if (e.key === "Enter") { e.preventDefault(); addRuleFromInput(); }
 });
 
 document.getElementById("btn-clear-rules").addEventListener("click", () => {
@@ -758,7 +783,7 @@ function renderRules() {
 }
 
 function renderRuleCard(seg, idx) {
-  const cols = STATE.aggColumns;
+  const cols = STATE.aggColumns.length ? STATE.aggColumns : DEFAULT_AGG_COLUMNS;
   const condsHtml = seg.conditions.map((cond, ci) => {
     const isNum = isNumericColumn(cond.column);
     const ops = isNum ? OPERATORS_NUMERIC : OPERATORS_TEXT;
@@ -821,7 +846,8 @@ document.getElementById("rules-list").addEventListener("click", e => {
   } else if (a === "down" && idx < STATE.segments.length - 1) {
     [STATE.segments[idx + 1], STATE.segments[idx]] = [STATE.segments[idx], STATE.segments[idx + 1]];
   } else if (a === "add-cond") {
-    const firstCol = STATE.aggColumns[0] || "CA_EUR";
+    const cols = STATE.aggColumns.length ? STATE.aggColumns : DEFAULT_AGG_COLUMNS;
+    const firstCol = cols[0];
     STATE.segments[idx].conditions.push({
       column: firstCol,
       op: isNumericColumn(firstCol) ? ">=" : "==",
@@ -867,7 +893,15 @@ document.getElementById("rules-list").addEventListener("change", e => {
 function attachRuleHandlers() {}
 
 function isNumericColumn(col) {
-  if (!STATE.aggregatedData.length) return false;
+  // fallback : si pas encore de donnees, on devine par le nom de colonne
+  if (!STATE.aggregatedData.length) {
+    const numericNames = [
+      "CA_EUR", "GM_EUR", "Billing_HT_EUR", "TEU", "Freight_Ton",
+      "Nb_operations", "Nb_mois_actifs",
+      "Turnover in EUR", "Direct GM in EUR", "Gross Billing Tax Excl. in EUR"
+    ];
+    return numericNames.includes(col);
+  }
   for (let i = 0; i < Math.min(STATE.aggregatedData.length, 50); i++) {
     const v = STATE.aggregatedData[i][col];
     if (v == null || v === "") continue;
