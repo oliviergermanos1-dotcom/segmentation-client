@@ -1747,12 +1747,31 @@ document.getElementById("btn-classify").addEventListener("click", () => {
     `Classification en cours sur ${STATE.aggregatedData.length.toLocaleString("fr-FR")} clients avec ${STATE.segments.length} segments AGL...`,
     "info");
 
+  // MULTI-FLAG : chaque client peut etre dans plusieurs segments simultanement
+  // (framework AGL : segments non exclusifs entre VVIP, cross-sell, at-risk, etc.)
+  // On garde aussi un "segment primaire" pour le cycle de vie via l'ordre de priorite
+  // recommande par le pseudo-SQL.
+  const PRIMARY_LIFECYCLE_ORDER = [
+    "Nouveau client gagne",
+    "Client reconquis", "Client perdu", "Client dormant",
+    "Alerte endormissement", "Perte", "Client actif"
+  ];
   STATE.classifiedData = STATE.aggregatedData.map(row => {
     const cls = { ...row };
-    cls.segment = "Non classe";
+    const matches = [];
     for (const seg of STATE.segments) {
-      if (segmentMatches(row, seg)) { cls.segment = seg.name; break; }
+      if (segmentMatches(row, seg)) matches.push(seg.name);
     }
+    cls.segments = matches;
+    // segment_principal : premier match dans l'ordre du cycle de vie, sinon premier match global
+    let primary = "Non classe";
+    for (const pat of PRIMARY_LIFECYCLE_ORDER) {
+      const found = matches.find(m => m.startsWith(pat));
+      if (found) { primary = found; break; }
+    }
+    if (primary === "Non classe" && matches.length) primary = matches[0];
+    cls.segment = primary;
+    cls.Nb_segments = matches.length;
     return cls;
   });
 
@@ -1836,11 +1855,17 @@ function renderRepartition() {
   const counts = {};
   const vals = {};
   const valueKey = repartitionValueKey();
+  // MULTI-FLAG : un client peut etre dans plusieurs segments, on le compte
+  // dans chacun de ses matches (pas seulement le primaire)
   for (const r of STATE.classifiedData) {
-    counts[r.segment] = (counts[r.segment] || 0) + 1;
-    if (valueKey) vals[r.segment] = (vals[r.segment] || 0) + (r[valueKey] || 0);
+    const segList = (r.segments && r.segments.length) ? r.segments : [r.segment || "Non classe"];
+    segList.forEach(s => {
+      counts[s] = (counts[s] || 0) + 1;
+      if (valueKey) vals[s] = (vals[s] || 0) + (r[valueKey] || 0);
+    });
   }
   const total = STATE.classifiedData.length;
+  const totalWithAtLeastOne = STATE.classifiedData.filter(r => r.segments && r.segments.length).length;
 
   // table de correspondance nom -> categorie (depuis STATE.segments)
   const catBySegment = {};
@@ -1910,12 +1935,21 @@ function renderRepartition() {
     html += `</tbody></table></details>`;
   });
 
-  // total general
+  // total general - les comptes par segment sont multi-flag (un client peut etre
+  // compte dans plusieurs segments), donc la somme par categorie peut depasser
+  // le total reel de clients
+  const totalGM = STATE.classifiedData.reduce((s, r) => s + ((valueKey && r[valueKey]) || 0), 0);
   html += `<div style="margin-top: 12px; padding: 8px 10px; background: #f3f4f6; border-radius: 6px; font-weight: 600;">
-    TOTAL classifie : ${total.toLocaleString("fr-FR")} client${total > 1 ? "s" : ""}
-    ${valueKey ? ` | Somme ${valueKey} : ${
-      Object.values(vals).reduce((a, b) => a + b, 0).toLocaleString("fr-FR", { maximumFractionDigits: 0 })
-    }` : ""}
+    ${total.toLocaleString("fr-FR")} clients evalues, dont ${totalWithAtLeastOne.toLocaleString("fr-FR")}
+    classes dans au moins 1 segment
+    ${valueKey ? `<br/><span style="font-weight: 400; font-size: 13px;">
+      Somme totale ${valueKey} (sans double comptage) : ${totalGM.toLocaleString("fr-FR", { maximumFractionDigits: 0 })}
+    </span>` : ""}
+    <p class="muted" style="font-weight: 400; font-size: 12px; margin: 6px 0 0;">
+      <strong>Mode multi-flag :</strong> un meme client peut figurer dans plusieurs
+      segments (ex: VVIP + Multi-equipe + Rocket). Les pourcentages sont % du
+      total clients, et la somme par categorie peut donc depasser 100%.
+    </p>
   </div>`;
 
   document.getElementById("repartition").innerHTML = html;
@@ -1943,7 +1977,10 @@ function renderSegmentDetail() {
     previewEl.innerHTML = "";
     return;
   }
-  const rows = STATE.classifiedData.filter(r => r.segment === seg);
+  // MULTI-FLAG : un client appartient au segment seg si seg est dans son tableau .segments
+  const rows = STATE.classifiedData.filter(r =>
+    (r.segments && r.segments.includes(seg)) || r.segment === seg
+  );
   titleEl.textContent = `Clients du segment "${seg}"`;
   hintEl.textContent = `${rows.length.toLocaleString("fr-FR")} client(s) dans ce segment. Tableau limite a 200 lignes - l'export Excel contient tout.`;
   actionsEl.innerHTML = `
@@ -1963,7 +2000,9 @@ function renderSegmentDetail() {
 }
 
 function exportSegment(segName, format) {
-  const rows = STATE.classifiedData.filter(r => r.segment === segName);
+  const rows = STATE.classifiedData.filter(r =>
+    (r.segments && r.segments.includes(segName)) || r.segment === segName
+  );
   if (!rows.length) { alert("Aucun client dans ce segment."); return; }
   const safeName = segName.replace(/[^A-Za-z0-9_-]+/g, "_").slice(0, 40);
   if (format === "xlsx") {
@@ -1990,11 +2029,14 @@ function renderExportButtons() {
 function exportXlsx() {
   const wb = XLSX.utils.book_new();
   const valueKey = repartitionValueKey();
-  // 1) onglet repartition
+  // 1) onglet repartition (mode multi-flag)
   const counts = {}, vals = {};
   for (const r of STATE.classifiedData) {
-    counts[r.segment] = (counts[r.segment] || 0) + 1;
-    if (valueKey) vals[r.segment] = (vals[r.segment] || 0) + (r[valueKey] || 0);
+    const segList = (r.segments && r.segments.length) ? r.segments : [r.segment || "Non classe"];
+    segList.forEach(s => {
+      counts[s] = (counts[s] || 0) + 1;
+      if (valueKey) vals[s] = (vals[s] || 0) + (r[valueKey] || 0);
+    });
   }
   const segOrder = STATE.segments.map(s => s.name).filter(n => counts[n]);
   if (counts["Non classe"]) segOrder.push("Non classe");
@@ -2006,10 +2048,12 @@ function exportXlsx() {
   }));
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rep), "_repartition");
 
-  // 2) un onglet par segment (nom tronque + sanitize)
+  // 2) un onglet par segment (nom tronque + sanitize) - mode multi-flag
   const usedNames = new Set(["_repartition"]);
   segOrder.forEach(seg => {
-    const rows = STATE.classifiedData.filter(r => r.segment === seg);
+    const rows = STATE.classifiedData.filter(r =>
+      (r.segments && r.segments.includes(seg)) || r.segment === seg
+    );
     if (!rows.length) return;
     let safe = seg.replace(/[\\\/\*\[\]:\?]/g, "_").slice(0, 31) || "segment";
     // garantit unicite
