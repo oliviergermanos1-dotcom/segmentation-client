@@ -273,9 +273,21 @@
   <div class="section-head">
     <h2><span class="badge">5</span> Classifier et exporter</h2>
   </div>
-  <details style="margin-bottom: 12px;">
-    <summary><strong>Periode d'audit</strong> (cliquez pour deplier - ajustez les seuils du framework AGL)</summary>
-    <div class="grid grid-3" style="margin-top: 10px;">
+  <div style="background: #f8fafc; border: 1px solid #e3e6ea; border-radius: 8px; padding: 12px; margin-bottom: 12px;">
+    <h3 style="margin: 0 0 8px;">Periode d'audit & seuils du framework AGL</h3>
+    <p class="muted" style="margin: 0 0 10px; font-size: 13px;">
+      Ces parametres definissent l'annee de reference et les seuils des segments
+      (actif/dormant, reconquete, rentabilite). Modifiez-les puis re-cliquez
+      "Lancer la classification" pour recalculer.
+    </p>
+    <div class="grid grid-3">
+      <div>
+        <label><strong>Annee de reference (N)</strong></label>
+        <select id="ref-year-classify"></select>
+        <p class="muted" style="font-size: 12px; margin: 4px 0 0;">
+          N-1 et historique calcules automatiquement. Synchronise avec l'etape 3.
+        </p>
+      </div>
       <div>
         <label>Fenetre d'activite (mois)</label>
         <select id="param-window-months">
@@ -284,7 +296,7 @@
           <option value="24">24 mois</option>
         </select>
         <p class="muted" style="font-size: 12px; margin: 4px 0 0;">
-          Seuil pour distinguer actif / dormant.
+          Seuil actif / dormant.
         </p>
       </div>
       <div>
@@ -295,22 +307,22 @@
           <option value="24">24 mois (strict)</option>
         </select>
       </div>
-      <div>
-        <label>Marge minimum "rentable"</label>
-        <select id="param-margin-floor">
-          <option value="5">5% GM/CA</option>
-          <option value="10">10% GM/CA</option>
-          <option value="15" selected>15% GM/CA (recommande)</option>
-          <option value="20">20% GM/CA</option>
-        </select>
-      </div>
     </div>
-  </details>
+    <div style="margin-top: 10px;">
+      <label>Marge minimum "rentable" (GM / CA)</label>
+      <select id="param-margin-floor">
+        <option value="5">5%</option>
+        <option value="10">10%</option>
+        <option value="15" selected>15% (recommande)</option>
+        <option value="20">20%</option>
+      </select>
+    </div>
+  </div>
   <button id="btn-classify">Lancer la classification (framework AGL automatique)</button>
-  <button id="btn-show-rules" class="secondary" style="margin-left: 8px;">Avance : editer les regles manuellement</button>
+  <button id="btn-show-rules" class="secondary" style="margin-left: 8px;">Voir / editer les regles generees</button>
   <p class="muted" style="margin: 6px 0 0; font-size: 13px;">
-    Le bouton genere automatiquement ~25 segments AGL organises en 6 categories
-    (Cycle de vie, Valeur, Rentabilite, Developpement, Comportement, Risque).
+    Genere automatiquement ~25 segments organises en 7 categories
+    (Statut, Cycle de vie, Valeur, Rentabilite, Developpement, Comportement, Risque).
   </p>
   <div id="classify-status"></div>
   <div id="export-buttons" style="margin-top: 12px;"></div>
@@ -368,7 +380,10 @@ const DEFAULT_AGG_COLUMNS = [
   "Mois_depuis_derniere_activite_hist",
   // distincts par dimension
   "Nb_Activity_Name_EN_distincts", "Nb_Activity_Name_EN_distincts_N",
+  "Nb_Activity_Name_EN_distincts_hist", "Nb_Activity_Name_EN_nouveaux_en_N",
   "Nb_Shipping_Type_Name_distincts", "Nb_ARGOS_Type_Name_distincts",
+  // marge et rang
+  "Marge_pct_N", "Marge_pct", "Rank_GM_N", "Rank_GM", "Percentile_GM_N",
   // dimensions usuelles
   "Customer", "HQ CTO Customer Name", "Market Segment Name", "Reporting Entity Label",
   "Activity Name (EN)", "Shipping Type Name", "ARGOS Type Name",
@@ -794,20 +809,24 @@ function renderAggregateSection() {
     keySel.dataset.sig = sig;
   }
 
-  // annee de reference : detecte toutes les annees presentes
+  // annee de reference : detecte toutes les annees presentes (filtre etape 2 pris en compte)
   const yearSel = document.getElementById("ref-year");
+  const yearSelClassify = document.getElementById("ref-year-classify");
   if (STATE.columns.includes("Year")) {
-    // utilise les donnees filtrees (etape 2) pour ne lister que les annees encore actives
     const source = STATE.filteredData.length ? STATE.filteredData : STATE.rawData;
     const years = [...new Set(source.map(r => parseInt(r.Year, 10)).filter(y => !isNaN(y)))]
-      .sort((a, b) => b - a); // plus recente en premier
+      .sort((a, b) => b - a);
     const sig = years.join(",");
     if (yearSel.dataset.sig !== sig) {
-      yearSel.innerHTML = years.map(y => `<option value="${y}">${y}</option>`).join("");
+      const opts = years.map(y => `<option value="${y}">${y}</option>`).join("");
+      yearSel.innerHTML = opts;
+      if (yearSelClassify) yearSelClassify.innerHTML = opts;
       yearSel.dataset.sig = sig;
+      if (yearSelClassify) yearSelClassify.dataset.sig = sig;
     }
   } else if (!yearSel.options.length) {
     yearSel.innerHTML = `<option value="">(pas de colonne Year)</option>`;
+    if (yearSelClassify) yearSelClassify.innerHTML = yearSel.innerHTML;
   }
 
   // metriques numeriques connues
@@ -979,7 +998,9 @@ document.getElementById("btn-aggregate").addEventListener("click", () => {
       }
     }
 
-    // nombre de valeurs distinctes par dimension : overall + N
+    // nombre de valeurs distinctes par dimension : overall + N + hist
+    // (le _hist sert au segment "Nouveau business chez client existant" :
+    //  comparer le nb d'activites en N vs avant N pour detecter un nouveau service)
     COUNT_DISTINCT_DIMS.forEach(dim => {
       if (STATE.columns.includes(dim)) {
         const distinct = new Set();
@@ -989,6 +1010,13 @@ document.getElementById("btn-aggregate").addEventListener("click", () => {
           const distinctN = new Set();
           rowsN.forEach(r => { if (r[dim] != null && r[dim] !== "") distinctN.add(r[dim]); });
           o[`Nb_${shortDimName(dim)}_distincts_N`] = distinctN.size;
+          const distinctHist = new Set();
+          rowsHist.forEach(r => { if (r[dim] != null && r[dim] !== "") distinctHist.add(r[dim]); });
+          o[`Nb_${shortDimName(dim)}_distincts_hist`] = distinctHist.size;
+          // services jamais vendus avant N mais vendus en N
+          let newServicesN = 0;
+          distinctN.forEach(v => { if (!distinctHist.has(v)) newServicesN++; });
+          o[`Nb_${shortDimName(dim)}_nouveaux_en_N`] = newServicesN;
         }
       }
     });
@@ -1010,9 +1038,26 @@ document.getElementById("btn-aggregate").addEventListener("click", () => {
     agg.push(o);
   }
   // tri decroissant sur la premiere metrique disponible (GM en priorite, sinon CA)
-  const sortKey = ["GM_EUR", "CA_EUR", "Billing_HT_EUR", "TEU", "Freight_Ton"]
+  const sortKey = ["GM_EUR_N", "GM_EUR", "CA_EUR_N", "CA_EUR", "Billing_HT_EUR", "TEU", "Freight_Ton"]
     .find(k => agg.length && k in agg[0]);
   if (sortKey) agg.sort((a, b) => (b[sortKey] || 0) - (a[sortKey] || 0));
+
+  // calcul du rang absolu sur GM_EUR_N (top 5, top 20, top 100 etc.)
+  // et du percentile pour usage dans les regles VVIP/VIP/Standard
+  if (hasYear && agg.length && "GM_EUR_N" in agg[0]) {
+    const sortedByGMN = [...agg].sort((a, b) => (b.GM_EUR_N || 0) - (a.GM_EUR_N || 0));
+    sortedByGMN.forEach((row, i) => {
+      row.Rank_GM_N = i + 1;
+      row.Percentile_GM_N = Math.round((1 - i / sortedByGMN.length) * 1000) / 10; // ex 95.5
+    });
+  }
+  // idem sur GM_EUR global (fallback)
+  if (agg.length && "GM_EUR" in agg[0]) {
+    const sortedByGM = [...agg].sort((a, b) => (b.GM_EUR || 0) - (a.GM_EUR || 0));
+    sortedByGM.forEach((row, i) => {
+      row.Rank_GM = i + 1;
+    });
+  }
 
   STATE.aggregatedData = agg;
   STATE.aggColumns = agg.length ? Object.keys(agg[0]) : [];
@@ -1122,18 +1167,24 @@ function buildAGLFrameworkRules() {
         { column: "Annees_actives_hist", op: "==", value: "0" }
       ]
     });
+    // Client reconquis : pseudo-SQL = revenue_12m > 0 AND revenue_prev_12m = 0
+    //                                  AND exists jobfile avant snapshot - 12 mois
+    // → equivalent : actif en N, N-1 etait un gap, et il y a une vieille historique
     segs.push({
-      name: `Client reconquis (gap >= ${reacGap} mois)`,
+      name: `Client reconquis (gap N-1 = 0 + historique >= ${reacGap} mois)`,
       category: "Cycle de vie",
       logic: "AND",
       conditions: [
         { column: "GM_EUR_N", op: ">", value: "0" },
+        { column: "GM_EUR_N1", op: "==", value: "0" },
         { column: "Annees_actives_hist", op: ">=", value: "1" },
         { column: "Mois_depuis_derniere_activite_hist", op: ">=", value: String(reacGap) }
       ]
     });
+    // Client perdu : pseudo-SQL = revenue_prev_12m > 0 AND revenue_12m = 0
+    //                              AND last_engagement < snapshot - 365d
     segs.push({
-      name: "Client perdu (N=0, N-1>0)",
+      name: "Client perdu (actif en N-1, plus en N)",
       category: "Cycle de vie",
       logic: "AND",
       conditions: [
@@ -1141,6 +1192,21 @@ function buildAGLFrameworkRules() {
         { column: "GM_EUR_N1", op: ">", value: "0" }
       ]
     });
+    // Nouveau business chez client existant : pseudo-SQL = first_business < snapshot - 365d
+    //   AND exists jobfile dans 365 derniers jours sur service jamais vendu avant
+    // → Annees_actives_hist >= 1 AND au moins 1 activite en N qui n'existait pas avant
+    if (cols.has("Nb_Activity_Name_EN_nouveaux_en_N")) {
+      segs.push({
+        name: "Nouveau business chez client existant",
+        category: "Cycle de vie",
+        logic: "AND",
+        conditions: [
+          { column: "GM_EUR_N", op: ">", value: "0" },
+          { column: "Annees_actives_hist", op: ">=", value: "1" },
+          { column: "Nb_Activity_Name_EN_nouveaux_en_N", op: ">=", value: "1" }
+        ]
+      });
+    }
     segs.push({
       name: `Client dormant (inactif > ${windowMonths} mois)`,
       category: "Cycle de vie",
@@ -1199,12 +1265,21 @@ function buildAGLFrameworkRules() {
       { column: gmCol, op: "<", value: String(p50) }
     ]
   });
-  segs.push({
-    name: "Top client actuel (top 20)",
-    category: "Valeur",
-    logic: "AND",
-    conditions: [{ column: gmCol, op: ">=", value: String(pct(0.99) || p95) }]
-  });
+  const rankCol = hasN ? "Rank_GM_N" : "Rank_GM";
+  if (cols.has(rankCol) || hasN) {
+    segs.push({
+      name: "Top 20 du portefeuille (rang absolu)",
+      category: "Valeur",
+      logic: "AND",
+      conditions: [{ column: rankCol, op: "<=", value: "20" }]
+    });
+    segs.push({
+      name: "Top 100 du portefeuille",
+      category: "Valeur",
+      logic: "AND",
+      conditions: [{ column: rankCol, op: "<=", value: "100" }]
+    });
+  }
 
   // ============================================================
   // BLOC E — RENTABILITE (necessite CA + GM dans la metrique)
@@ -1603,9 +1678,9 @@ function isNumericColumn(col) {
       "Turnover in EUR", "Direct GM in EUR", "Gross Billing Tax Excl. in EUR"
     ];
     if (numericNames.includes(col)) return true;
-    // colonnes derivees du split par periode
-    if (/^(Nb_|Annees_|Mois_|Pct_var_)/.test(col)) return true;
-    if (/_(N|N1|hist|distincts)$/.test(col)) return true;
+    // colonnes derivees du split par periode et metriques calculees
+    if (/^(Nb_|Annees_|Mois_|Pct_var_|Marge_|Rank_|Percentile_)/.test(col)) return true;
+    if (/_(N|N1|hist|distincts|nouveaux_en_N)$/.test(col)) return true;
     return false;
   }
   for (let i = 0; i < Math.min(STATE.aggregatedData.length, 50); i++) {
@@ -1621,9 +1696,37 @@ function isNumericColumn(col) {
 /* =============================================================
    ETAPE 5 : Classification
    ============================================================= */
+// synchro annee : si l'utilisateur change l'annee dans le panneau Etape 5,
+// on met a jour le selecteur principal (etape 3) et on re-lance l'agregation
+// automatiquement avant de classer.
+document.addEventListener("change", e => {
+  if (e.target && e.target.id === "ref-year-classify") {
+    const newYear = e.target.value;
+    const mainSel = document.getElementById("ref-year");
+    if (mainSel && mainSel.value !== newYear) {
+      mainSel.value = newYear;
+      setStatus("classify-status",
+        `Annee de reference changee a ${newYear}. Cliquez "Lancer la classification" pour recalculer.`,
+        "info");
+    }
+  }
+});
+
 document.getElementById("btn-classify").addEventListener("click", () => {
+  if (!STATE.filteredData.length) {
+    setStatus("classify-status", "Chargez d'abord des donnees (etape 1).", "error");
+    return;
+  }
+  // si l'annee a change, on relance l'agregation pour avoir les bonnes colonnes _N
+  const wantedYear = parseInt(document.getElementById("ref-year").value, 10);
+  if (!isNaN(wantedYear) && STATE.refYear !== wantedYear) {
+    setStatus("classify-status", `Re-agregation avec N = ${wantedYear}...`, "info");
+    document.getElementById("btn-aggregate").click();
+  }
   if (!STATE.aggregatedData.length) {
-    setStatus("classify-status", "Lancez d'abord l'agregation (etape 3).", "error");
+    setStatus("classify-status",
+      "Lancez d'abord l'agregation (etape 3). Verifier que Direct GM in EUR est coche.",
+      "error");
     return;
   }
   // (Re)genere automatiquement le framework AGL avec les parametres courants
@@ -1653,8 +1756,17 @@ document.getElementById("btn-classify").addEventListener("click", () => {
     return cls;
   });
 
+  // synthese par categorie pour le message de succes
+  const catCounts = {};
+  STATE.segments.forEach(s => {
+    const c = s.category || "Autres";
+    catCounts[c] = (catCounts[c] || 0) + 1;
+  });
+  const catSummary = Object.entries(catCounts).map(([c, n]) => `${c} : ${n}`).join(" | ");
   setStatus("classify-status",
-    `Classification terminee : ${STATE.classifiedData.length.toLocaleString("fr-FR")} clients classes sur ${STATE.segments.length} segments organises par categorie.`,
+    `Classification terminee : ${STATE.classifiedData.length.toLocaleString("fr-FR")} clients classes. ` +
+    `Framework AGL applique avec ${STATE.segments.length} regles. Categories : ${catSummary}. ` +
+    `Annee de reference N = ${STATE.refYear || "(globale)"}.`,
     "success");
   STATE.selectedSegment = null;
   renderRepartition();
