@@ -275,9 +275,22 @@
   </div>
   <button id="btn-classify">Lancer la classification</button>
   <div id="classify-status"></div>
-  <div id="repartition" style="margin-top: 16px;"></div>
-  <div id="classified-preview"></div>
   <div id="export-buttons" style="margin-top: 12px;"></div>
+  <div class="grid" style="grid-template-columns: 380px 1fr; gap: 16px; margin-top: 16px;" id="segments-explorer-wrap">
+    <div>
+      <h3>Segments</h3>
+      <p class="muted" style="margin: 4px 0 8px;">
+        Cliquez un segment pour voir les clients a droite, puis "Exporter Excel" pour ce segment.
+      </p>
+      <div id="repartition"></div>
+    </div>
+    <div>
+      <h3 id="segment-detail-title">Clients</h3>
+      <p class="muted" style="margin: 4px 0 8px;" id="segment-detail-hint">Selectionnez un segment a gauche.</p>
+      <div id="segment-detail-actions" class="row" style="margin-bottom: 8px;"></div>
+      <div id="classified-preview"></div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -746,7 +759,9 @@ function renderAggregateSection() {
   // annee de reference : detecte toutes les annees presentes
   const yearSel = document.getElementById("ref-year");
   if (STATE.columns.includes("Year")) {
-    const years = [...new Set(STATE.rawData.map(r => parseInt(r.Year, 10)).filter(y => !isNaN(y)))]
+    // utilise les donnees filtrees (etape 2) pour ne lister que les annees encore actives
+    const source = STATE.filteredData.length ? STATE.filteredData : STATE.rawData;
+    const years = [...new Set(source.map(r => parseInt(r.Year, 10)).filter(y => !isNaN(y)))]
       .sort((a, b) => b - a); // plus recente en premier
     const sig = years.join(",");
     if (yearSel.dataset.sig !== sig) {
@@ -1398,10 +1413,12 @@ document.getElementById("btn-classify").addEventListener("click", () => {
     return cls;
   });
 
-  setStatus("classify-status", "Classification terminee.", "success");
+  setStatus("classify-status",
+    `Classification terminee : ${STATE.classifiedData.length.toLocaleString("fr-FR")} clients classes.`,
+    "success");
+  STATE.selectedSegment = null;
   renderRepartition();
-  renderTable("classified-preview", STATE.classifiedData.slice(0, 50),
-    Object.keys(STATE.classifiedData[0]));
+  renderSegmentDetail();
   renderExportButtons();
 });
 
@@ -1457,39 +1474,121 @@ function evaluateCondition(row, cond) {
   return false;
 }
 
+// quelle metrique de valeur afficher dans la repartition (GM en priorite, sinon CA)
+function repartitionValueKey() {
+  return ["GM_EUR_N", "GM_EUR", "CA_EUR_N", "CA_EUR"]
+    .find(k => STATE.classifiedData.length && k in STATE.classifiedData[0]) || null;
+}
+
 function renderRepartition() {
   const counts = {};
-  const ca = {};
+  const vals = {};
+  const valueKey = repartitionValueKey();
   for (const r of STATE.classifiedData) {
     counts[r.segment] = (counts[r.segment] || 0) + 1;
-    ca[r.segment] = (ca[r.segment] || 0) + (r.CA_EUR || 0);
+    if (valueKey) vals[r.segment] = (vals[r.segment] || 0) + (r[valueKey] || 0);
   }
   const total = STATE.classifiedData.length;
-  const totalCA = Object.values(ca).reduce((a, b) => a + b, 0) || 1;
-  const segs = Object.keys(counts).sort((a, b) => counts[b] - counts[a]);
+  const totalVal = Object.values(vals).reduce((a, b) => a + b, 0) || 1;
+  // ordre = ordre des regles (pour respecter la priorite), avec "Non classe" a la fin
+  const segOrder = STATE.segments.map(s => s.name).filter(n => counts[n]);
+  if (counts["Non classe"]) segOrder.push("Non classe");
+  // si la donnee contient des segments non listes (apres edition de regles), les rajouter
+  Object.keys(counts).forEach(s => { if (!segOrder.includes(s)) segOrder.push(s); });
   const maxN = Math.max(...Object.values(counts));
-  let html = `<table><thead><tr><th>Segment</th><th>Clients</th><th>%</th><th>CA (EUR)</th><th>%CA</th><th></th></tr></thead><tbody>`;
-  segs.forEach(s => {
+
+  const valueLabel = valueKey ? `Total ${valueKey}` : "";
+  let html = `<table>
+    <thead><tr>
+      <th></th><th>Segment</th><th>Clients</th><th>%</th>
+      ${valueKey ? `<th>${escapeHtml(valueLabel)}</th><th>%</th>` : ""}
+      <th></th>
+    </tr></thead><tbody>`;
+  segOrder.forEach(s => {
     const n = counts[s];
-    const c = ca[s] || 0;
+    const v = vals[s] || 0;
     const widthPct = Math.round(n / maxN * 100);
-    html += `<tr>
+    const isSelected = STATE.selectedSegment === s;
+    html += `<tr class="seg-row" data-segment="${escapeHtml(s)}"
+      style="cursor: pointer; ${isSelected ? "background: #dbeafe;" : ""}">
+      <td><input type="radio" name="seg-pick" ${isSelected ? "checked" : ""}></td>
       <td><strong>${escapeHtml(s)}</strong></td>
       <td>${n.toLocaleString("fr-FR")}</td>
       <td>${(n / total * 100).toFixed(1)}%</td>
-      <td>${c.toLocaleString("fr-FR", { maximumFractionDigits: 0 })}</td>
-      <td>${(c / totalCA * 100).toFixed(1)}%</td>
-      <td><span class="bar" style="width: ${widthPct}%;"></span></td>
+      ${valueKey ? `<td>${v.toLocaleString("fr-FR", { maximumFractionDigits: 0 })}</td>
+                    <td>${(v / totalVal * 100).toFixed(1)}%</td>` : ""}
+      <td style="min-width: 80px;"><span class="bar" style="width: ${widthPct}%;"></span></td>
     </tr>`;
   });
+  html += `<tr style="background: #f3f4f6; font-weight: 600;">
+    <td></td><td>TOTAL</td><td>${total.toLocaleString("fr-FR")}</td><td>100%</td>
+    ${valueKey ? `<td>${totalVal.toLocaleString("fr-FR", { maximumFractionDigits: 0 })}</td><td>100%</td>` : ""}
+    <td></td></tr>`;
   html += "</tbody></table>";
   document.getElementById("repartition").innerHTML = html;
+
+  // delegation : clic sur une ligne -> selectionne le segment
+  document.getElementById("repartition").querySelectorAll(".seg-row").forEach(tr => {
+    tr.addEventListener("click", () => {
+      STATE.selectedSegment = tr.dataset.segment;
+      renderRepartition();
+      renderSegmentDetail();
+    });
+  });
+}
+
+function renderSegmentDetail() {
+  const titleEl = document.getElementById("segment-detail-title");
+  const hintEl = document.getElementById("segment-detail-hint");
+  const actionsEl = document.getElementById("segment-detail-actions");
+  const previewEl = document.getElementById("classified-preview");
+  const seg = STATE.selectedSegment;
+  if (!seg) {
+    titleEl.textContent = "Clients";
+    hintEl.textContent = "Selectionnez un segment a gauche pour voir ses clients ici.";
+    actionsEl.innerHTML = "";
+    previewEl.innerHTML = "";
+    return;
+  }
+  const rows = STATE.classifiedData.filter(r => r.segment === seg);
+  titleEl.textContent = `Clients du segment "${seg}"`;
+  hintEl.textContent = `${rows.length.toLocaleString("fr-FR")} client(s) dans ce segment. Tableau limite a 200 lignes - l'export Excel contient tout.`;
+  actionsEl.innerHTML = `
+    <button id="btn-export-seg-xlsx">Exporter Excel (ce segment)</button>
+    <button id="btn-export-seg-csv" class="secondary">Exporter CSV (ce segment)</button>
+    <button id="btn-clear-seg" class="secondary">Deselectionner</button>
+  `;
+  document.getElementById("btn-export-seg-xlsx").onclick = () => exportSegment(seg, "xlsx");
+  document.getElementById("btn-export-seg-csv").onclick = () => exportSegment(seg, "csv");
+  document.getElementById("btn-clear-seg").onclick = () => {
+    STATE.selectedSegment = null;
+    renderRepartition();
+    renderSegmentDetail();
+  };
+  renderTable("classified-preview", rows.slice(0, 200),
+    rows.length ? Object.keys(rows[0]) : []);
+}
+
+function exportSegment(segName, format) {
+  const rows = STATE.classifiedData.filter(r => r.segment === segName);
+  if (!rows.length) { alert("Aucun client dans ce segment."); return; }
+  const safeName = segName.replace(/[^A-Za-z0-9_-]+/g, "_").slice(0, 40);
+  if (format === "xlsx") {
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "clients");
+    XLSX.writeFile(wb, `segment_${safeName}.xlsx`);
+  } else {
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const csv = XLSX.utils.sheet_to_csv(ws);
+    const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
+    download(blob, `segment_${safeName}.csv`);
+  }
 }
 
 function renderExportButtons() {
   document.getElementById("export-buttons").innerHTML = `
-    <button id="btn-export-xlsx">Telecharger Excel</button>
-    <button id="btn-export-csv" class="secondary">Telecharger CSV</button>
+    <button id="btn-export-xlsx">Exporter tous les segments (Excel - 1 onglet par segment)</button>
+    <button id="btn-export-csv" class="secondary">Exporter tout en CSV</button>
   `;
   document.getElementById("btn-export-xlsx").onclick = () => exportXlsx();
   document.getElementById("btn-export-csv").onclick = () => exportCsv();
@@ -1497,18 +1596,39 @@ function renderExportButtons() {
 
 function exportXlsx() {
   const wb = XLSX.utils.book_new();
-  const ws1 = XLSX.utils.json_to_sheet(STATE.classifiedData);
-  XLSX.utils.book_append_sheet(wb, ws1, "clients");
-  // repartition
-  const rep = [];
-  const counts = {}, ca = {};
+  const valueKey = repartitionValueKey();
+  // 1) onglet repartition
+  const counts = {}, vals = {};
   for (const r of STATE.classifiedData) {
     counts[r.segment] = (counts[r.segment] || 0) + 1;
-    ca[r.segment] = (ca[r.segment] || 0) + (r.CA_EUR || 0);
+    if (valueKey) vals[r.segment] = (vals[r.segment] || 0) + (r[valueKey] || 0);
   }
-  Object.keys(counts).forEach(s => rep.push({ segment: s, nb_clients: counts[s], CA_total_EUR: ca[s] }));
-  const ws2 = XLSX.utils.json_to_sheet(rep);
-  XLSX.utils.book_append_sheet(wb, ws2, "repartition");
+  const segOrder = STATE.segments.map(s => s.name).filter(n => counts[n]);
+  if (counts["Non classe"]) segOrder.push("Non classe");
+  Object.keys(counts).forEach(s => { if (!segOrder.includes(s)) segOrder.push(s); });
+  const rep = segOrder.map(s => ({
+    segment: s,
+    nb_clients: counts[s],
+    [valueKey ? `total_${valueKey}` : "total"]: valueKey ? vals[s] : null
+  }));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rep), "_repartition");
+
+  // 2) un onglet par segment (nom tronque + sanitize)
+  const usedNames = new Set(["_repartition"]);
+  segOrder.forEach(seg => {
+    const rows = STATE.classifiedData.filter(r => r.segment === seg);
+    if (!rows.length) return;
+    let safe = seg.replace(/[\\\/\*\[\]:\?]/g, "_").slice(0, 31) || "segment";
+    // garantit unicite
+    let n = 1;
+    while (usedNames.has(safe)) { safe = (seg.slice(0, 28) + "_" + n).slice(0, 31); n++; }
+    usedNames.add(safe);
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), safe);
+  });
+
+  // 3) onglet "all" en fin
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(STATE.classifiedData), "_tous_clients");
+
   XLSX.writeFile(wb, "clients_segmentes.xlsx");
 }
 
