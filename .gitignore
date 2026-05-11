@@ -7,3 +7,6 @@ venv/
 *.xlsx
 *.xls
 !example.xlsx
+
+# Regles de segmentation locales (specifiques a chaque utilisateur)
+configs/segments_saved.json

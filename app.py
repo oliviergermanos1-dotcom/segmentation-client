@@ -19,10 +19,33 @@ from __future__ import annotations
 import io
 import json
 import re
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import streamlit as st
+
+
+# Fichier local de persistance des regles. Cree automatiquement a cote
+# de app.py. Permet de retrouver ses regles d'une session a l'autre.
+RULES_DIR = Path(__file__).parent / "configs"
+RULES_DIR.mkdir(exist_ok=True)
+RULES_FILE = RULES_DIR / "segments_saved.json"
+
+
+def _load_persisted_segments() -> list[dict[str, Any]]:
+    if RULES_FILE.exists():
+        try:
+            return json.loads(RULES_FILE.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            return []
+    return []
+
+
+def _persist_segments(segments: list[dict[str, Any]]) -> None:
+    RULES_FILE.write_text(
+        json.dumps(segments, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
 
 
 OPERATORS_NUMERIC = ["==", "!=", ">", ">=", "<", "<=", "between", "est vide", "n'est pas vide"]
@@ -52,7 +75,8 @@ st.title("Segmentation client - export CRM logistique")
 # Session state init
 # ---------------------------------------------------------------------------
 def _init_state() -> None:
-    st.session_state.setdefault("segments", [])
+    if "segments" not in st.session_state:
+        st.session_state["segments"] = _load_persisted_segments()
     st.session_state.setdefault("raw_df", None)
     st.session_state.setdefault("agg_df", None)
     st.session_state.setdefault("classified", None)
@@ -289,85 +313,117 @@ if agg_df is not None:
 # ---------------------------------------------------------------------------
 # Step 4 : segment rules
 # ---------------------------------------------------------------------------
-st.header("4. Definir les segments")
+st.header("4. Definir les regles de segmentation")
 
 if agg_df is None:
     st.info("Lancez d'abord l'agregation.")
 else:
-    st.caption(
-        "Les segments sont evalues dans l'ordre : le premier qui matche est "
-        "attribue au client. Les regles s'appliquent sur les colonnes agregees "
-        "(CA_EUR, Nb_operations, etc.) ou les colonnes descriptives."
+    st.markdown(
+        """
+        Les regles sont **sauvegardees automatiquement** dans
+        `configs/segments_saved.json` et rechargees a chaque ouverture de l'app.
+        Vous pouvez **ajouter**, **modifier** ou **supprimer** une regle a tout moment.
+
+        Les segments sont evalues **dans l'ordre** : le premier qui matche est
+        attribue au client. Reordonnez avec les boutons monter / descendre.
+        """
     )
 
-    io1, io2 = st.columns(2)
-    with io1:
-        if st.session_state.segments:
-            st.download_button(
-                "Telecharger config segments (JSON)",
-                data=json.dumps(st.session_state.segments, indent=2, ensure_ascii=False),
-                file_name="segments.json",
-                mime="application/json",
+    # ---- barre d'etat
+    bar = st.columns([3, 1, 1, 1])
+    bar[0].metric("Regles definies", len(st.session_state.segments))
+    if bar[1].button("Tout effacer", help="Supprime toutes les regles"):
+        st.session_state.segments = []
+        _persist_segments([])
+        st.rerun()
+    if bar[2].button(
+        "Quartiles CA",
+        help="Cree 4 regles automatiques basees sur les quartiles du CA",
+        disabled="CA_EUR" not in agg_df.columns,
+    ):
+        q = agg_df["CA_EUR"].quantile([0.25, 0.5, 0.75]).tolist()
+        st.session_state.segments = [
+            {"name": "VIP", "logic": "AND",
+             "conditions": [{"column": "CA_EUR", "op": ">=", "value": str(int(q[2]))}]},
+            {"name": "Gold", "logic": "AND",
+             "conditions": [{"column": "CA_EUR", "op": ">=", "value": str(int(q[1]))}]},
+            {"name": "Silver", "logic": "AND",
+             "conditions": [{"column": "CA_EUR", "op": ">=", "value": str(int(q[0]))}]},
+            {"name": "Bronze", "logic": "AND",
+             "conditions": [{"column": "CA_EUR", "op": ">", "value": "0"}]},
+        ]
+        _persist_segments(st.session_state.segments)
+        st.rerun()
+    if bar[3].button(
+        "Sauver sous...",
+        help="Telecharge la config actuelle en JSON (sauvegarde / partage)",
+        disabled=not st.session_state.segments,
+    ):
+        st.session_state["_show_export"] = True
+
+    # ---- import / export json (replie dans un expander)
+    with st.expander("Import / export JSON (sauvegarde, partage entre postes)"):
+        io1, io2 = st.columns(2)
+        with io1:
+            if st.session_state.segments:
+                st.download_button(
+                    "Telecharger config (JSON)",
+                    data=json.dumps(
+                        st.session_state.segments, indent=2, ensure_ascii=False
+                    ),
+                    file_name="segments.json",
+                    mime="application/json",
+                )
+        with io2:
+            cfg_file = st.file_uploader(
+                "Charger une config", type=["json"], key="cfg_uploader"
             )
-    with io2:
-        cfg_file = st.file_uploader(
-            "Charger config segments (JSON)", type=["json"], key="cfg_uploader"
-        )
-        if cfg_file is not None:
-            try:
-                st.session_state.segments = json.load(cfg_file)
-                st.success("Config chargee.")
-            except Exception as exc:  # noqa: BLE001
-                st.error(f"JSON invalide : {exc}")
+            if cfg_file is not None:
+                try:
+                    st.session_state.segments = json.load(cfg_file)
+                    _persist_segments(st.session_state.segments)
+                    st.success("Config chargee et sauvegardee localement.")
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"JSON invalide : {exc}")
 
-    # presets rapides bases sur le CA
-    if "CA_EUR" in agg_df.columns and not st.session_state.segments:
-        if st.button("Generer 4 segments par defaut (quartiles de CA)"):
-            q = agg_df["CA_EUR"].quantile([0.25, 0.5, 0.75]).tolist()
-            st.session_state.segments = [
-                {
-                    "name": "VIP",
-                    "logic": "AND",
-                    "conditions": [{"column": "CA_EUR", "op": ">=", "value": str(q[2])}],
-                },
-                {
-                    "name": "Gold",
-                    "logic": "AND",
-                    "conditions": [{"column": "CA_EUR", "op": ">=", "value": str(q[1])}],
-                },
-                {
-                    "name": "Silver",
-                    "logic": "AND",
-                    "conditions": [{"column": "CA_EUR", "op": ">=", "value": str(q[0])}],
-                },
-                {
-                    "name": "Bronze",
-                    "logic": "AND",
-                    "conditions": [{"column": "CA_EUR", "op": ">", "value": "0"}],
-                },
-            ]
-            st.rerun()
-
+    st.markdown("---")
+    st.subheader("Ajouter une nouvelle regle")
     with st.form("add_segment_form", clear_on_submit=True):
-        new_name = st.text_input("Nom du nouveau segment", placeholder="ex : VIP")
-        submitted = st.form_submit_button("Ajouter le segment")
+        new_name = st.text_input(
+            "Nom du segment",
+            placeholder="ex : VIP, Gold, Strategique, A_relancer...",
+        )
+        submitted = st.form_submit_button("Ajouter")
         if submitted and new_name.strip():
             st.session_state.segments.append(
                 {"name": new_name.strip(), "logic": "AND", "conditions": []}
             )
+            _persist_segments(st.session_state.segments)
             st.rerun()
+
+    if st.session_state.segments:
+        st.markdown("---")
+        st.subheader("Regles actuelles")
 
     for idx, seg in enumerate(st.session_state.segments):
         with st.container(border=True):
+            st.markdown(f"**Regle #{idx + 1}**  -  {len(seg['conditions'])} condition(s)")
             top = st.columns([4, 1, 1, 1, 1])
-            seg["name"] = top[0].text_input(
-                "Nom", value=seg["name"], key=f"name_{idx}", label_visibility="collapsed"
+            new_name = top[0].text_input(
+                "Nom du segment",
+                value=seg["name"],
+                key=f"name_{idx}",
+                label_visibility="collapsed",
             )
+            if new_name != seg["name"]:
+                seg["name"] = new_name
+                _persist_segments(st.session_state.segments)
             if top[1].button("monter", key=f"up_{idx}", disabled=idx == 0):
                 st.session_state.segments[idx - 1], st.session_state.segments[idx] = (
                     st.session_state.segments[idx],
                     st.session_state.segments[idx - 1],
                 )
+                _persist_segments(st.session_state.segments)
                 st.rerun()
             if top[2].button(
                 "descendre",
@@ -378,16 +434,22 @@ else:
                     st.session_state.segments[idx],
                     st.session_state.segments[idx + 1],
                 )
+                _persist_segments(st.session_state.segments)
                 st.rerun()
-            seg["logic"] = top[3].selectbox(
+            new_logic = top[3].selectbox(
                 "Logique",
                 ["AND", "OR"],
                 index=0 if seg.get("logic", "AND") == "AND" else 1,
                 key=f"logic_{idx}",
                 label_visibility="collapsed",
+                help="AND = toutes les conditions doivent etre vraies. OR = au moins une.",
             )
+            if new_logic != seg.get("logic"):
+                seg["logic"] = new_logic
+                _persist_segments(st.session_state.segments)
             if top[4].button("Supprimer", key=f"del_{idx}"):
                 st.session_state.segments.pop(idx)
+                _persist_segments(st.session_state.segments)
                 st.rerun()
 
             st.markdown("**Conditions**")
@@ -461,13 +523,19 @@ else:
 
                 if cols[3].button("retirer", key=f"delcond_{idx}_{c_idx}"):
                     seg["conditions"].pop(c_idx)
+                    _persist_segments(st.session_state.segments)
                     st.rerun()
 
             if st.button("+ ajouter une condition", key=f"addcond_{idx}"):
                 seg["conditions"].append(
                     {"column": agg_df.columns[0], "op": "==", "value": ""}
                 )
+                _persist_segments(st.session_state.segments)
                 st.rerun()
+
+    # ---- persiste les valeurs/operateurs modifies sur place (text_input,
+    # selectbox sans rerun explicite). Idempotent et rapide.
+    _persist_segments(st.session_state.segments)
 
 
 # ---------------------------------------------------------------------------

@@ -16,13 +16,37 @@ Application Streamlit pour classer automatiquement les clients d'un export CRM
    `HQ CTO Customer Name`, ...) et les metriques (somme `Turnover in EUR`,
    `Direct GM in EUR`, `TEU`, `Freight Ton`). Sont aussi calcules :
    nombre d'operations, nombre de mois actifs, premiere / derniere activite.
-4. **Definir les segments** : conditions sur les colonnes agregees
-   (`CA_EUR >= 100000`, `Nb_operations > 50`, ...), logique `AND` / `OR`,
-   reordonnancement. Le premier segment qui matche gagne ; sinon `Non classe`.
-   Preset disponible : 4 segments par quartiles de CA (VIP / Gold / Silver / Bronze).
+4. **Definir les regles de segmentation** (section centrale de l'app) :
+   - **Ajouter** une regle : saisir le nom (ex: `VIP`) -> elle apparait dans la liste.
+   - **Modifier** une regle : changer le nom, la logique `AND`/`OR`, ajouter /
+     retirer des conditions, changer la colonne, l'operateur ou la valeur.
+   - **Supprimer** une regle : bouton "Supprimer" sur chaque carte.
+   - **Reordonner** : boutons "monter" / "descendre". Le **premier** segment qui
+     matche est attribue au client (les autres sont ignores) - donc mettre les
+     regles les plus restrictives en haut. Les clients qui ne matchent aucune
+     regle recoivent `Non classe`.
+   - **Persistance automatique** : les regles sont sauvegardees dans
+     `configs/segments_saved.json` a chaque modification, et rechargees au
+     prochain demarrage. Plus besoin de re-saisir.
+   - **Import / export JSON** : pour partager une config entre postes ou
+     versionner ses jeux de regles.
+   - **Preset "Quartiles CA"** : genere automatiquement 4 segments
+     (VIP / Gold / Silver / Bronze) bases sur les quartiles du CA.
 5. **Classifier** et **exporter** en CSV ou Excel (avec onglet repartition).
+   L'export peut etre filtre par segment selectionne.
 
-La config des segments peut etre sauvegardee / rechargee en JSON.
+### Exemples de regles
+
+| Segment | Logique | Conditions |
+|---|---|---|
+| VIP | AND | `CA_EUR >= 500000` |
+| Gold | AND | `CA_EUR >= 100000` ET `Nb_operations >= 10` |
+| Inactif | AND | `Derniere_activite <= 2024-12-31` |
+| Strategique | OR | `Market Segment Name contient MINING` OU `TEU >= 1000` |
+
+Operateurs disponibles : `==`, `!=`, `>`, `>=`, `<`, `<=`, `between`,
+`contient`, `commence par`, `finit par`, `dans la liste`, `pas dans la liste`,
+`regex`, `est vide`, `n'est pas vide`.
 
 ## Lancer en local
 
