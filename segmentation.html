@@ -2151,9 +2151,25 @@ function exportSegment(segName, format) {
 }
 
 function renderExportButtons() {
+  const nbSegs = STATE.segments.filter(s => {
+    return STATE.classifiedData.some(r =>
+      (r.segments && r.segments.includes(s.name)) || r.segment === s.name
+    );
+  }).length;
   document.getElementById("export-buttons").innerHTML = `
-    <button id="btn-export-xlsx">Exporter tous les segments (Excel - 1 onglet par segment)</button>
-    <button id="btn-export-csv" class="secondary">Exporter tout en CSV</button>
+    <div style="background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 12px;">
+      <strong style="color: #1e40af;">Export Excel global</strong>
+      <p class="muted" style="margin: 4px 0 8px; font-size: 13px;">
+        Cree un fichier Excel avec <strong>1 onglet par segment</strong>
+        (${nbSegs} segments avec clients) + onglet "_repartition" (synthese) +
+        onglet "_tous_clients" (tableau complet). Le champ <code>segments</code>
+        liste tous les segments matches pour chaque client.
+      </p>
+      <button id="btn-export-xlsx" style="font-weight: 600;">
+        Telecharger Excel - 1 onglet par segment (${nbSegs} onglets)
+      </button>
+      <button id="btn-export-csv" class="secondary" style="margin-left: 6px;">CSV complet</button>
+    </div>
   `;
   document.getElementById("btn-export-xlsx").onclick = () => exportXlsx();
   document.getElementById("btn-export-csv").onclick = () => exportCsv();
