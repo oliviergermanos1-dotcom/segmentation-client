@@ -230,7 +230,7 @@
 <!-- =============================================== -->
 <!-- ETAPE 4 : Regles de segmentation                -->
 <!-- =============================================== -->
-<div class="section" id="section-rules">
+<div class="section" id="section-rules" style="display: none;">
   <div class="section-head">
     <h2><span class="badge">4</span> Definir les regles de segmentation</h2>
   </div>
@@ -273,14 +273,52 @@
   <div class="section-head">
     <h2><span class="badge">5</span> Classifier et exporter</h2>
   </div>
-  <button id="btn-classify">Lancer la classification</button>
+  <details style="margin-bottom: 12px;">
+    <summary><strong>Periode d'audit</strong> (cliquez pour deplier - ajustez les seuils du framework AGL)</summary>
+    <div class="grid grid-3" style="margin-top: 10px;">
+      <div>
+        <label>Fenetre d'activite (mois)</label>
+        <select id="param-window-months">
+          <option value="6">6 mois</option>
+          <option value="12" selected>12 mois (norme AGL)</option>
+          <option value="24">24 mois</option>
+        </select>
+        <p class="muted" style="font-size: 12px; margin: 4px 0 0;">
+          Seuil pour distinguer actif / dormant.
+        </p>
+      </div>
+      <div>
+        <label>Seuil reconquete (mois sans activite)</label>
+        <select id="param-reactivation-gap">
+          <option value="9">9 mois (ancienne regle COMONE)</option>
+          <option value="12" selected>12 mois (recommande)</option>
+          <option value="24">24 mois (strict)</option>
+        </select>
+      </div>
+      <div>
+        <label>Marge minimum "rentable"</label>
+        <select id="param-margin-floor">
+          <option value="5">5% GM/CA</option>
+          <option value="10">10% GM/CA</option>
+          <option value="15" selected>15% GM/CA (recommande)</option>
+          <option value="20">20% GM/CA</option>
+        </select>
+      </div>
+    </div>
+  </details>
+  <button id="btn-classify">Lancer la classification (framework AGL automatique)</button>
+  <button id="btn-show-rules" class="secondary" style="margin-left: 8px;">Avance : editer les regles manuellement</button>
+  <p class="muted" style="margin: 6px 0 0; font-size: 13px;">
+    Le bouton genere automatiquement ~25 segments AGL organises en 6 categories
+    (Cycle de vie, Valeur, Rentabilite, Developpement, Comportement, Risque).
+  </p>
   <div id="classify-status"></div>
   <div id="export-buttons" style="margin-top: 12px;"></div>
-  <div class="grid" style="grid-template-columns: 380px 1fr; gap: 16px; margin-top: 16px;" id="segments-explorer-wrap">
+  <div class="grid" style="grid-template-columns: 420px 1fr; gap: 16px; margin-top: 16px;" id="segments-explorer-wrap">
     <div>
-      <h3>Segments</h3>
+      <h3>Segments par categorie</h3>
       <p class="muted" style="margin: 4px 0 8px;">
-        Cliquez un segment pour voir les clients a droite, puis "Exporter Excel" pour ce segment.
+        Cliquez un segment pour voir les clients a droite, puis "Exporter Excel".
       </p>
       <div id="repartition"></div>
     </div>
@@ -886,6 +924,14 @@ document.getElementById("btn-aggregate").addEventListener("click", () => {
       }
     });
 
+    // Marge pct (GM / CA) sur N et global - pour les segments Rentabilite
+    if (hasYear && typeof o.CA_EUR_N === "number" && typeof o.GM_EUR_N === "number") {
+      o.Marge_pct_N = o.CA_EUR_N > 0 ? Math.round((o.GM_EUR_N / o.CA_EUR_N) * 1000) / 10 : null;
+    }
+    if (typeof o.CA_EUR === "number" && typeof o.GM_EUR === "number") {
+      o.Marge_pct = o.CA_EUR > 0 ? Math.round((o.GM_EUR / o.CA_EUR) * 1000) / 10 : null;
+    }
+
     // nombre d'operations : overall + N + hist
     if (STATE.columns.includes("JobfileNumber")) {
       const setAll = new Set();
@@ -1012,154 +1058,191 @@ document.getElementById("btn-clear-rules").addEventListener("click", () => {
   renderRules();
 });
 
-document.getElementById("btn-preset-agl").addEventListener("click", () => {
-  if (!STATE.aggregatedData.length) {
-    alert("Lancez d'abord l'agregation (etape 3) avec la metrique Direct GM et une annee de reference.");
-    return;
-  }
+// Construit le framework complet de segments AGL en fonction des donnees agregees
+// et des parametres choisis. Inspire du framework pseudo-SQL fourni par l'utilisateur.
+function buildAGLFrameworkRules() {
+  if (!STATE.aggregatedData.length) return null;
   const cols = new Set(STATE.aggColumns);
   const hasN = cols.has("GM_EUR_N");
-  // calcule des percentiles sur GM_EUR_N (ou GM_EUR si pas d'annee)
   const gmCol = hasN ? "GM_EUR_N" : "GM_EUR";
-  if (!cols.has(gmCol)) {
-    alert("Cochez \"Direct GM in EUR\" dans les metriques avant de lancer l'agregation.");
-    return;
-  }
+  const caCol = hasN ? "CA_EUR_N" : "CA_EUR";
+  if (!cols.has(gmCol)) return null;
+
+  // parametres saisis par l'utilisateur (avec defauts)
+  const windowMonths = parseInt(document.getElementById("param-window-months")?.value || "12", 10);
+  const reacGap = parseInt(document.getElementById("param-reactivation-gap")?.value || "12", 10);
+  const marginFloor = parseInt(document.getElementById("param-margin-floor")?.value || "15", 10) / 100;
+
+  // calcule des percentiles dynamiques sur la metrique de valeur
   const positive = STATE.aggregatedData.map(r => r[gmCol]).filter(v => typeof v === "number" && v > 0).sort((a, b) => a - b);
   const pct = p => positive.length ? Math.round(positive[Math.min(Math.floor(positive.length * p), positive.length - 1)]) : 0;
   const p95 = pct(0.95), p80 = pct(0.80), p50 = pct(0.50);
-  // detection des colonnes de comptage d'activite (peut etre Activity_Name_EN ou variante Dim)
-  const actCol = STATE.aggColumns.find(c => /^Nb_Activity_Name_EN_distincts$/.test(c))
-              || STATE.aggColumns.find(c => /Activity.*distincts$/.test(c) && !/_N$/.test(c));
 
-  if (!confirm(
-    `Charger le preset Segmentation AGL ?\n\n` +
-    `Cela va REMPLACER les regles actuelles par ~16 segments bases sur :\n` +
-    `- GM_EUR_N : seuils VVIP p95 = ${p95.toLocaleString("fr-FR")}, VIP p80 = ${p80.toLocaleString("fr-FR")}, Standard p50 = ${p50.toLocaleString("fr-FR")}\n` +
-    (hasN ? `- Comparaison N (${STATE.refYear}) vs N-1 (${STATE.refYear - 1}) vs historique\n` : `- Pas d'annee de reference : segments cycle de vie desactives\n`) +
-    `- Vous pourrez modifier chaque seuil apres.`
-  )) return;
+  // total GM_N pour le risque de concentration (>= 5% du portefeuille)
+  const totalGM = STATE.aggregatedData.reduce((s, r) => s + (r[gmCol] || 0), 0);
+  const concentrationThreshold = totalGM > 0 ? Math.round(totalGM * 0.05) : 0;
 
+  // detection des colonnes de comptage d'activite distinctes
+  const actCol = STATE.aggColumns.find(c => /^Nb_Activity_Name_EN_distincts_N$/.test(c))
+              || STATE.aggColumns.find(c => /^Nb_Activity_Name_EN_distincts$/.test(c))
+              || STATE.aggColumns.find(c => /Activity.*distincts/.test(c));
+
+  const moisCol = hasN ? "Nb_mois_actifs_N" : "Nb_mois_actifs";
   const segs = [];
 
-  // === BLOC CYCLE DE VIE (necessite annee de reference) ===
+  // ============================================================
+  // BLOC A — STATUT RELATIONNEL (toujours "Client" avec Siebel)
+  // ============================================================
+  segs.push({
+    name: "Client (avec historique business)",
+    category: "Statut",
+    logic: "AND",
+    conditions: [{ column: "Premiere_activite", op: "n'est pas vide", value: "" }]
+  });
+
+  // ============================================================
+  // BLOC B — CYCLE DE VIE (necessite annee de reference)
+  // ============================================================
   if (hasN) {
-    // 1. Perte : GM_EUR_N <= 0 (mais a eu de l'activite en N, sinon dormant/perdu)
     segs.push({
-      name: "Perte",
+      name: "Perte (GM negatif sur N)",
+      category: "Cycle de vie",
       logic: "AND",
       conditions: [
-        { column: "GM_EUR_N", op: "<=", value: "0" },
-        { column: "Nb_mois_actifs_N", op: ">", value: "0" }
+        { column: "GM_EUR_N", op: "<", value: "0" },
+        { column: moisCol, op: ">", value: "0" }
       ]
     });
-    // 2. Nouveau client gagne : actif en N, aucun historique
     segs.push({
       name: "Nouveau client gagne",
+      category: "Cycle de vie",
       logic: "AND",
       conditions: [
         { column: "GM_EUR_N", op: ">", value: "0" },
         { column: "Annees_actives_hist", op: "==", value: "0" }
       ]
     });
-    // 3. Reconquis : actif en N, derniere activite hist >= 12 mois avant
     segs.push({
-      name: "Client reconquis",
+      name: `Client reconquis (gap >= ${reacGap} mois)`,
+      category: "Cycle de vie",
       logic: "AND",
       conditions: [
         { column: "GM_EUR_N", op: ">", value: "0" },
         { column: "Annees_actives_hist", op: ">=", value: "1" },
-        { column: "Mois_depuis_derniere_activite_hist", op: ">=", value: "12" }
+        { column: "Mois_depuis_derniere_activite_hist", op: ">=", value: String(reacGap) }
       ]
     });
-    // 4. Client perdu : aucun GM en N, GM en N-1
     segs.push({
-      name: "Client perdu",
+      name: "Client perdu (N=0, N-1>0)",
+      category: "Cycle de vie",
       logic: "AND",
       conditions: [
         { column: "GM_EUR_N", op: "==", value: "0" },
         { column: "GM_EUR_N1", op: ">", value: "0" }
       ]
     });
-    // 5. Client dormant : aucun GM en N, historique existant (mais pas N-1)
     segs.push({
-      name: "Client dormant",
+      name: `Client dormant (inactif > ${windowMonths} mois)`,
+      category: "Cycle de vie",
       logic: "AND",
       conditions: [
         { column: "GM_EUR_N", op: "==", value: "0" },
-        { column: "GM_EUR_hist", op: ">", value: "0" }
+        { column: "GM_EUR_hist", op: ">", value: "0" },
+        { column: "Mois_depuis_derniere_activite_hist", op: ">=", value: String(windowMonths) }
       ]
     });
-    // 6. Client a risque : actif mais GM en chute > 30%
     segs.push({
-      name: "Client a risque de perte",
+      name: "Alerte endormissement (actif mais ralentit)",
+      category: "Cycle de vie",
       logic: "AND",
       conditions: [
         { column: "GM_EUR_N", op: ">", value: "0" },
-        { column: "Pct_var_GM_EUR", op: "<=", value: "-30" }
+        { column: moisCol, op: "<=", value: "3" },
+        { column: "GM_EUR_N1", op: ">", value: "0" }
       ]
     });
-    // 7. Client en croissance : actif et GM en hausse > 20%
     segs.push({
-      name: "Client en croissance",
+      name: "Client actif (regle COMONE)",
+      category: "Cycle de vie",
       logic: "AND",
-      conditions: [
-        { column: "GM_EUR_N", op: ">", value: "0" },
-        { column: "Pct_var_GM_EUR", op: ">=", value: "20" }
-      ]
+      conditions: [{ column: "GM_EUR_N", op: ">", value: "0" }]
     });
   }
 
-  // === BLOC VALEUR (sur GM_N si dispo, sinon GM total) ===
+  // ============================================================
+  // BLOC D — VALEUR (percentiles dynamiques sur GM_N)
+  // ============================================================
   segs.push({
-    name: "VVIP",
+    name: `VVIP (top 5% - GM >= ${p95.toLocaleString("fr-FR")} EUR)`,
+    category: "Valeur",
     logic: "AND",
     conditions: [{ column: gmCol, op: ">=", value: String(p95) }]
   });
   segs.push({
-    name: "VIP",
+    name: `VIP (top 20% - GM >= ${p80.toLocaleString("fr-FR")} EUR)`,
+    category: "Valeur",
     logic: "AND",
     conditions: [{ column: gmCol, op: ">=", value: String(p80) }]
   });
   segs.push({
-    name: "Standard",
+    name: `Standard (top 50% - GM >= ${p50.toLocaleString("fr-FR")} EUR)`,
+    category: "Valeur",
     logic: "AND",
     conditions: [{ column: gmCol, op: ">=", value: String(p50) }]
   });
+  segs.push({
+    name: "Long Tail (GM positif sous mediane)",
+    category: "Valeur",
+    logic: "AND",
+    conditions: [
+      { column: gmCol, op: ">", value: "0" },
+      { column: gmCol, op: "<", value: String(p50) }
+    ]
+  });
+  segs.push({
+    name: "Top client actuel (top 20)",
+    category: "Valeur",
+    logic: "AND",
+    conditions: [{ column: gmCol, op: ">=", value: String(pct(0.99) || p95) }]
+  });
 
-  // === BLOC COMPORTEMENT ===
-  const moisCol = hasN ? "Nb_mois_actifs_N" : "Nb_mois_actifs";
-  if (cols.has(moisCol)) {
+  // ============================================================
+  // BLOC E — RENTABILITE (necessite CA + GM dans la metrique)
+  // ============================================================
+  if (cols.has(caCol)) {
+    // GM% = GM / CA — on encode avec un seuil sur le GM en EUR mais conditionne par CA > 0
+    // Pour evaluer "GM% >= 15%" sans operateur dedie, on duplique la regle en absolute :
+    // mais une fois passe par le moteur, comparer GM avec un seuil absolu ne marche pas.
+    // Workaround : on cree une colonne derivee Marge_pct_N a l'agregation (voir patch precedent).
+    // En attendant, on encode via une condition relative grossiere : GM_N >= marginFloor * CA_N
+    // Pour cela, on n'a pas d'operateur, donc on ajoute un placeholder explique :
     segs.push({
-      name: "Client spot (1 seul mois)",
+      name: `Rentable (marge >= ${Math.round(marginFloor * 100)}%)`,
+      category: "Rentabilite",
       logic: "AND",
       conditions: [
-        { column: gmCol, op: ">", value: "0" },
-        { column: moisCol, op: "==", value: "1" }
+        { column: "Marge_pct_N", op: ">=", value: String(Math.round(marginFloor * 100)) },
+        { column: caCol, op: ">", value: "0" }
       ]
     });
     segs.push({
-      name: "Client occasionnel (2-5 mois)",
+      name: `Peu rentable (marge < ${Math.round(marginFloor * 100)}%)`,
+      category: "Rentabilite",
       logic: "AND",
       conditions: [
-        { column: gmCol, op: ">", value: "0" },
-        { column: moisCol, op: "between", value: ["2", "5"] }
-      ]
-    });
-    segs.push({
-      name: "Client recurrent (>=6 mois)",
-      logic: "AND",
-      conditions: [
-        { column: gmCol, op: ">", value: "0" },
-        { column: moisCol, op: ">=", value: "6" }
+        { column: "Marge_pct_N", op: "<", value: String(Math.round(marginFloor * 100)) },
+        { column: caCol, op: ">", value: "0" }
       ]
     });
   }
 
-  // === BLOC DEVELOPPEMENT (mono / multi-produit) ===
+  // ============================================================
+  // BLOC F — DEVELOPPEMENT (mono / multi-equipe)
+  // ============================================================
   if (actCol) {
     segs.push({
-      name: "Mono-produit (cross-sell target)",
+      name: "Mono-service (cible cross-sell)",
+      category: "Developpement",
       logic: "AND",
       conditions: [
         { column: gmCol, op: ">", value: "0" },
@@ -1168,44 +1251,189 @@ document.getElementById("btn-preset-agl").addEventListener("click", () => {
     });
     segs.push({
       name: "Multi-equipe (>=2 activites)",
+      category: "Developpement",
       logic: "AND",
       conditions: [
         { column: gmCol, op: ">", value: "0" },
         { column: actCol, op: ">=", value: "2" }
       ]
     });
+    segs.push({
+      name: "Multi-equipe premium (>=3 activites)",
+      category: "Developpement",
+      logic: "AND",
+      conditions: [
+        { column: gmCol, op: ">", value: "0" },
+        { column: actCol, op: ">=", value: "3" }
+      ]
+    });
   }
 
-  // === BLOC LONG TAIL (catch-all valeur faible) ===
-  segs.push({
-    name: "Long Tail",
-    logic: "AND",
-    conditions: [{ column: gmCol, op: ">", value: "0" }]
+  // ============================================================
+  // BLOC G — COMPORTEMENT D'ACHAT
+  // ============================================================
+  if (cols.has(moisCol)) {
+    segs.push({
+      name: "Client spot (1 mois actif)",
+      category: "Comportement",
+      logic: "AND",
+      conditions: [
+        { column: gmCol, op: ">", value: "0" },
+        { column: moisCol, op: "==", value: "1" }
+      ]
+    });
+    segs.push({
+      name: "Client occasionnel (2-3 mois)",
+      category: "Comportement",
+      logic: "AND",
+      conditions: [
+        { column: gmCol, op: ">", value: "0" },
+        { column: moisCol, op: "between", value: ["2", "3"] }
+      ]
+    });
+    segs.push({
+      name: "Client saisonnier (4-6 mois)",
+      category: "Comportement",
+      logic: "AND",
+      conditions: [
+        { column: gmCol, op: ">", value: "0" },
+        { column: moisCol, op: "between", value: ["4", "6"] }
+      ]
+    });
+    segs.push({
+      name: "Client recurrent (7-11 mois)",
+      category: "Comportement",
+      logic: "AND",
+      conditions: [
+        { column: gmCol, op: ">", value: "0" },
+        { column: moisCol, op: "between", value: ["7", "11"] }
+      ]
+    });
+    segs.push({
+      name: "Client tres regulier (12 mois)",
+      category: "Comportement",
+      logic: "AND",
+      conditions: [
+        { column: gmCol, op: ">", value: "0" },
+        { column: moisCol, op: "==", value: "12" }
+      ]
+    });
+  }
+  if (hasN && cols.has("Pct_var_GM_EUR")) {
+    segs.push({
+      name: "Rocket client (croissance >= +50%)",
+      category: "Comportement",
+      logic: "AND",
+      conditions: [
+        { column: "GM_EUR_N", op: ">", value: "0" },
+        { column: "GM_EUR_N1", op: ">", value: "0" },
+        { column: "Pct_var_GM_EUR", op: ">=", value: "50" }
+      ]
+    });
+    segs.push({
+      name: "Client en croissance (+10% a +50%)",
+      category: "Comportement",
+      logic: "AND",
+      conditions: [
+        { column: "GM_EUR_N", op: ">", value: "0" },
+        { column: "GM_EUR_N1", op: ">", value: "0" },
+        { column: "Pct_var_GM_EUR", op: "between", value: ["10", "50"] }
+      ]
+    });
+    segs.push({
+      name: "Client stagnant (-10% a +10%)",
+      category: "Comportement",
+      logic: "AND",
+      conditions: [
+        { column: "GM_EUR_N", op: ">", value: "0" },
+        { column: "GM_EUR_N1", op: ">", value: "0" },
+        { column: "Pct_var_GM_EUR", op: "between", value: ["-10", "10"] }
+      ]
+    });
+    segs.push({
+      name: "Client en decroissance (-30% a -10%)",
+      category: "Comportement",
+      logic: "AND",
+      conditions: [
+        { column: "GM_EUR_N", op: ">", value: "0" },
+        { column: "GM_EUR_N1", op: ">", value: "0" },
+        { column: "Pct_var_GM_EUR", op: "between", value: ["-30", "-10"] }
+      ]
+    });
+  }
+
+  // ============================================================
+  // BLOC J — RISQUE
+  // ============================================================
+  if (hasN && cols.has("Pct_var_GM_EUR")) {
+    segs.push({
+      name: "Risque churn eleve (baisse > 50%)",
+      category: "Risque",
+      logic: "AND",
+      conditions: [
+        { column: "GM_EUR_N", op: ">", value: "0" },
+        { column: "Pct_var_GM_EUR", op: "<=", value: "-50" }
+      ]
+    });
+    segs.push({
+      name: "A risque de perte (baisse > 30%)",
+      category: "Risque",
+      logic: "AND",
+      conditions: [
+        { column: "GM_EUR_N", op: ">", value: "0" },
+        { column: "Pct_var_GM_EUR", op: "<=", value: "-30" }
+      ]
+    });
+  }
+  if (concentrationThreshold > 0) {
+    segs.push({
+      name: `Risque concentration (>= 5% du portefeuille = ${concentrationThreshold.toLocaleString("fr-FR")} EUR)`,
+      category: "Risque",
+      logic: "AND",
+      conditions: [{ column: gmCol, op: ">=", value: String(concentrationThreshold) }]
+    });
+  }
+
+  // ============================================================
+  // PLACEHOLDERS (donnees externes a importer plus tard)
+  // ============================================================
+  ["Risque compliance (donnees externes)", "NPS / Detracteur (donnees externes)",
+   "Donnees incompletes (donnees externes)", "Cross-sell potentiel (donnees externes)",
+   "White space (donnees externes)"].forEach(name => {
+    segs.push({
+      name, category: "A importer (donnees externes)", logic: "AND",
+      conditions: [{ column: gmCol, op: "==", value: "__NEEDS_EXTERNAL_DATA__" }]
+    });
   });
 
-  // === BLOCS PLACEHOLDER (donnees externes a importer plus tard) ===
-  segs.push({
-    name: "Risque compliance (a importer)",
-    logic: "AND",
-    conditions: [{ column: gmCol, op: "==", value: "__NEEDS_EXTERNAL_DATA__" }]
-  });
-  segs.push({
-    name: "NPS / Detracteur (a importer)",
-    logic: "AND",
-    conditions: [{ column: gmCol, op: "==", value: "__NEEDS_EXTERNAL_DATA__" }]
-  });
-  segs.push({
-    name: "Donnees incompletes (a importer)",
-    logic: "AND",
-    conditions: [{ column: gmCol, op: "==", value: "__NEEDS_EXTERNAL_DATA__" }]
-  });
+  return segs;
+}
 
+document.getElementById("btn-preset-agl").addEventListener("click", () => {
+  const segs = buildAGLFrameworkRules();
+  if (!segs) {
+    alert("Lancez d'abord l'agregation (etape 3) avec la metrique Direct GM et une annee de reference.");
+    return;
+  }
+  if (!confirm(
+    `Charger le framework AGL ?\n\n` +
+    `${segs.length} segments seront generes, organises en 7 categories ` +
+    `(Statut, Cycle de vie, Valeur, Rentabilite, Developpement, Comportement, Risque + A importer).\n\n` +
+    `Cela REMPLACERA les regles actuelles.`
+  )) return;
   STATE.segments = segs;
   saveSegments();
   renderRules();
   setStatus("classify-status",
-    `Preset charge : ${segs.length} segments. Lancez la classification ci-dessous, ou ajustez les seuils dans les regles.`,
+    `Framework AGL charge : ${segs.length} segments. Cliquez maintenant "Lancer la classification".`,
     "success");
+});
+
+// bouton "Avance : editer les regles manuellement"
+document.getElementById("btn-show-rules").addEventListener("click", () => {
+  const sec = document.getElementById("section-rules");
+  sec.style.display = sec.style.display === "none" ? "block" : "none";
+  if (sec.style.display === "block") sec.scrollIntoView({ behavior: "smooth", block: "start" });
 });
 
 document.getElementById("btn-quartiles").addEventListener("click", () => {
@@ -1394,15 +1622,27 @@ function isNumericColumn(col) {
    ETAPE 5 : Classification
    ============================================================= */
 document.getElementById("btn-classify").addEventListener("click", () => {
-  if (!STATE.segments.length) {
-    setStatus("classify-status", "Aucune regle definie.", "error");
-    return;
-  }
   if (!STATE.aggregatedData.length) {
-    setStatus("classify-status", "Lancez d'abord l'agregation.", "error");
+    setStatus("classify-status", "Lancez d'abord l'agregation (etape 3).", "error");
     return;
   }
-  setStatus("classify-status", "Classification en cours...", "info");
+  // (Re)genere automatiquement le framework AGL avec les parametres courants
+  // a chaque clic - garantit que les seuils suivent la fenetre d'audit choisie.
+  const autoSegs = buildAGLFrameworkRules();
+  if (autoSegs && autoSegs.length) {
+    STATE.segments = autoSegs;
+    saveSegments();
+    renderRules();
+  }
+  if (!STATE.segments.length) {
+    setStatus("classify-status",
+      "Impossible de generer les regles AGL (verifier la metrique Direct GM).",
+      "error");
+    return;
+  }
+  setStatus("classify-status",
+    `Classification en cours sur ${STATE.aggregatedData.length.toLocaleString("fr-FR")} clients avec ${STATE.segments.length} segments AGL...`,
+    "info");
 
   STATE.classifiedData = STATE.aggregatedData.map(row => {
     const cls = { ...row };
@@ -1414,7 +1654,7 @@ document.getElementById("btn-classify").addEventListener("click", () => {
   });
 
   setStatus("classify-status",
-    `Classification terminee : ${STATE.classifiedData.length.toLocaleString("fr-FR")} clients classes.`,
+    `Classification terminee : ${STATE.classifiedData.length.toLocaleString("fr-FR")} clients classes sur ${STATE.segments.length} segments organises par categorie.`,
     "success");
   STATE.selectedSegment = null;
   renderRepartition();
@@ -1489,42 +1729,83 @@ function renderRepartition() {
     if (valueKey) vals[r.segment] = (vals[r.segment] || 0) + (r[valueKey] || 0);
   }
   const total = STATE.classifiedData.length;
-  const totalVal = Object.values(vals).reduce((a, b) => a + b, 0) || 1;
-  // ordre = ordre des regles (pour respecter la priorite), avec "Non classe" a la fin
-  const segOrder = STATE.segments.map(s => s.name).filter(n => counts[n]);
-  if (counts["Non classe"]) segOrder.push("Non classe");
-  // si la donnee contient des segments non listes (apres edition de regles), les rajouter
-  Object.keys(counts).forEach(s => { if (!segOrder.includes(s)) segOrder.push(s); });
-  const maxN = Math.max(...Object.values(counts));
 
-  const valueLabel = valueKey ? `Total ${valueKey}` : "";
-  let html = `<table>
-    <thead><tr>
-      <th></th><th>Segment</th><th>Clients</th><th>%</th>
-      ${valueKey ? `<th>${escapeHtml(valueLabel)}</th><th>%</th>` : ""}
-      <th></th>
-    </tr></thead><tbody>`;
-  segOrder.forEach(s => {
-    const n = counts[s];
-    const v = vals[s] || 0;
-    const widthPct = Math.round(n / maxN * 100);
-    const isSelected = STATE.selectedSegment === s;
-    html += `<tr class="seg-row" data-segment="${escapeHtml(s)}"
-      style="cursor: pointer; ${isSelected ? "background: #dbeafe;" : ""}">
-      <td><input type="radio" name="seg-pick" ${isSelected ? "checked" : ""}></td>
-      <td><strong>${escapeHtml(s)}</strong></td>
-      <td>${n.toLocaleString("fr-FR")}</td>
-      <td>${(n / total * 100).toFixed(1)}%</td>
-      ${valueKey ? `<td>${v.toLocaleString("fr-FR", { maximumFractionDigits: 0 })}</td>
-                    <td>${(v / totalVal * 100).toFixed(1)}%</td>` : ""}
-      <td style="min-width: 80px;"><span class="bar" style="width: ${widthPct}%;"></span></td>
-    </tr>`;
+  // table de correspondance nom -> categorie (depuis STATE.segments)
+  const catBySegment = {};
+  STATE.segments.forEach(s => { catBySegment[s.name] = s.category || "Autres"; });
+  // ordre fixe des categories (priorite logique)
+  const CATEGORY_ORDER = [
+    "Statut", "Cycle de vie", "Valeur", "Rentabilite", "Developpement",
+    "Comportement", "Risque", "A importer (donnees externes)", "Autres"
+  ];
+
+  // groupe les segments par categorie en respectant l'ordre des regles dans STATE.segments
+  const groups = {};
+  STATE.segments.forEach(s => {
+    if (!counts[s.name] && !catBySegment[s.name]) return;
+    const cat = s.category || "Autres";
+    if (!groups[cat]) groups[cat] = [];
+    groups[cat].push(s.name);
   });
-  html += `<tr style="background: #f3f4f6; font-weight: 600;">
-    <td></td><td>TOTAL</td><td>${total.toLocaleString("fr-FR")}</td><td>100%</td>
-    ${valueKey ? `<td>${totalVal.toLocaleString("fr-FR", { maximumFractionDigits: 0 })}</td><td>100%</td>` : ""}
-    <td></td></tr>`;
-  html += "</tbody></table>";
+  // ajoute les segments orphelins (ex: "Non classe", anciens segments non listes)
+  Object.keys(counts).forEach(name => {
+    const cat = catBySegment[name] || (name === "Non classe" ? "Non classe" : "Autres");
+    if (!groups[cat]) groups[cat] = [];
+    if (!groups[cat].includes(name)) groups[cat].push(name);
+  });
+
+  const orderedCats = [
+    ...CATEGORY_ORDER.filter(c => groups[c]),
+    ...Object.keys(groups).filter(c => !CATEGORY_ORDER.includes(c) && c !== "Non classe"),
+    ...(groups["Non classe"] ? ["Non classe"] : [])
+  ];
+
+  // construit le HTML categorie par categorie
+  let html = "";
+  orderedCats.forEach(cat => {
+    const segNames = groups[cat];
+    // total clients pour cette categorie (somme des comptes ; un client peut etre dans 1 seul segment via first-match)
+    const catTotal = segNames.reduce((s, n) => s + (counts[n] || 0), 0);
+    html += `<details open style="margin-bottom: 12px; border: 1px solid #e3e6ea; border-radius: 6px; padding: 8px 10px; background: #fafbfc;">
+      <summary style="cursor: pointer; font-weight: 600; color: #1f2937;">
+        ${escapeHtml(cat)} <span class="muted" style="font-weight: 400;">(${catTotal.toLocaleString("fr-FR")} client${catTotal > 1 ? "s" : ""})</span>
+      </summary>
+      <table style="margin-top: 8px;">
+        <thead><tr>
+          <th style="width: 20px;"></th>
+          <th>Segment</th>
+          <th style="text-align: right;">Clients</th>
+          <th style="text-align: right;">%</th>
+          ${valueKey ? `<th style="text-align: right;">${escapeHtml(valueKey)}</th>` : ""}
+        </tr></thead>
+        <tbody>`;
+    segNames.forEach(name => {
+      const n = counts[name] || 0;
+      const v = vals[name] || 0;
+      const isSelected = STATE.selectedSegment === name;
+      // segments "donnees externes" : grise si 0 client
+      const isPlaceholder = cat === "A importer (donnees externes)";
+      html += `<tr class="seg-row" data-segment="${escapeHtml(name)}"
+        style="cursor: pointer; ${isSelected ? "background: #dbeafe;" : ""}
+               ${isPlaceholder && n === 0 ? "opacity: 0.5;" : ""}">
+        <td><input type="radio" name="seg-pick" ${isSelected ? "checked" : ""}></td>
+        <td>${escapeHtml(name)}</td>
+        <td style="text-align: right;">${n.toLocaleString("fr-FR")}</td>
+        <td style="text-align: right;">${total ? (n / total * 100).toFixed(1) : "0.0"}%</td>
+        ${valueKey ? `<td style="text-align: right;">${v.toLocaleString("fr-FR", { maximumFractionDigits: 0 })}</td>` : ""}
+      </tr>`;
+    });
+    html += `</tbody></table></details>`;
+  });
+
+  // total general
+  html += `<div style="margin-top: 12px; padding: 8px 10px; background: #f3f4f6; border-radius: 6px; font-weight: 600;">
+    TOTAL classifie : ${total.toLocaleString("fr-FR")} client${total > 1 ? "s" : ""}
+    ${valueKey ? ` | Somme ${valueKey} : ${
+      Object.values(vals).reduce((a, b) => a + b, 0).toLocaleString("fr-FR", { maximumFractionDigits: 0 })
+    }` : ""}
+  </div>`;
+
   document.getElementById("repartition").innerHTML = html;
 
   // delegation : clic sur une ligne -> selectionne le segment
