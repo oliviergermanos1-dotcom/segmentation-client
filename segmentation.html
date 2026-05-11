@@ -1982,11 +1982,15 @@ function renderSegmentDetail() {
     (r.segments && r.segments.includes(seg)) || r.segment === seg
   );
   titleEl.textContent = `Clients du segment "${seg}"`;
-  hintEl.textContent = `${rows.length.toLocaleString("fr-FR")} client(s) dans ce segment. Tableau limite a 200 lignes - l'export Excel contient tout.`;
+  hintEl.innerHTML = `<strong>${rows.length.toLocaleString("fr-FR")} client(s)</strong> dans ce segment.
+    Tableau limite a 200 lignes pour l'apercu - l'export Excel contient tous les clients.`;
   actionsEl.innerHTML = `
     <button id="btn-export-seg-xlsx">Exporter Excel (ce segment)</button>
     <button id="btn-export-seg-csv" class="secondary">Exporter CSV (ce segment)</button>
     <button id="btn-clear-seg" class="secondary">Deselectionner</button>
+    <label style="display: inline-flex; align-items: center; gap: 4px; margin-left: 8px; font-size: 13px;">
+      <input type="checkbox" id="seg-detail-all-cols"> Afficher toutes les colonnes
+    </label>
   `;
   document.getElementById("btn-export-seg-xlsx").onclick = () => exportSegment(seg, "xlsx");
   document.getElementById("btn-export-seg-csv").onclick = () => exportSegment(seg, "csv");
@@ -1995,14 +1999,89 @@ function renderSegmentDetail() {
     renderRepartition();
     renderSegmentDetail();
   };
-  renderTable("classified-preview", rows.slice(0, 200),
-    rows.length ? Object.keys(rows[0]) : []);
+  document.getElementById("seg-detail-all-cols").onchange = () => renderSegmentDetailTable(rows);
+
+  renderSegmentDetailTable(rows);
+}
+
+// Affiche le tableau des clients du segment selectionne, en mode
+// "essentiel" (nom + metriques cles + segments matches) par defaut,
+// ou "toutes colonnes" si la case est cochee.
+function renderSegmentDetailTable(rows) {
+  const showAll = !!document.getElementById("seg-detail-all-cols")?.checked;
+  if (!rows.length) {
+    document.getElementById("classified-preview").innerHTML = `<p class="muted">Aucun client.</p>`;
+    return;
+  }
+  const keyCol = document.getElementById("client-key")?.value || Object.keys(rows[0])[0];
+
+  let cols;
+  if (showAll) {
+    cols = Object.keys(rows[0]).filter(c => c !== "segments");
+  } else {
+    // colonnes essentielles dans un ordre lisible : nom puis valeurs cles
+    const preferred = [
+      keyCol,
+      "GM_EUR_N", "GM_EUR_N1", "Pct_var_GM_EUR",
+      "CA_EUR_N", "Marge_pct_N",
+      "Nb_operations_N", "Nb_mois_actifs_N",
+      "Annees_actives_hist", "Mois_depuis_derniere_activite_hist",
+      "Nb_Activity_Name_EN_distincts_N",
+      "Rank_GM_N",
+      "Reporting Entity Label", "Market Segment Name", "Activity Name (EN)"
+    ];
+    cols = preferred.filter(c => c in rows[0]);
+  }
+  // tri par GM_EUR_N decroissant si dispo
+  const sortKey = ["GM_EUR_N", "GM_EUR", "CA_EUR_N", "CA_EUR"].find(k => k in rows[0]);
+  const sorted = sortKey ? [...rows].sort((a, b) => (b[sortKey] || 0) - (a[sortKey] || 0)) : rows;
+
+  // construit le tableau avec colonne "Segments matches" en plus en mode essentiel
+  const c = document.getElementById("classified-preview");
+  const preview = sorted.slice(0, 200);
+  const html = `<div class="table-wrap"><table>
+    <thead><tr>
+      <th style="text-align: right; width: 40px;">#</th>
+      ${cols.map(col => {
+        const align = isNumericColumn(col) ? "right" : "left";
+        return `<th style="text-align: ${align};">${escapeHtml(col)}</th>`;
+      }).join("")}
+      ${!showAll ? `<th>Autres segments matches</th>` : ""}
+    </tr></thead>
+    <tbody>${preview.map((r, i) =>
+      `<tr>
+        <td style="text-align: right; color: #6b7280;">${i + 1}</td>
+        ${cols.map((col, ci) => {
+          const v = r[col];
+          const align = isNumericColumn(col) ? "right" : "left";
+          const weight = ci === 0 ? "font-weight: 600;" : "";
+          return `<td style="text-align: ${align}; ${weight}">${escapeHtml(formatCell(v))}</td>`;
+        }).join("")}
+        ${!showAll ? `<td style="font-size: 12px; color: #6b7280;">${
+          escapeHtml((r.segments || []).filter(s => s !== STATE.selectedSegment).join(", ") || "-")
+        }</td>` : ""}
+      </tr>`
+    ).join("")}</tbody>
+  </table></div>
+  <p class="muted" style="margin-top: 6px;">Apercu : ${preview.length} sur ${rows.length} client(s).</p>`;
+  c.innerHTML = html;
+}
+
+// Aplatit l'array .segments en string lisible pour Excel/CSV
+function flattenForExport(rows) {
+  return rows.map(r => {
+    const flat = { ...r };
+    if (Array.isArray(flat.segments)) {
+      flat.segments = flat.segments.join(" | ");
+    }
+    return flat;
+  });
 }
 
 function exportSegment(segName, format) {
-  const rows = STATE.classifiedData.filter(r =>
+  const rows = flattenForExport(STATE.classifiedData.filter(r =>
     (r.segments && r.segments.includes(segName)) || r.segment === segName
-  );
+  ));
   if (!rows.length) { alert("Aucun client dans ce segment."); return; }
   const safeName = segName.replace(/[^A-Za-z0-9_-]+/g, "_").slice(0, 40);
   if (format === "xlsx") {
@@ -2051,26 +2130,25 @@ function exportXlsx() {
   // 2) un onglet par segment (nom tronque + sanitize) - mode multi-flag
   const usedNames = new Set(["_repartition"]);
   segOrder.forEach(seg => {
-    const rows = STATE.classifiedData.filter(r =>
+    const rows = flattenForExport(STATE.classifiedData.filter(r =>
       (r.segments && r.segments.includes(seg)) || r.segment === seg
-    );
+    ));
     if (!rows.length) return;
     let safe = seg.replace(/[\\\/\*\[\]:\?]/g, "_").slice(0, 31) || "segment";
-    // garantit unicite
     let n = 1;
     while (usedNames.has(safe)) { safe = (seg.slice(0, 28) + "_" + n).slice(0, 31); n++; }
     usedNames.add(safe);
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), safe);
   });
 
-  // 3) onglet "all" en fin
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(STATE.classifiedData), "_tous_clients");
+  // 3) onglet "all" en fin (segments serialise en string lisible)
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(flattenForExport(STATE.classifiedData)), "_tous_clients");
 
   XLSX.writeFile(wb, "clients_segmentes.xlsx");
 }
 
 function exportCsv() {
-  const ws = XLSX.utils.json_to_sheet(STATE.classifiedData);
+  const ws = XLSX.utils.json_to_sheet(flattenForExport(STATE.classifiedData));
   const csv = XLSX.utils.sheet_to_csv(ws);
   const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
   download(blob, "clients_segmentes.csv");
