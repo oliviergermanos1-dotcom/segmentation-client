@@ -348,40 +348,55 @@ document.getElementById("file-input").addEventListener("change", async (e) => {
         cellFormula: false, cellHTML: false, cellStyles: false,
         cellNF: false, cellDates: false
       });
-      const ws = wb.Sheets[wb.SheetNames[0]];
       setStatus("upload-status",
-        `[${fi + 1}/${files.length}] "${file.name}" : conversion en cours...`, "info");
+        `[${fi + 1}/${files.length}] "${file.name}" : conversion en cours (${wb.SheetNames.length} feuille(s))...`, "info");
       await yieldUI();
-      const raw = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null, blankrows: false });
-      console.log(`[upload] ${file.name}: ${raw.length} lignes brutes (incl. en-tete)`);
+
+      // essaie toutes les feuilles, prend celle avec le plus de lignes
+      let raw = [];
+      let sheetName = wb.SheetNames[0];
+      const sheetStats = [];
+      for (const name of wb.SheetNames) {
+        const ws = wb.Sheets[name];
+        const tmp = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null, blankrows: false });
+        sheetStats.push({ name, rows: tmp.length });
+        if (tmp.length > raw.length) { raw = tmp; sheetName = name; }
+      }
+      console.log(`[upload] ${file.name}: feuilles =`, sheetStats, `-> choisie: "${sheetName}" (${raw.length} lignes)`);
       console.log(`[upload] 3 premieres lignes:`, raw.slice(0, 3));
 
       const headerIdx = detectHeaderRow(raw);
       console.log(`[upload] ligne d'en-tete detectee: index ${headerIdx}`);
-      if (raw.length <= headerIdx + 1) {
-        setStatus("upload-status",
-          `Fichier "${file.name}" : aucune donnee detectee apres la ligne d'en-tete (index ${headerIdx}).`,
-          "error");
-        return;
-      }
-      const headers = raw[headerIdx].map(h => h == null ? "" : String(h).trim());
-      console.log(`[upload] ${headers.filter(Boolean).length} colonnes detectees:`, headers);
 
-      // panneau diagnostic visible
+      // affiche le diagnostic AVANT le check d'erreur, pour aider au debogage
       const diag = document.getElementById("upload-diagnostic");
-      const sampleRow = raw[headerIdx + 1] || [];
+      const previewHeaders = raw[headerIdx] ? raw[headerIdx].map(h => h == null ? "" : String(h).trim()) : [];
+      const previewSample = raw[headerIdx + 1] || raw[0] || [];
+      const sheetsHtml = sheetStats.map(s =>
+        `<li>"${escapeHtml(s.name)}" : ${s.rows} ligne(s)${s.name === sheetName ? " <strong>(choisie)</strong>" : ""}</li>`
+      ).join("");
       diag.innerHTML = `
         <details open style="background: #fffbeb; border: 1px solid #fde68a; border-radius: 6px; padding: 10px;">
-          <summary><strong>Diagnostic du fichier "${escapeHtml(file.name)}"</strong> (ouvre la console F12 pour plus)</summary>
+          <summary><strong>Diagnostic du fichier "${escapeHtml(file.name)}"</strong> (ouvrez la console F12 pour plus)</summary>
           <ul style="font-size: 13px; margin: 8px 0;">
-            <li><strong>${raw.length}</strong> lignes brutes lues dans la feuille</li>
-            <li>Ligne d'en-tete detectee : <strong>index ${headerIdx}</strong> (donc ${headerIdx} lignes avant)</li>
-            <li><strong>${headers.filter(Boolean).length}</strong> colonnes detectees</li>
-            <li>Colonnes : <code style="font-size: 11px;">${escapeHtml(headers.filter(Boolean).slice(0, 10).join(" | "))}${headers.length > 10 ? " | ..." : ""}</code></li>
-            <li>Premiere ligne de donnees (apercu) : <code style="font-size: 11px;">${escapeHtml(JSON.stringify(sampleRow.slice(0, 5)))}</code></li>
+            <li>Feuilles dans le classeur :<ul>${sheetsHtml}</ul></li>
+            <li><strong>${raw.length}</strong> lignes brutes lues dans la feuille choisie</li>
+            <li>Ligne d'en-tete detectee : <strong>index ${headerIdx}</strong></li>
+            <li><strong>${previewHeaders.filter(Boolean).length}</strong> colonnes detectees</li>
+            <li>Colonnes : <code style="font-size: 11px;">${escapeHtml(previewHeaders.filter(Boolean).slice(0, 10).join(" | "))}${previewHeaders.length > 10 ? " | ..." : ""}</code></li>
+            <li>Apercu 1ere ligne de donnees : <code style="font-size: 11px;">${escapeHtml(JSON.stringify(previewSample.slice(0, 5)))}</code></li>
           </ul>
         </details>
       `;
+
+      if (raw.length <= headerIdx + 1) {
+        setStatus("upload-status",
+          `Fichier "${file.name}" : ${raw.length} ligne(s) lue(s) au total, aucune donnee apres la ligne d'en-tete. Verifiez le diagnostic ci-dessous : la bonne feuille est-elle choisie ? Le fichier contient-il bien des donnees ?`,
+          "error");
+        return;
+      }
+      const headers = previewHeaders;
+      console.log(`[upload] ${headers.filter(Boolean).length} colonnes detectees:`, headers);
 
       setStatus("upload-status",
         `[${fi + 1}/${files.length}] "${file.name}" : indexation de ${(raw.length - headerIdx - 1).toLocaleString("fr-FR")} lignes...`,
