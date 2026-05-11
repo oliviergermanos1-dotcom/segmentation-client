@@ -193,10 +193,18 @@
   <div class="section-head">
     <h2><span class="badge">3</span> Agreger par client</h2>
   </div>
-  <div class="grid grid-2">
+  <div class="grid grid-3">
     <div>
       <label>Colonne identifiant le client</label>
       <select id="client-key"></select>
+    </div>
+    <div>
+      <label>Annee de reference (N)</label>
+      <select id="ref-year"></select>
+      <p class="muted" style="margin: 4px 0 0; font-size: 12px;">
+        N-1 et l'historique sont calcules automatiquement. Cycle de vie =
+        comparaison N vs N-1 vs avant.
+      </p>
     </div>
     <div>
       <label>Metriques a sommer</label>
@@ -239,6 +247,7 @@
       <div class="metric-label">Regles definies</div>
       <div class="metric-value" id="rules-count">0</div>
     </div>
+    <button id="btn-preset-agl">Preset Segmentation AGL (complete)</button>
     <button class="secondary" id="btn-quartiles">Preset quartiles CA</button>
     <button class="secondary" id="btn-export-rules">Exporter regles (JSON)</button>
     <input type="file" id="import-rules" accept=".json" style="display: none;">
@@ -293,10 +302,26 @@ const STATE = {
 // colonnes par defaut quand aucune donnee n'est encore agregee
 // (permet de definir des regles a l'avance)
 const DEFAULT_AGG_COLUMNS = [
-  "CA_EUR", "GM_EUR", "TEU", "Freight_Ton",
+  // metriques globales (toujours calculees)
+  "CA_EUR", "GM_EUR", "Billing_HT_EUR", "TEU", "Freight_Ton",
   "Nb_operations", "Nb_mois_actifs",
   "Premiere_activite", "Derniere_activite",
-  "Customer", "HQ CTO Customer Name", "Market Segment Name", "Reporting Entity Label"
+  // metriques split par periode (calculees si annee de reference choisie)
+  "GM_EUR_N", "GM_EUR_N1", "GM_EUR_hist",
+  "CA_EUR_N", "CA_EUR_N1", "CA_EUR_hist",
+  "TEU_N", "Freight_Ton_N",
+  "Pct_var_GM_EUR", "Pct_var_CA_EUR",
+  "Nb_operations_N", "Nb_operations_hist",
+  "Nb_mois_actifs_N", "Nb_mois_actifs_hist",
+  "Annees_actives_hist", "Derniere_activite_hist",
+  "Mois_depuis_derniere_activite_hist",
+  // distincts par dimension
+  "Nb_Activity_Name_EN_distincts", "Nb_Activity_Name_EN_distincts_N",
+  "Nb_Shipping_Type_Name_distincts", "Nb_ARGOS_Type_Name_distincts",
+  // dimensions usuelles
+  "Customer", "HQ CTO Customer Name", "Market Segment Name", "Reporting Entity Label",
+  "Activity Name (EN)", "Shipping Type Name", "ARGOS Type Name",
+  "CTO Email", "3rd Party Customer CTO"
 ];
 
 const RULES_KEY = "segmentation-client-rules";
@@ -718,6 +743,20 @@ function renderAggregateSection() {
     keySel.dataset.sig = sig;
   }
 
+  // annee de reference : detecte toutes les annees presentes
+  const yearSel = document.getElementById("ref-year");
+  if (STATE.columns.includes("Year")) {
+    const years = [...new Set(STATE.rawData.map(r => parseInt(r.Year, 10)).filter(y => !isNaN(y)))]
+      .sort((a, b) => b - a); // plus recente en premier
+    const sig = years.join(",");
+    if (yearSel.dataset.sig !== sig) {
+      yearSel.innerHTML = years.map(y => `<option value="${y}">${y}</option>`).join("");
+      yearSel.dataset.sig = sig;
+    }
+  } else if (!yearSel.options.length) {
+    yearSel.innerHTML = `<option value="">(pas de colonne Year)</option>`;
+  }
+
   // metriques numeriques connues
   const metricsBox = document.getElementById("metrics-list");
   const metricsSig = Object.keys(NUMERIC_METRICS).filter(m => STATE.columns.includes(m)).join("|");
@@ -759,8 +798,21 @@ function renderAggregateSection() {
   }
 }
 
+// dimensions sur lesquelles on compte le nombre de valeurs distinctes par client
+// (pour mono-produit / multi-equipe / cross-sell)
+const COUNT_DISTINCT_DIMS = [
+  "Activity Name (EN)", "Dim Activity[Activity Name (EN)]",
+  "ARGOS Type Name", "Dim Activity[ARGOS Type Name]",
+  "Shipping Type Name", "Dim Shipping Type[Shipping Type Name]",
+  "Product Name"
+];
+function shortDimName(dim) {
+  return dim.replace(/^Dim [^[]+\[/, "").replace(/\]$/, "").replace(/[^A-Za-z0-9]+/g, "_");
+}
+
 document.getElementById("btn-aggregate").addEventListener("click", () => {
   const key = document.getElementById("client-key").value;
+  const refYear = parseInt(document.getElementById("ref-year").value, 10);
   const metricsSelected = Array.from(
     document.querySelectorAll("#metrics-list input:checked")
   ).map(cb => cb.dataset.metric);
@@ -773,7 +825,12 @@ document.getElementById("btn-aggregate").addEventListener("click", () => {
     return;
   }
 
-  setStatus("agg-status", "Agregation en cours...", "info");
+  const hasYear = STATE.columns.includes("Year") && !isNaN(refYear);
+  STATE.refYear = hasYear ? refYear : null;
+
+  setStatus("agg-status",
+    hasYear ? `Agregation en cours (N = ${refYear}, N-1 = ${refYear - 1})...` : "Agregation en cours...",
+    "info");
 
   const groups = new Map();
   for (const r of STATE.filteredData) {
@@ -785,23 +842,95 @@ document.getElementById("btn-aggregate").addEventListener("click", () => {
   const agg = [];
   for (const [k, rows] of groups.entries()) {
     const o = { [key]: k };
+
+    // split par periode si on a une annee de reference
+    const rowsN = hasYear ? rows.filter(r => parseInt(r.Year, 10) === refYear) : rows;
+    const rowsN1 = hasYear ? rows.filter(r => parseInt(r.Year, 10) === refYear - 1) : [];
+    const rowsHist = hasYear ? rows.filter(r => parseInt(r.Year, 10) < refYear) : [];
+
+    // metriques sommees : overall + N + N-1 + hist + variation
     metricsSelected.forEach(m => {
       const out = NUMERIC_METRICS[m];
-      o[out] = rows.reduce((s, r) => s + (parseFloat(r[m]) || 0), 0);
+      const sumAll = rows.reduce((s, r) => s + (parseFloat(r[m]) || 0), 0);
+      o[out] = sumAll;
+      if (hasYear) {
+        const sumN = rowsN.reduce((s, r) => s + (parseFloat(r[m]) || 0), 0);
+        const sumN1 = rowsN1.reduce((s, r) => s + (parseFloat(r[m]) || 0), 0);
+        const sumHist = rowsHist.reduce((s, r) => s + (parseFloat(r[m]) || 0), 0);
+        o[`${out}_N`] = sumN;
+        o[`${out}_N1`] = sumN1;
+        o[`${out}_hist`] = sumHist;
+        // variation N vs N-1 en pourcentage : (N - N1) / |N1| * 100
+        if (sumN1 !== 0) {
+          o[`Pct_var_${out}`] = Math.round(((sumN - sumN1) / Math.abs(sumN1)) * 1000) / 10;
+        } else if (sumN !== 0) {
+          o[`Pct_var_${out}`] = sumN > 0 ? 9999 : -9999; // nouveau ou disparu
+        } else {
+          o[`Pct_var_${out}`] = 0;
+        }
+      }
     });
+
+    // nombre d'operations : overall + N + hist
     if (STATE.columns.includes("JobfileNumber")) {
-      const set = new Set();
-      rows.forEach(r => { if (r.JobfileNumber != null) set.add(r.JobfileNumber); });
-      o.Nb_operations = set.size;
-    }
-    if (STATE.columns.includes("Period")) {
-      const periods = rows.map(r => r.Period).filter(p => p);
-      if (periods.length) {
-        o.Premiere_activite = periods.reduce((a, b) => a < b ? a : b);
-        o.Derniere_activite = periods.reduce((a, b) => a > b ? a : b);
-        o.Nb_mois_actifs = new Set(periods).size;
+      const setAll = new Set();
+      rows.forEach(r => { if (r.JobfileNumber != null) setAll.add(r.JobfileNumber); });
+      o.Nb_operations = setAll.size;
+      if (hasYear) {
+        const sN = new Set(), sH = new Set();
+        rowsN.forEach(r => { if (r.JobfileNumber != null) sN.add(r.JobfileNumber); });
+        rowsHist.forEach(r => { if (r.JobfileNumber != null) sH.add(r.JobfileNumber); });
+        o.Nb_operations_N = sN.size;
+        o.Nb_operations_hist = sH.size;
       }
     }
+
+    // periodes : premier/dernier global + dernier hist + mois actifs N + annees actives
+    if (STATE.columns.includes("Period")) {
+      const periodsAll = rows.map(r => r.Period).filter(p => p);
+      if (periodsAll.length) {
+        o.Premiere_activite = periodsAll.reduce((a, b) => a < b ? a : b);
+        o.Derniere_activite = periodsAll.reduce((a, b) => a > b ? a : b);
+        o.Nb_mois_actifs = new Set(periodsAll).size;
+      }
+      if (hasYear) {
+        const periodsN = rowsN.map(r => r.Period).filter(p => p);
+        const periodsHist = rowsHist.map(r => r.Period).filter(p => p);
+        o.Nb_mois_actifs_N = new Set(periodsN).size;
+        o.Nb_mois_actifs_hist = new Set(periodsHist).size;
+        if (periodsHist.length) {
+          o.Derniere_activite_hist = periodsHist.reduce((a, b) => a > b ? a : b);
+        } else {
+          o.Derniere_activite_hist = "";
+        }
+        // nombre d'annees distinctes (avant N) avec au moins une operation
+        const yearsHist = new Set(rowsHist.map(r => parseInt(r.Year, 10)).filter(y => !isNaN(y)));
+        o.Annees_actives_hist = yearsHist.size;
+        // nombre de mois entre derniere activite hist et debut de N (en mois calendaires approx)
+        if (periodsHist.length) {
+          const last = o.Derniere_activite_hist; // "YYYY-MM"
+          const [ly, lm] = last.split("-").map(Number);
+          const monthsSince = (refYear - ly) * 12 + (1 - lm); // depuis fin du dernier mois jusqu'a janvier de N
+          o.Mois_depuis_derniere_activite_hist = Math.max(0, monthsSince);
+        } else {
+          o.Mois_depuis_derniere_activite_hist = 9999;
+        }
+      }
+    }
+
+    // nombre de valeurs distinctes par dimension : overall + N
+    COUNT_DISTINCT_DIMS.forEach(dim => {
+      if (STATE.columns.includes(dim)) {
+        const distinct = new Set();
+        rows.forEach(r => { if (r[dim] != null && r[dim] !== "") distinct.add(r[dim]); });
+        o[`Nb_${shortDimName(dim)}_distincts`] = distinct.size;
+        if (hasYear) {
+          const distinctN = new Set();
+          rowsN.forEach(r => { if (r[dim] != null && r[dim] !== "") distinctN.add(r[dim]); });
+          o[`Nb_${shortDimName(dim)}_distincts_N`] = distinctN.size;
+        }
+      }
+    });
     extrasSelected.forEach(extra => {
       if (STATE.columns.includes(extra) && extra !== key) {
         const counts = new Map();
@@ -866,6 +995,202 @@ document.getElementById("btn-clear-rules").addEventListener("click", () => {
   STATE.segments = [];
   saveSegments();
   renderRules();
+});
+
+document.getElementById("btn-preset-agl").addEventListener("click", () => {
+  if (!STATE.aggregatedData.length) {
+    alert("Lancez d'abord l'agregation (etape 3) avec la metrique Direct GM et une annee de reference.");
+    return;
+  }
+  const cols = new Set(STATE.aggColumns);
+  const hasN = cols.has("GM_EUR_N");
+  // calcule des percentiles sur GM_EUR_N (ou GM_EUR si pas d'annee)
+  const gmCol = hasN ? "GM_EUR_N" : "GM_EUR";
+  if (!cols.has(gmCol)) {
+    alert("Cochez \"Direct GM in EUR\" dans les metriques avant de lancer l'agregation.");
+    return;
+  }
+  const positive = STATE.aggregatedData.map(r => r[gmCol]).filter(v => typeof v === "number" && v > 0).sort((a, b) => a - b);
+  const pct = p => positive.length ? Math.round(positive[Math.min(Math.floor(positive.length * p), positive.length - 1)]) : 0;
+  const p95 = pct(0.95), p80 = pct(0.80), p50 = pct(0.50);
+  // detection des colonnes de comptage d'activite (peut etre Activity_Name_EN ou variante Dim)
+  const actCol = STATE.aggColumns.find(c => /^Nb_Activity_Name_EN_distincts$/.test(c))
+              || STATE.aggColumns.find(c => /Activity.*distincts$/.test(c) && !/_N$/.test(c));
+
+  if (!confirm(
+    `Charger le preset Segmentation AGL ?\n\n` +
+    `Cela va REMPLACER les regles actuelles par ~16 segments bases sur :\n` +
+    `- GM_EUR_N : seuils VVIP p95 = ${p95.toLocaleString("fr-FR")}, VIP p80 = ${p80.toLocaleString("fr-FR")}, Standard p50 = ${p50.toLocaleString("fr-FR")}\n` +
+    (hasN ? `- Comparaison N (${STATE.refYear}) vs N-1 (${STATE.refYear - 1}) vs historique\n` : `- Pas d'annee de reference : segments cycle de vie desactives\n`) +
+    `- Vous pourrez modifier chaque seuil apres.`
+  )) return;
+
+  const segs = [];
+
+  // === BLOC CYCLE DE VIE (necessite annee de reference) ===
+  if (hasN) {
+    // 1. Perte : GM_EUR_N <= 0 (mais a eu de l'activite en N, sinon dormant/perdu)
+    segs.push({
+      name: "Perte",
+      logic: "AND",
+      conditions: [
+        { column: "GM_EUR_N", op: "<=", value: "0" },
+        { column: "Nb_mois_actifs_N", op: ">", value: "0" }
+      ]
+    });
+    // 2. Nouveau client gagne : actif en N, aucun historique
+    segs.push({
+      name: "Nouveau client gagne",
+      logic: "AND",
+      conditions: [
+        { column: "GM_EUR_N", op: ">", value: "0" },
+        { column: "Annees_actives_hist", op: "==", value: "0" }
+      ]
+    });
+    // 3. Reconquis : actif en N, derniere activite hist >= 12 mois avant
+    segs.push({
+      name: "Client reconquis",
+      logic: "AND",
+      conditions: [
+        { column: "GM_EUR_N", op: ">", value: "0" },
+        { column: "Annees_actives_hist", op: ">=", value: "1" },
+        { column: "Mois_depuis_derniere_activite_hist", op: ">=", value: "12" }
+      ]
+    });
+    // 4. Client perdu : aucun GM en N, GM en N-1
+    segs.push({
+      name: "Client perdu",
+      logic: "AND",
+      conditions: [
+        { column: "GM_EUR_N", op: "==", value: "0" },
+        { column: "GM_EUR_N1", op: ">", value: "0" }
+      ]
+    });
+    // 5. Client dormant : aucun GM en N, historique existant (mais pas N-1)
+    segs.push({
+      name: "Client dormant",
+      logic: "AND",
+      conditions: [
+        { column: "GM_EUR_N", op: "==", value: "0" },
+        { column: "GM_EUR_hist", op: ">", value: "0" }
+      ]
+    });
+    // 6. Client a risque : actif mais GM en chute > 30%
+    segs.push({
+      name: "Client a risque de perte",
+      logic: "AND",
+      conditions: [
+        { column: "GM_EUR_N", op: ">", value: "0" },
+        { column: "Pct_var_GM_EUR", op: "<=", value: "-30" }
+      ]
+    });
+    // 7. Client en croissance : actif et GM en hausse > 20%
+    segs.push({
+      name: "Client en croissance",
+      logic: "AND",
+      conditions: [
+        { column: "GM_EUR_N", op: ">", value: "0" },
+        { column: "Pct_var_GM_EUR", op: ">=", value: "20" }
+      ]
+    });
+  }
+
+  // === BLOC VALEUR (sur GM_N si dispo, sinon GM total) ===
+  segs.push({
+    name: "VVIP",
+    logic: "AND",
+    conditions: [{ column: gmCol, op: ">=", value: String(p95) }]
+  });
+  segs.push({
+    name: "VIP",
+    logic: "AND",
+    conditions: [{ column: gmCol, op: ">=", value: String(p80) }]
+  });
+  segs.push({
+    name: "Standard",
+    logic: "AND",
+    conditions: [{ column: gmCol, op: ">=", value: String(p50) }]
+  });
+
+  // === BLOC COMPORTEMENT ===
+  const moisCol = hasN ? "Nb_mois_actifs_N" : "Nb_mois_actifs";
+  if (cols.has(moisCol)) {
+    segs.push({
+      name: "Client spot (1 seul mois)",
+      logic: "AND",
+      conditions: [
+        { column: gmCol, op: ">", value: "0" },
+        { column: moisCol, op: "==", value: "1" }
+      ]
+    });
+    segs.push({
+      name: "Client occasionnel (2-5 mois)",
+      logic: "AND",
+      conditions: [
+        { column: gmCol, op: ">", value: "0" },
+        { column: moisCol, op: "between", value: ["2", "5"] }
+      ]
+    });
+    segs.push({
+      name: "Client recurrent (>=6 mois)",
+      logic: "AND",
+      conditions: [
+        { column: gmCol, op: ">", value: "0" },
+        { column: moisCol, op: ">=", value: "6" }
+      ]
+    });
+  }
+
+  // === BLOC DEVELOPPEMENT (mono / multi-produit) ===
+  if (actCol) {
+    segs.push({
+      name: "Mono-produit (cross-sell target)",
+      logic: "AND",
+      conditions: [
+        { column: gmCol, op: ">", value: "0" },
+        { column: actCol, op: "==", value: "1" }
+      ]
+    });
+    segs.push({
+      name: "Multi-equipe (>=2 activites)",
+      logic: "AND",
+      conditions: [
+        { column: gmCol, op: ">", value: "0" },
+        { column: actCol, op: ">=", value: "2" }
+      ]
+    });
+  }
+
+  // === BLOC LONG TAIL (catch-all valeur faible) ===
+  segs.push({
+    name: "Long Tail",
+    logic: "AND",
+    conditions: [{ column: gmCol, op: ">", value: "0" }]
+  });
+
+  // === BLOCS PLACEHOLDER (donnees externes a importer plus tard) ===
+  segs.push({
+    name: "Risque compliance (a importer)",
+    logic: "AND",
+    conditions: [{ column: gmCol, op: "==", value: "__NEEDS_EXTERNAL_DATA__" }]
+  });
+  segs.push({
+    name: "NPS / Detracteur (a importer)",
+    logic: "AND",
+    conditions: [{ column: gmCol, op: "==", value: "__NEEDS_EXTERNAL_DATA__" }]
+  });
+  segs.push({
+    name: "Donnees incompletes (a importer)",
+    logic: "AND",
+    conditions: [{ column: gmCol, op: "==", value: "__NEEDS_EXTERNAL_DATA__" }]
+  });
+
+  STATE.segments = segs;
+  saveSegments();
+  renderRules();
+  setStatus("classify-status",
+    `Preset charge : ${segs.length} segments. Lancez la classification ci-dessous, ou ajustez les seuils dans les regles.`,
+    "success");
 });
 
 document.getElementById("btn-quartiles").addEventListener("click", () => {
@@ -1034,7 +1359,11 @@ function isNumericColumn(col) {
       "Nb_operations", "Nb_mois_actifs",
       "Turnover in EUR", "Direct GM in EUR", "Gross Billing Tax Excl. in EUR"
     ];
-    return numericNames.includes(col);
+    if (numericNames.includes(col)) return true;
+    // colonnes derivees du split par periode
+    if (/^(Nb_|Annees_|Mois_|Pct_var_)/.test(col)) return true;
+    if (/_(N|N1|hist|distincts)$/.test(col)) return true;
+    return false;
   }
   for (let i = 0; i < Math.min(STATE.aggregatedData.length, 50); i++) {
     const v = STATE.aggregatedData[i][col];
