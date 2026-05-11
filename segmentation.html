@@ -160,11 +160,16 @@
     <h2><span class="badge">1</span> Importer les fichiers Excel</h2>
   </div>
   <p class="muted">
-    Glissez un ou plusieurs fichiers Excel (extractions CRM). Les fichiers
-    sont concatenes et dedupliques sur <code>JobfileNumber</code>. La ligne
-    d'en-tete reelle est detectee automatiquement.
+    Chargez vos fichiers Excel <strong>un par un OU plusieurs a la fois</strong>.
+    Chaque nouveau fichier <strong>s'ajoute</strong> aux precedents (concat +
+    dedup automatique sur <code>JobfileNumber</code>). Pour repartir de zero,
+    cliquez "Vider tout".
   </p>
-  <input type="file" id="file-input" accept=".xlsx,.xls" multiple>
+  <div class="row">
+    <input type="file" id="file-input" accept=".xlsx,.xls" multiple style="flex: 1;">
+    <button id="btn-reset-upload" class="secondary">Vider tout</button>
+  </div>
+  <div id="loaded-files" style="margin-top: 8px;"></div>
   <div id="upload-status"></div>
   <div id="upload-metrics" class="row" style="margin-top: 12px;"></div>
   <div id="upload-diagnostic" style="margin-top: 12px;"></div>
@@ -324,17 +329,48 @@ function saveSegments() {
 // pause asynchrone pour laisser respirer l'UI
 const yieldUI = () => new Promise(r => setTimeout(r, 0));
 
+// liste des fichiers deja charges (pour affichage et pour eviter de recharger 2x le meme)
+if (!STATE.loadedFiles) STATE.loadedFiles = [];
+
+document.getElementById("btn-reset-upload").addEventListener("click", () => {
+  if (!STATE.rawData.length && !STATE.loadedFiles.length) return;
+  if (!confirm("Vider toutes les donnees chargees ?")) return;
+  STATE.rawData = [];
+  STATE.columns = [];
+  STATE.filteredData = [];
+  STATE.aggregatedData = [];
+  STATE.aggColumns = [];
+  STATE.classifiedData = [];
+  STATE.loadedFiles = [];
+  document.getElementById("file-input").value = "";
+  document.getElementById("upload-status").innerHTML = "";
+  document.getElementById("upload-metrics").innerHTML = "";
+  document.getElementById("upload-diagnostic").innerHTML = "";
+  document.getElementById("loaded-files").innerHTML = "";
+  document.getElementById("section-filters").style.display = "none";
+  document.getElementById("section-aggregate").style.display = "none";
+});
+
+function renderLoadedFiles() {
+  const c = document.getElementById("loaded-files");
+  if (!STATE.loadedFiles.length) { c.innerHTML = ""; return; }
+  c.innerHTML = `<p class="muted"><strong>${STATE.loadedFiles.length} fichier(s) charge(s) :</strong> ${
+    STATE.loadedFiles.map(f => `<code>${escapeHtml(f.name)}</code> (${f.rows.toLocaleString("fr-FR")} l)`).join(", ")
+  }</p>`;
+}
+
 document.getElementById("file-input").addEventListener("change", async (e) => {
   const files = Array.from(e.target.files);
   if (!files.length) return;
 
-  STATE.rawData = [];
-  STATE.columns = [];
+  // mode append : on garde les donnees deja chargees, on ajoute juste les nouvelles
   const t0 = performance.now();
+  const rowsBefore = STATE.rawData.length;
   console.log("[upload] debut", files.map(f => `${f.name} (${(f.size/1024/1024).toFixed(1)} Mo)`));
 
   for (let fi = 0; fi < files.length; fi++) {
     const file = files[fi];
+    const rowsBeforeThisFile = STATE.rawData.length;
     setStatus("upload-status",
       `[${fi + 1}/${files.length}] Lecture de "${file.name}" (${(file.size/1024/1024).toFixed(1)} Mo)... patientez.`,
       "info");
@@ -422,13 +458,16 @@ document.getElementById("file-input").addEventListener("change", async (e) => {
         await yieldUI();
       }
       if (STATE.columns.length < headers.length) STATE.columns = headers;
+      // memorise le fichier charge avec le nombre de lignes ajoutees (avant dedup)
+      STATE.loadedFiles.push({ name: file.name, rows: STATE.rawData.length - rowsBeforeThisFile });
+      renderLoadedFiles();
     } catch (err) {
       console.error("[upload] erreur sur", file.name, err);
       setStatus("upload-status", `Erreur sur ${file.name} : ${err.message}`, "error");
       return;
     }
   }
-  console.log(`[upload] total apres concat : ${STATE.rawData.length} lignes`);
+  console.log(`[upload] total apres concat : ${STATE.rawData.length} lignes (etait ${rowsBefore} avant ce batch)`);
 
   // dedup par JobfileNumber
   let dupCount = 0;
@@ -459,10 +498,14 @@ document.getElementById("file-input").addEventListener("change", async (e) => {
   }
 
   const dur = ((performance.now() - t0) / 1000).toFixed(1);
+  const addedTotal = STATE.rawData.length - rowsBefore;
   setStatus("upload-status",
-    `${STATE.rawData.length.toLocaleString("fr-FR")} lignes chargees apres dedup (${dupCount.toLocaleString("fr-FR")} doublons retires) en ${dur} s.`,
+    `+${addedTotal.toLocaleString("fr-FR")} lignes ajoutees - total : ${STATE.rawData.length.toLocaleString("fr-FR")} lignes apres dedup (${dupCount.toLocaleString("fr-FR")} doublons retires sur le batch) en ${dur} s.`,
     "success");
   renderUploadMetrics(dupCount);
+  renderLoadedFiles();
+  // permet de re-selectionner le meme fichier si besoin
+  document.getElementById("file-input").value = "";
   await yieldUI();
   renderFilters();
   document.getElementById("section-filters").style.display = "block";
