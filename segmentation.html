@@ -310,71 +310,113 @@ function saveSegments() {
 /* =============================================================
    ETAPE 1 : Upload + detection en-tete + concat + dedup
    ============================================================= */
+// pause asynchrone pour laisser respirer l'UI
+const yieldUI = () => new Promise(r => setTimeout(r, 0));
+
 document.getElementById("file-input").addEventListener("change", async (e) => {
   const files = Array.from(e.target.files);
   if (!files.length) return;
-  setStatus("upload-status", `Lecture de ${files.length} fichier(s)...`, "info");
+
   STATE.rawData = [];
   STATE.columns = [];
+  const t0 = performance.now();
+  console.log("[upload] debut", files.map(f => `${f.name} (${(f.size/1024/1024).toFixed(1)} Mo)`));
 
-  let totalLines = 0;
-  for (const file of files) {
+  for (let fi = 0; fi < files.length; fi++) {
+    const file = files[fi];
+    setStatus("upload-status",
+      `[${fi + 1}/${files.length}] Lecture de "${file.name}" (${(file.size/1024/1024).toFixed(1)} Mo)... patientez.`,
+      "info");
+    await yieldUI();
     try {
       const buf = await file.arrayBuffer();
-      const wb = XLSX.read(buf, { type: "array" });
+      // options SheetJS pour la perf
+      const wb = XLSX.read(buf, {
+        type: "array",
+        cellFormula: false, cellHTML: false, cellStyles: false,
+        cellNF: false, cellDates: false, dense: true
+      });
       const ws = wb.Sheets[wb.SheetNames[0]];
+      setStatus("upload-status",
+        `[${fi + 1}/${files.length}] "${file.name}" : conversion en cours...`, "info");
+      await yieldUI();
       const raw = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null });
+      console.log(`[upload] ${file.name}: ${raw.length} lignes brutes`);
+
       const headerIdx = detectHeaderRow(raw);
       if (raw.length <= headerIdx) continue;
       const headers = raw[headerIdx].map(h => String(h).trim());
-      for (let i = headerIdx + 1; i < raw.length; i++) {
-        const row = raw[i];
-        if (!row || row.every(v => v === null || v === "")) continue;
-        const obj = {};
-        headers.forEach((h, j) => { obj[h] = row[j]; });
-        obj.__source__ = file.name;
-        STATE.rawData.push(obj);
+
+      setStatus("upload-status",
+        `[${fi + 1}/${files.length}] "${file.name}" : indexation de ${(raw.length - headerIdx - 1).toLocaleString("fr-FR")} lignes...`,
+        "info");
+      await yieldUI();
+
+      // boucle par chunks pour ne pas bloquer le navigateur
+      const CHUNK = 20000;
+      for (let start = headerIdx + 1; start < raw.length; start += CHUNK) {
+        const end = Math.min(start + CHUNK, raw.length);
+        for (let i = start; i < end; i++) {
+          const row = raw[i];
+          if (!row || row.every(v => v === null || v === "")) continue;
+          const obj = {};
+          for (let j = 0; j < headers.length; j++) obj[headers[j]] = row[j];
+          obj.__source__ = file.name;
+          STATE.rawData.push(obj);
+        }
+        // yield apres chaque chunk pour rafraichir l'UI
+        setStatus("upload-status",
+          `[${fi + 1}/${files.length}] "${file.name}" : ${STATE.rawData.length.toLocaleString("fr-FR")} lignes indexees...`,
+          "info");
+        await yieldUI();
       }
       if (STATE.columns.length < headers.length) STATE.columns = headers;
-      totalLines += raw.length - headerIdx - 1;
     } catch (err) {
+      console.error("[upload] erreur sur", file.name, err);
       setStatus("upload-status", `Erreur sur ${file.name} : ${err.message}`, "error");
       return;
     }
   }
+  console.log(`[upload] total apres concat : ${STATE.rawData.length} lignes`);
 
   // dedup par JobfileNumber
   let dupCount = 0;
   if (STATE.columns.includes("JobfileNumber")) {
+    setStatus("upload-status", `Deduplication en cours sur ${STATE.rawData.length.toLocaleString("fr-FR")} lignes...`, "info");
+    await yieldUI();
     const seen = new Set();
-    STATE.rawData = STATE.rawData.filter(r => {
+    const deduped = [];
+    for (const r of STATE.rawData) {
       const k = r.JobfileNumber;
-      if (k === null || k === undefined || k === "") return true;
-      if (seen.has(k)) { dupCount++; return false; }
+      if (k === null || k === undefined || k === "") { deduped.push(r); continue; }
+      if (seen.has(k)) { dupCount++; continue; }
       seen.add(k);
-      return true;
-    });
+      deduped.push(r);
+    }
+    STATE.rawData = deduped;
+    console.log(`[upload] dedup : ${dupCount} doublons retires`);
   }
 
   // ajout Period si Year+Month
   if (STATE.columns.includes("Year") && STATE.columns.includes("Month")) {
-    STATE.rawData.forEach(r => {
+    for (const r of STATE.rawData) {
       const y = parseInt(r.Year, 10);
       const m = parseInt(r.Month, 10);
-      if (!isNaN(y) && !isNaN(m)) {
-        r.Period = `${y}-${String(m).padStart(2, "0")}`;
-      }
-    });
+      if (!isNaN(y) && !isNaN(m)) r.Period = `${y}-${String(m).padStart(2, "0")}`;
+    }
     if (!STATE.columns.includes("Period")) STATE.columns.push("Period");
   }
 
+  const dur = ((performance.now() - t0) / 1000).toFixed(1);
   setStatus("upload-status",
-    `${STATE.rawData.length.toLocaleString("fr-FR")} lignes chargees apres dedup (${dupCount.toLocaleString("fr-FR")} doublons retires).`,
+    `${STATE.rawData.length.toLocaleString("fr-FR")} lignes chargees apres dedup (${dupCount.toLocaleString("fr-FR")} doublons retires) en ${dur} s.`,
     "success");
   renderUploadMetrics(dupCount);
+  await yieldUI();
   renderFilters();
   document.getElementById("section-filters").style.display = "block";
   applyFilters();
+  console.log("[upload] fin");
 });
 
 function detectHeaderRow(rows) {
@@ -433,17 +475,28 @@ function renderFilters() {
   // dimensions
   const availDims = FILTER_DIMS.filter(d => STATE.columns.includes(d));
   if (availDims.length) {
-    html += `<details><summary>Filtres dimensions (optionnel)</summary><div style="margin-top: 8px;" class="grid">`;
+    html += `<details><summary>Filtres dimensions (optionnel) - cliquez pour afficher</summary>
+      <div style="margin-top: 8px;" class="grid">`;
+    const MAX_DISPLAY = 200;
     availDims.forEach(dim => {
       const vals = [...new Set(STATE.rawData.map(r => r[dim]).filter(v => v != null && v !== ""))].sort();
-      STATE.filters.dims[dim] = new Set(vals);
-      html += `<div><label>${dim} <span class="muted">(${vals.length} valeurs)</span></label>
-        <div class="checkbox-list">`;
-      vals.forEach(v => {
-        const safe = String(v).replace(/"/g, "&quot;");
-        html += `<label><input type="checkbox" data-dim="${dim}" data-value="${safe}" checked> ${v}</label>`;
-      });
-      html += `</div></div>`;
+      STATE.filters.dims[dim] = new Set(vals.map(String));
+      const tooMany = vals.length > MAX_DISPLAY;
+      html += `<div><label>${dim} <span class="muted">(${vals.length} valeurs${tooMany ? ", affichage limite a " + MAX_DISPLAY : ""})</span></label>`;
+      if (tooMany) {
+        html += `<p class="muted" style="margin: 4px 0;">
+          Trop de valeurs pour afficher des cases a cocher. Tapez ci-dessous pour filtrer (ex: <code>MINING</code>).
+          Laissez vide pour tout garder.</p>
+          <input type="text" data-dim-search="${dim}" placeholder="filtrer ${dim}" style="width: 100%;">`;
+      } else {
+        html += `<div class="checkbox-list">`;
+        vals.forEach(v => {
+          const safe = String(v).replace(/"/g, "&quot;");
+          html += `<label><input type="checkbox" data-dim="${dim}" data-value="${safe}" checked> ${escapeHtml(String(v))}</label>`;
+        });
+        html += `</div>`;
+      }
+      html += `</div>`;
     });
     html += `</div></details>`;
   }
@@ -451,6 +504,25 @@ function renderFilters() {
   c.innerHTML = html;
   c.querySelectorAll("input[type=checkbox]").forEach(cb => {
     cb.addEventListener("change", onFilterChange);
+  });
+  c.querySelectorAll("input[data-dim-search]").forEach(inp => {
+    let timer = null;
+    inp.addEventListener("input", () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        const dim = inp.dataset.dimSearch;
+        const term = inp.value.trim().toLowerCase();
+        if (!term) {
+          const vals = [...new Set(STATE.rawData.map(r => r[dim]).filter(v => v != null && v !== ""))];
+          STATE.filters.dims[dim] = new Set(vals.map(String));
+        } else {
+          const vals = [...new Set(STATE.rawData.map(r => r[dim])
+            .filter(v => v != null && v !== "" && String(v).toLowerCase().includes(term)))];
+          STATE.filters.dims[dim] = new Set(vals.map(String));
+        }
+        applyFilters();
+      }, 250);
+    });
   });
 }
 
@@ -694,60 +766,65 @@ function renderRuleCard(seg, idx) {
   `;
 }
 
-function attachRuleHandlers() {
-  // boutons
-  document.querySelectorAll("#rules-list [data-action]").forEach(btn => {
-    btn.addEventListener("click", e => {
-      const a = btn.dataset.action;
-      const idx = parseInt(btn.dataset.rule, 10);
-      if (a === "delete") {
-        STATE.segments.splice(idx, 1);
-      } else if (a === "up" && idx > 0) {
-        [STATE.segments[idx - 1], STATE.segments[idx]] = [STATE.segments[idx], STATE.segments[idx - 1]];
-      } else if (a === "down" && idx < STATE.segments.length - 1) {
-        [STATE.segments[idx + 1], STATE.segments[idx]] = [STATE.segments[idx], STATE.segments[idx + 1]];
-      } else if (a === "add-cond") {
-        STATE.segments[idx].conditions.push({
-          column: STATE.aggColumns[0],
-          op: isNumericColumn(STATE.aggColumns[0]) ? ">=" : "==",
-          value: ""
-        });
-      } else if (a === "remove-cond") {
-        const ci = parseInt(btn.dataset.cond, 10);
-        STATE.segments[idx].conditions.splice(ci, 1);
-      }
-      saveSegments();
-      renderRules();
+// Event delegation unique au niveau de #rules-list : pas besoin de reattacher
+// les listeners apres chaque renderRules().
+document.getElementById("rules-list").addEventListener("click", e => {
+  const btn = e.target.closest("[data-action]");
+  if (!btn) return;
+  const a = btn.dataset.action;
+  const idx = parseInt(btn.dataset.rule, 10);
+  console.log(`[rules] action=${a} rule=${idx}`);
+  if (a === "delete") {
+    STATE.segments.splice(idx, 1);
+  } else if (a === "up" && idx > 0) {
+    [STATE.segments[idx - 1], STATE.segments[idx]] = [STATE.segments[idx], STATE.segments[idx - 1]];
+  } else if (a === "down" && idx < STATE.segments.length - 1) {
+    [STATE.segments[idx + 1], STATE.segments[idx]] = [STATE.segments[idx], STATE.segments[idx + 1]];
+  } else if (a === "add-cond") {
+    const firstCol = STATE.aggColumns[0] || "CA_EUR";
+    STATE.segments[idx].conditions.push({
+      column: firstCol,
+      op: isNumericColumn(firstCol) ? ">=" : "==",
+      value: ""
     });
-  });
-  // champs (input + select)
-  document.querySelectorAll("#rules-list input, #rules-list select").forEach(el => {
-    el.addEventListener("change", e => {
-      const idx = parseInt(el.dataset.rule, 10);
-      const seg = STATE.segments[idx];
-      if (el.dataset.field === "name") seg.name = el.value;
-      else if (el.dataset.field === "logic") seg.logic = el.value;
-      else if (el.dataset.cond != null) {
-        const ci = parseInt(el.dataset.cond, 10);
-        const cond = seg.conditions[ci];
-        const field = el.dataset.field;
-        if (field === "value0" || field === "value1") {
-          if (!Array.isArray(cond.value)) cond.value = ["", ""];
-          cond.value[field === "value0" ? 0 : 1] = el.value;
-        } else {
-          cond[field] = el.value;
-        }
-        // si on change la colonne, reinitialiser l'operateur si incompatible
-        if (field === "column") {
-          const ops = isNumericColumn(cond.column) ? OPERATORS_NUMERIC : OPERATORS_TEXT;
-          if (!ops.includes(cond.op)) cond.op = ops[0];
-        }
-      }
-      saveSegments();
-      renderRules();
-    });
-  });
-}
+  } else if (a === "remove-cond") {
+    const ci = parseInt(btn.dataset.cond, 10);
+    STATE.segments[idx].conditions.splice(ci, 1);
+  }
+  saveSegments();
+  renderRules();
+});
+
+document.getElementById("rules-list").addEventListener("change", e => {
+  const el = e.target;
+  if (el.dataset.rule == null) return;
+  const idx = parseInt(el.dataset.rule, 10);
+  const seg = STATE.segments[idx];
+  if (!seg) return;
+  console.log(`[rules] change rule=${idx} field=${el.dataset.field}`);
+  if (el.dataset.field === "name") seg.name = el.value;
+  else if (el.dataset.field === "logic") seg.logic = el.value;
+  else if (el.dataset.cond != null) {
+    const ci = parseInt(el.dataset.cond, 10);
+    const cond = seg.conditions[ci];
+    const field = el.dataset.field;
+    if (field === "value0" || field === "value1") {
+      if (!Array.isArray(cond.value)) cond.value = ["", ""];
+      cond.value[field === "value0" ? 0 : 1] = el.value;
+    } else {
+      cond[field] = el.value;
+    }
+    if (field === "column") {
+      const ops = isNumericColumn(cond.column) ? OPERATORS_NUMERIC : OPERATORS_TEXT;
+      if (!ops.includes(cond.op)) cond.op = ops[0];
+    }
+  }
+  saveSegments();
+  renderRules();
+});
+
+// fonction conservee pour compatibilite, mais ne fait plus rien (event delegation gere tout)
+function attachRuleHandlers() {}
 
 function isNumericColumn(col) {
   if (!STATE.aggregatedData.length) return false;
