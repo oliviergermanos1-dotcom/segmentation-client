@@ -5,13 +5,22 @@ Application Streamlit pour classer automatiquement les clients d'un export CRM
 
 ## Workflow
 
-1. **Importer** le fichier Excel brut (`.xlsx` ou `.xls`).
-2. **Definir les segments** : pour chaque segment, ajouter une ou plusieurs
-   conditions sur les colonnes (operateurs : `==`, `>`, `contient`, `between`,
-   `dans la liste`, `regex`, etc.) et choisir la logique `AND` / `OR`.
-3. **Ordonner** les segments : le premier qui matche est attribue au client.
-   Les non-matches recoivent le segment `Non classe`.
-4. **Lancer la classification** puis **exporter** le resultat en CSV ou Excel.
+1. **Importer** un ou plusieurs fichiers Excel d'extraction CRM Siebel
+   (la limite d'export est de 150 000 lignes — uploadez plusieurs extracts,
+   ils seront concatenes et dedupliques sur `JobfileNumber`).
+   La ligne d'en-tete reelle est detectee automatiquement (les lignes
+   "Filtres appliques" et "Exported data limited to 150000 rows" sont sautees).
+2. **Filtrer** la periode (annees, mois) et les dimensions
+   (entite, zone, segment marche, activite, etc.).
+3. **Agreger par client** : choisir la cle client (`Customer`,
+   `HQ CTO Customer Name`, ...) et les metriques (somme `Turnover in EUR`,
+   `Direct GM in EUR`, `TEU`, `Freight Ton`). Sont aussi calcules :
+   nombre d'operations, nombre de mois actifs, premiere / derniere activite.
+4. **Definir les segments** : conditions sur les colonnes agregees
+   (`CA_EUR >= 100000`, `Nb_operations > 50`, ...), logique `AND` / `OR`,
+   reordonnancement. Le premier segment qui matche gagne ; sinon `Non classe`.
+   Preset disponible : 4 segments par quartiles de CA (VIP / Gold / Silver / Bronze).
+5. **Classifier** et **exporter** en CSV ou Excel (avec onglet repartition).
 
 La config des segments peut etre sauvegardee / rechargee en JSON.
 

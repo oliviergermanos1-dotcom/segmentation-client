@@ -1,10 +1,17 @@
 """Segmentation client - app Streamlit.
 
 Workflow :
-1. Upload du fichier Excel brut (extraction CRM).
-2. Definition des segments via des regles (conditions sur les colonnes).
-3. Classification automatique de chaque client dans le premier segment matche.
-4. Export du resultat en Excel / CSV.
+1. Upload d'un ou plusieurs fichiers Excel (extraction CRM Siebel).
+   La ligne d'en-tete reelle est detectee automatiquement (les lignes
+   "Filtres appliques" et le warning "Exported data limited to 150000 rows"
+   sont ignorees). Les fichiers sont concatenes et dedupliques par
+   JobfileNumber - utile pour contourner la limite Siebel de 150k lignes.
+2. Filtres sur la periode (Year / Month) et autres dimensions.
+3. Agregation par client (Customer / HQ / Code CTO au choix) :
+   - CA total (Turnover EUR), GM total, TEU, Freight Ton
+   - nombre d'operations, nb de mois actifs, premiere / derniere activite
+4. Definition des segments via regles sur les metriques agregees.
+5. Classification automatique + export Excel / CSV.
 """
 
 from __future__ import annotations
@@ -34,71 +41,277 @@ OPERATORS_TEXT = [
 ]
 OPERATORS_DATE = ["==", "!=", ">", ">=", "<", "<=", "between", "est vide", "n'est pas vide"]
 
+HEADER_MARKERS = {"Year", "Customer", "JobfileNumber"}
+
 
 st.set_page_config(page_title="Segmentation client", layout="wide")
-st.title("Segmentation client a partir d'un export CRM")
+st.title("Segmentation client - export CRM logistique")
+
 
 # ---------------------------------------------------------------------------
 # Session state init
 # ---------------------------------------------------------------------------
-if "segments" not in st.session_state:
-    st.session_state.segments: list[dict[str, Any]] = []
-if "df" not in st.session_state:
-    st.session_state.df = None
+def _init_state() -> None:
+    st.session_state.setdefault("segments", [])
+    st.session_state.setdefault("raw_df", None)
+    st.session_state.setdefault("agg_df", None)
+    st.session_state.setdefault("classified", None)
+    st.session_state.setdefault("loaded_files", [])
+
+
+_init_state()
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+def _detect_header_row(xls: pd.ExcelFile, sheet: str, max_scan: int = 15) -> int:
+    """Retourne l'index de la ligne d'en-tete reelle d'une feuille Siebel.
+
+    On scanne les premieres lignes et on retient celle qui contient les
+    marqueurs caracteristiques de l'export (Year, Customer, JobfileNumber).
+    Fallback : 0.
+    """
+    probe = pd.read_excel(xls, sheet_name=sheet, header=None, nrows=max_scan, dtype=str)
+    for i, row in probe.iterrows():
+        values = {str(v).strip() for v in row.tolist() if pd.notna(v)}
+        if HEADER_MARKERS.issubset(values):
+            return int(i)
+    return 0
+
+
+@st.cache_data(show_spinner=False)
+def _load_excel(file_bytes: bytes, file_name: str) -> pd.DataFrame:
+    bio = io.BytesIO(file_bytes)
+    xls = pd.ExcelFile(bio)
+    sheet = xls.sheet_names[0]
+    header_row = _detect_header_row(xls, sheet)
+    df = pd.read_excel(xls, sheet_name=sheet, header=header_row)
+    df["__source_file__"] = file_name
+    return df
+
+
+def _concat_dedup(frames: list[pd.DataFrame]) -> pd.DataFrame:
+    if not frames:
+        return pd.DataFrame()
+    df = pd.concat(frames, ignore_index=True, sort=False)
+    if "JobfileNumber" in df.columns:
+        before = len(df)
+        df = df.drop_duplicates(subset=["JobfileNumber"], keep="first")
+        st.session_state["_dedup_removed"] = before - len(df)
+    return df
+
+
+def _ensure_period(df: pd.DataFrame) -> pd.DataFrame:
+    """Construit une colonne date 'Period' a partir de Year/Month si possible."""
+    if {"Year", "Month"}.issubset(df.columns):
+        try:
+            df = df.copy()
+            df["Period"] = pd.to_datetime(
+                df["Year"].astype("Int64").astype(str)
+                + "-"
+                + df["Month"].astype("Int64").astype(str).str.zfill(2)
+                + "-01",
+                errors="coerce",
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    return df
 
 
 # ---------------------------------------------------------------------------
 # Step 1 : upload
 # ---------------------------------------------------------------------------
-st.header("1. Importer le fichier Excel")
-uploaded = st.file_uploader("Fichier .xlsx ou .xls", type=["xlsx", "xls"])
+st.header("1. Importer les fichiers Excel")
+st.caption(
+    "L'export Siebel est limite a 150 000 lignes : importez plusieurs extractions "
+    "(par exemple une par annee) - elles seront concatenees et dedupliquees par "
+    "JobfileNumber. La ligne d'en-tete reelle est detectee automatiquement."
+)
 
-if uploaded is not None:
-    try:
-        xls = pd.ExcelFile(uploaded)
-        sheet = st.selectbox("Feuille a utiliser", xls.sheet_names)
-        header_row = st.number_input(
-            "Ligne d'en-tete (0 = premiere ligne)", min_value=0, value=0, step=1
-        )
-        df = pd.read_excel(xls, sheet_name=sheet, header=int(header_row))
-        st.session_state.df = df
-        st.success(f"{len(df)} lignes chargees, {len(df.columns)} colonnes.")
-        with st.expander("Apercu des 20 premieres lignes"):
-            st.dataframe(df.head(20), use_container_width=True)
-    except Exception as exc:  # noqa: BLE001
-        st.error(f"Erreur de lecture : {exc}")
+uploaded_files = st.file_uploader(
+    "Fichiers .xlsx", type=["xlsx", "xls"], accept_multiple_files=True
+)
 
+if uploaded_files:
+    frames = []
+    progress = st.progress(0.0, text="Chargement...")
+    for i, f in enumerate(uploaded_files):
+        try:
+            df_part = _load_excel(f.getvalue(), f.name)
+            frames.append(df_part)
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"Erreur sur {f.name} : {exc}")
+        progress.progress((i + 1) / len(uploaded_files), text=f"{f.name}")
+    progress.empty()
+    df = _concat_dedup(frames)
+    df = _ensure_period(df)
+    st.session_state.raw_df = df
+    st.session_state.loaded_files = [f.name for f in uploaded_files]
 
-df = st.session_state.df
+raw_df = st.session_state.raw_df
+
+if raw_df is not None:
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Lignes totales", f"{len(raw_df):,}".replace(",", " "))
+    c2.metric("Colonnes", len(raw_df.columns))
+    removed = st.session_state.get("_dedup_removed", 0)
+    c3.metric("Doublons supprimes", f"{removed:,}".replace(",", " "))
+    with st.expander("Apercu (20 lignes)"):
+        st.dataframe(raw_df.head(20), use_container_width=True)
+    with st.expander("Colonnes detectees"):
+        st.write(list(raw_df.columns))
+
 
 # ---------------------------------------------------------------------------
-# Step 2 : segment rules
+# Step 2 : filters
 # ---------------------------------------------------------------------------
-st.header("2. Definir les segments")
+st.header("2. Filtrer la periode et les dimensions")
 
-if df is None:
-    st.info("Importez d'abord un fichier Excel.")
+filtered_df = None
+if raw_df is None:
+    st.info("Importez d'abord au moins un fichier.")
 else:
-    st.caption(
-        "Chaque segment est compose d'une ou plusieurs conditions. "
-        "Choisissez si toutes (ET) ou au moins une (OU) doivent etre vraies. "
-        "Les segments sont evalues dans l'ordre : le **premier** segment qui matche "
-        "est attribue au client. Reordonnez-les via les fleches."
+    filtered_df = raw_df.copy()
+
+    fcol1, fcol2 = st.columns(2)
+    if "Year" in filtered_df.columns:
+        years_avail = sorted([int(y) for y in filtered_df["Year"].dropna().unique()])
+        years_sel = fcol1.multiselect("Annees", years_avail, default=years_avail)
+        filtered_df = filtered_df[filtered_df["Year"].isin(years_sel)]
+    if "Month" in filtered_df.columns:
+        months = sorted([int(m) for m in filtered_df["Month"].dropna().unique()])
+        if months:
+            m_min, m_max = fcol2.select_slider(
+                "Mois (plage)",
+                options=months,
+                value=(min(months), max(months)),
+            )
+            filtered_df = filtered_df[
+                (filtered_df["Month"].astype("Int64") >= m_min)
+                & (filtered_df["Month"].astype("Int64") <= m_max)
+            ]
+
+    cat_dims = [
+        c
+        for c in [
+            "Reporting Entity Label",
+            "Zone 3 Label",
+            "Market Segment Name",
+            "Product Name",
+            "Activity Name (EN)",
+            "Shipping Type Name",
+        ]
+        if c in filtered_df.columns
+    ]
+    if cat_dims:
+        with st.expander("Filtres dimensions (optionnel)"):
+            for dim in cat_dims:
+                opts = sorted([v for v in filtered_df[dim].dropna().unique()])
+                sel = st.multiselect(dim, opts, default=opts, key=f"flt_{dim}")
+                if len(sel) != len(opts):
+                    filtered_df = filtered_df[filtered_df[dim].isin(sel)]
+
+    st.metric("Lignes apres filtres", f"{len(filtered_df):,}".replace(",", " "))
+
+
+# ---------------------------------------------------------------------------
+# Step 3 : aggregation by client
+# ---------------------------------------------------------------------------
+st.header("3. Agreger par client")
+
+agg_df: pd.DataFrame | None = None
+client_key: str | None = None
+
+if filtered_df is None or filtered_df.empty:
+    st.info("Filtrez d'abord la base.")
+else:
+    candidate_keys = [
+        c
+        for c in [
+            "Customer",
+            "HQ CTO Customer Name",
+            "CTO / RCU Customer Code",
+            "CTO Name And Code",
+        ]
+        if c in filtered_df.columns
+    ]
+    client_key = st.selectbox(
+        "Colonne identifiant le client",
+        candidate_keys or filtered_df.columns.tolist(),
+        index=0,
     )
 
-    # ---- import / export json
-    col_io1, col_io2 = st.columns(2)
-    with col_io1:
+    numeric_metrics = {
+        "Turnover in EUR": "CA_EUR",
+        "Direct GM in EUR": "GM_EUR",
+        "Gross Billing Tax Excl. in EUR": "Billing_HT_EUR",
+        "TEU": "TEU",
+        "Freight Ton": "Freight_Ton",
+    }
+    available_metrics = {k: v for k, v in numeric_metrics.items() if k in filtered_df.columns}
+
+    metrics_sel = st.multiselect(
+        "Metriques a agreger (somme)",
+        list(available_metrics.keys()),
+        default=list(available_metrics.keys()),
+    )
+
+    if st.button("Lancer l'agregation", type="primary"):
+        with st.spinner("Agregation en cours..."):
+            grp = filtered_df.groupby(client_key, dropna=False)
+            agg_spec: dict[str, Any] = {}
+            for col in metrics_sel:
+                agg_spec[available_metrics[col]] = (col, "sum")
+            if "JobfileNumber" in filtered_df.columns:
+                agg_spec["Nb_operations"] = ("JobfileNumber", "nunique")
+            if "Period" in filtered_df.columns:
+                agg_spec["Premiere_activite"] = ("Period", "min")
+                agg_spec["Derniere_activite"] = ("Period", "max")
+                agg_spec["Nb_mois_actifs"] = ("Period", "nunique")
+            for extra in ["HQ CTO Customer Name", "Market Segment Name", "Reporting Entity Label"]:
+                if extra in filtered_df.columns and extra != client_key:
+                    agg_spec[extra] = (extra, lambda s: s.dropna().mode().iloc[0] if not s.dropna().empty else None)
+            agg = grp.agg(**agg_spec).reset_index()
+            agg = agg.sort_values(
+                by=next(iter([v for v in available_metrics.values() if v in agg.columns]), agg.columns[1]),
+                ascending=False,
+            )
+            st.session_state.agg_df = agg
+
+agg_df = st.session_state.agg_df
+
+if agg_df is not None:
+    st.success(f"{len(agg_df):,} clients agreges.".replace(",", " "))
+    st.dataframe(agg_df.head(50), use_container_width=True)
+
+
+# ---------------------------------------------------------------------------
+# Step 4 : segment rules
+# ---------------------------------------------------------------------------
+st.header("4. Definir les segments")
+
+if agg_df is None:
+    st.info("Lancez d'abord l'agregation.")
+else:
+    st.caption(
+        "Les segments sont evalues dans l'ordre : le premier qui matche est "
+        "attribue au client. Les regles s'appliquent sur les colonnes agregees "
+        "(CA_EUR, Nb_operations, etc.) ou les colonnes descriptives."
+    )
+
+    io1, io2 = st.columns(2)
+    with io1:
         if st.session_state.segments:
             st.download_button(
-                "Telecharger la config des segments (JSON)",
+                "Telecharger config segments (JSON)",
                 data=json.dumps(st.session_state.segments, indent=2, ensure_ascii=False),
                 file_name="segments.json",
                 mime="application/json",
             )
-    with col_io2:
+    with io2:
         cfg_file = st.file_uploader(
-            "Charger une config segments (JSON)", type=["json"], key="cfg_uploader"
+            "Charger config segments (JSON)", type=["json"], key="cfg_uploader"
         )
         if cfg_file is not None:
             try:
@@ -107,7 +320,34 @@ else:
             except Exception as exc:  # noqa: BLE001
                 st.error(f"JSON invalide : {exc}")
 
-    # ---- add segment
+    # presets rapides bases sur le CA
+    if "CA_EUR" in agg_df.columns and not st.session_state.segments:
+        if st.button("Generer 4 segments par defaut (quartiles de CA)"):
+            q = agg_df["CA_EUR"].quantile([0.25, 0.5, 0.75]).tolist()
+            st.session_state.segments = [
+                {
+                    "name": "VIP",
+                    "logic": "AND",
+                    "conditions": [{"column": "CA_EUR", "op": ">=", "value": str(q[2])}],
+                },
+                {
+                    "name": "Gold",
+                    "logic": "AND",
+                    "conditions": [{"column": "CA_EUR", "op": ">=", "value": str(q[1])}],
+                },
+                {
+                    "name": "Silver",
+                    "logic": "AND",
+                    "conditions": [{"column": "CA_EUR", "op": ">=", "value": str(q[0])}],
+                },
+                {
+                    "name": "Bronze",
+                    "logic": "AND",
+                    "conditions": [{"column": "CA_EUR", "op": ">", "value": "0"}],
+                },
+            ]
+            st.rerun()
+
     with st.form("add_segment_form", clear_on_submit=True):
         new_name = st.text_input("Nom du nouveau segment", placeholder="ex : VIP")
         submitted = st.form_submit_button("Ajouter le segment")
@@ -117,21 +357,20 @@ else:
             )
             st.rerun()
 
-    # ---- existing segments
     for idx, seg in enumerate(st.session_state.segments):
         with st.container(border=True):
             top = st.columns([4, 1, 1, 1, 1])
             seg["name"] = top[0].text_input(
                 "Nom", value=seg["name"], key=f"name_{idx}", label_visibility="collapsed"
             )
-            if top[1].button("↑", key=f"up_{idx}", disabled=idx == 0):
+            if top[1].button("monter", key=f"up_{idx}", disabled=idx == 0):
                 st.session_state.segments[idx - 1], st.session_state.segments[idx] = (
                     st.session_state.segments[idx],
                     st.session_state.segments[idx - 1],
                 )
                 st.rerun()
             if top[2].button(
-                "↓",
+                "descendre",
                 key=f"down_{idx}",
                 disabled=idx == len(st.session_state.segments) - 1,
             ):
@@ -156,25 +395,23 @@ else:
                 cols = st.columns([3, 2, 4, 1])
                 col_name = cols[0].selectbox(
                     "Colonne",
-                    df.columns.tolist(),
+                    agg_df.columns.tolist(),
                     index=(
-                        df.columns.tolist().index(cond["column"])
-                        if cond.get("column") in df.columns
+                        agg_df.columns.tolist().index(cond["column"])
+                        if cond.get("column") in agg_df.columns
                         else 0
                     ),
                     key=f"col_{idx}_{c_idx}",
                     label_visibility="collapsed",
                 )
                 cond["column"] = col_name
-
-                series = df[col_name]
+                series = agg_df[col_name]
                 if pd.api.types.is_numeric_dtype(series):
                     ops = OPERATORS_NUMERIC
                 elif pd.api.types.is_datetime64_any_dtype(series):
                     ops = OPERATORS_DATE
                 else:
                     ops = OPERATORS_TEXT
-
                 op_index = ops.index(cond["op"]) if cond.get("op") in ops else 0
                 cond["op"] = cols[1].selectbox(
                     "Operateur",
@@ -222,22 +459,21 @@ else:
                         label_visibility="collapsed",
                     )
 
-                if cols[3].button("✕", key=f"delcond_{idx}_{c_idx}"):
+                if cols[3].button("retirer", key=f"delcond_{idx}_{c_idx}"):
                     seg["conditions"].pop(c_idx)
                     st.rerun()
 
             if st.button("+ ajouter une condition", key=f"addcond_{idx}"):
                 seg["conditions"].append(
-                    {"column": df.columns[0], "op": "==", "value": ""}
+                    {"column": agg_df.columns[0], "op": "==", "value": ""}
                 )
                 st.rerun()
 
 
 # ---------------------------------------------------------------------------
-# Step 3 : classification
+# Step 5 : classification engine
 # ---------------------------------------------------------------------------
 def _coerce(series: pd.Series, value: Any) -> Any:
-    """Convertit la valeur saisie au type de la colonne quand c'est possible."""
     if value is None or value == "":
         return value
     if pd.api.types.is_numeric_dtype(series):
@@ -255,6 +491,8 @@ def _coerce(series: pd.Series, value: Any) -> Any:
 
 def _evaluate_condition(df: pd.DataFrame, cond: dict[str, Any]) -> pd.Series:
     col = cond["column"]
+    if col not in df.columns:
+        return pd.Series([False] * len(df), index=df.index)
     op = cond["op"]
     raw = cond.get("value")
     series = df[col]
@@ -263,19 +501,16 @@ def _evaluate_condition(df: pd.DataFrame, cond: dict[str, Any]) -> pd.Series:
         return series.isna() | (series.astype(str).str.strip() == "")
     if op == "n'est pas vide":
         return ~(series.isna() | (series.astype(str).str.strip() == ""))
-
     if op == "between":
         vmin = _coerce(series, raw[0] if isinstance(raw, list) else None)
         vmax = _coerce(series, raw[1] if isinstance(raw, list) else None)
         return series.between(vmin, vmax)
-
     if op in ("dans la liste", "pas dans la liste"):
         items = [v.strip() for v in str(raw or "").split(",") if v.strip()]
         if pd.api.types.is_numeric_dtype(series):
             items = [_coerce(series, v) for v in items]
         result = series.isin(items)
         return ~result if op == "pas dans la liste" else result
-
     if op == "contient":
         return series.astype(str).str.contains(str(raw or ""), case=False, na=False)
     if op == "ne contient pas":
@@ -307,7 +542,6 @@ def _evaluate_condition(df: pd.DataFrame, cond: dict[str, Any]) -> pd.Series:
         return series < value
     if op == "<=":
         return series <= value
-
     return pd.Series([False] * len(series), index=series.index)
 
 
@@ -324,48 +558,48 @@ def _segment_mask(df: pd.DataFrame, segment: dict[str, Any]) -> pd.Series:
 def classify(df: pd.DataFrame, segments: list[dict[str, Any]]) -> pd.DataFrame:
     result = df.copy()
     seg_col = pd.Series(["Non classe"] * len(df), index=df.index)
-    matches_col = pd.Series([[] for _ in range(len(df))], index=df.index)
-    for seg in segments:
-        mask = _segment_mask(df, seg)
-        seg_col = seg_col.where(seg_col != "Non classe", other=seg["name"]).where(
-            ~(mask & (seg_col == "Non classe")), other=seg["name"]
-        )
-        for i in df.index[mask]:
-            matches_col.loc[i] = matches_col.loc[i] + [seg["name"]]
-    # premier match gagnant
-    seg_col = pd.Series(["Non classe"] * len(df), index=df.index)
     for seg in segments:
         mask = _segment_mask(df, seg)
         seg_col = seg_col.mask((seg_col == "Non classe") & mask, seg["name"])
     result["segment"] = seg_col
-    result["segments_matches"] = matches_col.apply(lambda lst: ", ".join(lst))
     return result
 
 
-st.header("3. Classifier")
+# ---------------------------------------------------------------------------
+# Step 6 : run classification + display + export
+# ---------------------------------------------------------------------------
+st.header("5. Classifier et exporter")
 
-if df is None:
-    st.info("Importez un fichier.")
+if agg_df is None:
+    st.info("Lancez d'abord l'agregation.")
 elif not st.session_state.segments:
     st.info("Definissez au moins un segment.")
 else:
     if st.button("Lancer la classification", type="primary"):
         try:
-            classified = classify(df, st.session_state.segments)
-            st.session_state.classified = classified
+            st.session_state.classified = classify(agg_df, st.session_state.segments)
         except Exception as exc:  # noqa: BLE001
             st.error(f"Erreur pendant la classification : {exc}")
 
-    classified = st.session_state.get("classified")
+    classified = st.session_state.classified
     if classified is not None:
         st.subheader("Repartition")
-        counts = classified["segment"].value_counts().rename_axis("segment").reset_index(
-            name="nb_clients"
+        counts = (
+            classified["segment"].value_counts().rename_axis("segment").reset_index(name="nb_clients")
         )
         counts["%"] = (counts["nb_clients"] / len(classified) * 100).round(1)
+        if "CA_EUR" in classified.columns:
+            ca_by_seg = (
+                classified.groupby("segment")["CA_EUR"].sum().rename("CA_total_EUR").reset_index()
+            )
+            counts = counts.merge(ca_by_seg, on="segment", how="left")
+            counts["%_CA"] = (counts["CA_total_EUR"] / counts["CA_total_EUR"].sum() * 100).round(1)
         c1, c2 = st.columns([1, 2])
         c1.dataframe(counts, use_container_width=True, hide_index=True)
-        c2.bar_chart(counts.set_index("segment")["nb_clients"])
+        if "CA_EUR" in classified.columns:
+            c2.bar_chart(counts.set_index("segment")["CA_total_EUR"])
+        else:
+            c2.bar_chart(counts.set_index("segment")["nb_clients"])
 
         st.subheader("Clients classes")
         segs_filter = st.multiselect(
@@ -376,7 +610,6 @@ else:
         view = classified[classified["segment"].isin(segs_filter)]
         st.dataframe(view, use_container_width=True)
 
-        # exports
         csv_bytes = view.to_csv(index=False).encode("utf-8-sig")
         st.download_button(
             "Telecharger en CSV",
