@@ -343,6 +343,26 @@
   </div>
 </div>
 
+<!-- =============================================== -->
+<!-- ETAPE 6 : Analyse strategique marketing         -->
+<!-- =============================================== -->
+<div class="section" id="section-strategy" style="display: none;">
+  <div class="section-head">
+    <h2><span class="badge">6</span> Analyse strategique marketing par segment</h2>
+    <div class="row">
+      <button id="btn-export-strategy" class="secondary">Exporter l'analyse (HTML)</button>
+    </div>
+  </div>
+  <p class="muted">
+    Pour chaque bloc de segmentation : <strong>definition</strong> du segment,
+    <strong>volume / poids</strong> dans le portefeuille, et <strong>analyse
+    d'un expert en strategie marketing</strong> (priorite commerciale, action a
+    mener, KPI a suivre). Genere automatiquement a partir de votre
+    classification courante.
+  </p>
+  <div id="strategy-content"></div>
+</div>
+
 <script>
 /* =============================================================
    Etat global
@@ -1791,6 +1811,7 @@ document.getElementById("btn-classify").addEventListener("click", () => {
   renderRepartition();
   renderSegmentDetail();
   renderExportButtons();
+  renderStrategicAnalysis();
 });
 
 function segmentMatches(row, seg) {
@@ -1844,6 +1865,610 @@ function evaluateCondition(row, cond) {
   if (op === "!=") return String(v).toLowerCase() !== String(raw).toLowerCase();
   return false;
 }
+
+/* =============================================================
+   ETAPE 6 — ANALYSE STRATEGIQUE MARKETING PAR SEGMENT
+   ============================================================= */
+
+// Intros strategiques par bloc (categorie). Affichees en tete de chaque section.
+const STRATEGY_BLOCK_INTRO = {
+  "Statut": {
+    title: "Bloc A — Statut relationnel",
+    priority: "Cadrage du portefeuille",
+    text: `Le statut "Client" est la base de reference : tout compte ayant deja
+       genere du business (Premiere_activite renseignee). Sert de denominateur
+       pour tous les % des autres blocs. <strong>Action</strong> : verifier la
+       qualite CRM (doublons, comptes fantomes, comptes a archiver) avant
+       d'engager les plans d'action des autres blocs.`
+  },
+  "Cycle de vie": {
+    title: "Bloc B — Cycle de vie",
+    priority: "Rotation du portefeuille : acquerir, fideliser, recuperer",
+    text: `Ce bloc decrit ou est chaque client dans la relation : nouveau,
+       reconquis, actif, qui ralentit, dormant, perdu, en perte. <strong>C'est
+       le bloc le plus actionnable a court terme</strong> : chaque etat appelle
+       un plan d'action commercial different (onboarding, save, win-back,
+       desherbage CRM). Suivez l'evolution annuelle des effectifs : un
+       portefeuille sain renouvelle 10-20% via nouveaux + reconquis, et perd
+       moins de 15% en churn net.`
+  },
+  "Valeur": {
+    title: "Bloc D — Valeur",
+    priority: "Concentration de la marge — ou investir le temps commercial",
+    text: `Decoupe ABC du portefeuille : VVIP / VIP / Standard / Long Tail.
+       <strong>Loi de Pareto attendue</strong> : 80% du GM doit etre porte par
+       le top 20% des clients ; si ce n'est pas le cas, votre portefeuille est
+       trop atomise (risque structurel) ou au contraire trop concentre (cf.
+       bloc Risque). Le top 20 / top 100 absolus servent au pilotage des
+       comites strategiques.`
+  },
+  "Rentabilite": {
+    title: "Bloc E — Rentabilite",
+    priority: "Qualite de la marge — pas seulement le volume",
+    text: `Marge nette (GM / CA) sous le seuil parametre = client a renegocier
+       ou a desinvestir. <strong>Un client gros mais peu rentable detruit plus
+       de valeur qu'un petit client rentable</strong>. Croiser avec le bloc
+       Valeur : un VVIP "peu rentable" est une priorite P0 de renegociation
+       commerciale.`
+  },
+  "Developpement": {
+    title: "Bloc F — Developpement (cross-sell)",
+    priority: "Potentiel de croissance dans le compte (share of wallet)",
+    text: `Mesure le nombre d'activites / equipes consommees. <strong>Mono-service
+       = cible cross-sell prioritaire</strong> (le client vous connait, l'effort
+       commercial est faible). Multi-equipe premium = compte mur, on protege.
+       KPI : % de clients multi-equipe et evolution du nombre moyen
+       d'activites par client.`
+  },
+  "Comportement": {
+    title: "Bloc G — Comportement d'achat",
+    priority: "Frequence et dynamique — predit la fidelite future",
+    text: `Combine la frequence d'achat (1 mois, occasionnel, saisonnier,
+       recurrent) et la variation N vs N-1 (rocket, croissance, stagnant,
+       decroissance). <strong>Les segments comportementaux predisent mieux le
+       futur que la valeur seule</strong> : un Rocket Long Tail vaut souvent
+       plus qu'un VVIP stagnant a 3 ans.`
+  },
+  "Risque": {
+    title: "Bloc J — Risque",
+    priority: "Detection precoce du churn et de la concentration",
+    text: `Risque churn = baisse forte vs N-1 (lead indicator). Risque
+       concentration = dependance excessive a quelques comptes (>= 5% du GM).
+       <strong>Action prioritaire</strong> : revue mensuelle des comptes en
+       risque churn eleve + plan de diversification pour les comptes de
+       concentration (peut etre une opportunite a securiser, mais aussi un
+       risque business).`
+  },
+  "A importer (donnees externes)": {
+    title: "Bloc K — Signaux externes (a importer)",
+    priority: "Enrichissement futur : compliance, NPS, white space",
+    text: `Placeholders pour les donnees externes (compliance, NPS,
+       satisfaction, donnees de marche). Une fois importees, elles
+       enrichissent l'arbitrage strategique. Pour l'instant : pas d'analyse
+       calculable, prevoir l'integration source par source.`
+  }
+};
+
+// Analyses marketing par segment, matchees par mot-cle dans le nom du segment.
+// On utilise un matcher (function: name -> bool) pour gerer les noms dynamiques
+// (qui contiennent percentiles, seuils, etc.).
+const STRATEGY_BY_SEGMENT = [
+  // === STATUT ===
+  {
+    match: n => /historique business/i.test(n),
+    definition: "Tout compte avec au moins une activite passee (Premiere_activite renseignee).",
+    action: "Base 100% — perimetre d'analyse de tous les autres blocs.",
+    strategy: `Verifier la qualite CRM : doublons (meme entite plusieurs codes
+       clients), comptes inactifs depuis > 36 mois a archiver, comptes "test"
+       a exclure. Ce dimensionnement determine la fiabilite de tous les % qui
+       suivent. KPI : taux de fiabilite du referentiel client.`
+  },
+
+  // === CYCLE DE VIE ===
+  {
+    match: n => /perte.*GM negatif/i.test(n),
+    definition: "Client avec marge brute (GM_EUR_N) negative sur l'annee de reference.",
+    action: "URGENT — audit pricing / cost-to-serve, decision keep / re-price / drop.",
+    strategy: `<strong>Drapeau rouge financier</strong>. Chaque client en perte
+       est analyse cas par cas : erreur d'imputation cost ? surcout exceptionnel
+       (litige, sinistre) ? pricing perdu sur appel d'offre ? Le commercial
+       doit produire une fiche "decision" sous 30 jours : renegociation, sortie
+       progressive, ou acceptation strategique (loss leader pour entrer chez un
+       grand groupe). Ne jamais laisser un client en perte sans owner.`
+  },
+  {
+    match: n => /Nouveau client gagne/i.test(n),
+    definition: "Premier business genere en N — aucun historique avant.",
+    action: "Onboarding structure + plan de developpement Annee 1.",
+    strategy: `<strong>La conversion ne suffit pas : il faut consolider</strong>.
+       Statistiquement, un client gagne sur 1 seule activite a 60-70% de churn
+       a 24 mois. Mettre en place un onboarding de 90 jours (presentation de
+       l'offre complete, points reguliers, KAM nomme) et un objectif de
+       2e activite vendue dans les 12 mois. KPI : taux de retention N+1 et
+       taux de cross-sell sur les nouveaux.`
+  },
+  {
+    match: n => /reconquis/i.test(n),
+    definition: "Actif en N, mais inactif sur 12 mois precedents avec un historique ancien.",
+    action: "Capitaliser sur la reconquete — eviter une 2e perte.",
+    strategy: `Un client reconquis a deja churne une fois : il est <strong>3 a 5x
+       plus sensible</strong> qu'un nouveau client a une mauvaise experience.
+       Action : revue de la cause de churn initiale + plan de fidelisation
+       agressif (KAM, SLA renforcees, tarification stable 24 mois). KPI :
+       maintien en segment "Actif" sur 24 mois apres reconquete.`
+  },
+  {
+    match: n => /Client perdu/i.test(n),
+    definition: "Actif en N-1, plus aucune activite en N (GM_EUR_N = 0).",
+    action: "Win-back cible — segmenter les causes avant de relancer.",
+    strategy: `Ne pas relancer en masse. <strong>Segmenter par cause de churn</strong> :
+       (1) perte sur appel d'offre = revoir le pricing ; (2) insatisfaction
+       service = post-mortem operationnel avant relance ; (3) consolidation
+       fournisseurs cote client = approche directeur achats. Cibler en priorite
+       les ex-clients dont l'historique GM_EUR_hist depasse la mediane.
+       Win-back rate attendu : 15-25% sur 18 mois si action structuree.`
+  },
+  {
+    match: n => /Client dormant/i.test(n),
+    definition: "Aucune activite en N et derniere activite > 12 mois.",
+    action: "Desherbage CRM ou campagne reveil low-cost.",
+    strategy: `Au-dela de 12 mois d'inactivite, la probabilite de retour
+       organique tombe sous 5%. Deux options : (1) campagne d'email / call
+       automatisee a faible cout pour detecter les "endormis tiedes" qui
+       peuvent revenir, (2) sortie du pipeline commercial actif (libere le
+       temps des commerciaux). <strong>Ne pas confondre dormant et perdu</strong> :
+       le dormant n'a pas forcement choisi un concurrent, il peut juste avoir
+       arrete d'importer / exporter temporairement.`
+  },
+  {
+    match: n => /Alerte endormissement/i.test(n),
+    definition: "Actif en N mais sur <= 3 mois seulement, avec activite N-1 superieure.",
+    action: "<strong>Priorite N°1 du save</strong> — agir avant le churn complet.",
+    strategy: `Signal faible le plus precieux du framework. Un client qui passe
+       de 12 mois actifs a 2-3 mois actifs a deja bascule ailleurs pour une
+       partie de son volume. Action sous 30 jours : visite physique du KAM,
+       diagnostic perte de business, proposition commerciale specifique
+       (remise, nouveau service). <strong>ROI d'un save vs cout d'acquisition
+       d'un nouveau client : facteur 5 a 7</strong>.`
+  },
+  {
+    match: n => /Client actif/i.test(n),
+    definition: "GM_EUR_N > 0 — au moins une operation rentable en N (regle COMONE).",
+    action: "Baseline — segmenter ensuite par valeur / comportement / risque.",
+    strategy: `Segment cumulatif (englobe tout le portefeuille actif). Ne sert
+       pas a piloter en soi, mais a alimenter les autres blocs. KPI structurel :
+       <strong>nombre de clients actifs N vs N-1</strong> — c'est l'indicateur
+       de sante numero 1 du portefeuille.`
+  },
+
+  // === VALEUR ===
+  {
+    match: n => /^VVIP/i.test(n),
+    definition: "Top 5% par GM_EUR_N (percentile 95).",
+    action: "Account-Based Marketing — KAM dedie, comite executif client.",
+    strategy: `<strong>Concentration extreme : ~5% des clients = souvent 50-60%
+       du GM total</strong>. Chaque compte doit avoir : un KAM nomme, un plan de
+       compte ecrit annuel, une revue executive trimestrielle, un sponsor
+       direction generale. Tout dollar perdu sur un VVIP coute 20x plus cher a
+       remplacer. Verifier la presence de ces comptes dans le bloc Risque
+       (churn ou concentration) — c'est ici que se cache la fragilite du P&L.`
+  },
+  {
+    match: n => /^VIP/i.test(n) && !/VVIP/i.test(n),
+    definition: "Top 20% par GM_EUR_N (percentile 80).",
+    action: "Priorite commerciale forte — couverture KAM ou senior sales.",
+    strategy: `Le coeur des "comptes strategiques". Objectif : <strong>convertir
+       les VIP en VVIP via cross-sell et part de wallet</strong>. Croiser
+       systematiquement avec le bloc Developpement : un VIP mono-service est la
+       meilleure cible cross-sell du portefeuille (effort commercial faible,
+       upside fort).`
+  },
+  {
+    match: n => /^Standard/i.test(n),
+    definition: "Top 50% par GM_EUR_N (entre mediane et top 20%).",
+    action: "Couverture commerciale standard — automatiser ce qui peut l'etre.",
+    strategy: `Volume du portefeuille. La rentabilite par client suffit a
+       justifier une couverture commerciale, mais pas un KAM dedie.
+       <strong>Industrialiser</strong> : revues semestrielles, campagnes
+       de cross-sell automatisees, NPS systematique. Surveiller les
+       "Rocket clients" dans ce segment : ce sont les VIP de demain.`
+  },
+  {
+    match: n => /Long Tail/i.test(n),
+    definition: "GM positif mais sous la mediane du portefeuille.",
+    action: "Self-service / digital — minimiser le cout de service.",
+    strategy: `<strong>Piege classique : le Long Tail consomme souvent autant
+       de temps commercial qu'un VIP, pour 10x moins de marge</strong>.
+       Migration vers des canaux digitaux (e-booking, portail self-service),
+       seuils de service automatises, tarifs grille standard. Eviter les
+       remises commerciales sur ce segment : elles detruisent la rentabilite
+       sans creer de fidelite.`
+  },
+  {
+    match: n => /Top 20 du portefeuille/i.test(n),
+    definition: "Les 20 plus gros clients en rang absolu de GM_EUR_N.",
+    action: "Pilotage executif — revue mensuelle au comite de direction.",
+    strategy: `Pilotage strategique CEO / CFO. Suivre nominativement : evolution
+       GM N vs N-1, marge %, nombre d'activites, statut risque, NPS. <strong>La
+       sortie d'un client du Top 20 doit declencher une alerte automatique</strong>
+       au comex.`
+  },
+  {
+    match: n => /Top 100/i.test(n),
+    definition: "Les 100 plus gros clients en rang absolu.",
+    action: "Pilotage commercial — revue trimestrielle directeur commercial.",
+    strategy: `Perimetre de pilotage commercial structurant. Sert d'echantillon
+       de reference pour mesurer la qualite du portefeuille : marge moyenne,
+       taux de multi-equipe, taux de rocket / churn. Variations significatives
+       de cet echantillon = signal sur la sante globale.`
+  },
+
+  // === RENTABILITE ===
+  {
+    match: n => /^Rentable/i.test(n),
+    definition: "Marge brute (GM/CA) au-dessus du seuil parametre (defaut 15%).",
+    action: "Proteger la rentabilite — eviter les remises non justifiees.",
+    strategy: `Les clients rentables financent la croissance et l'innovation.
+       <strong>Ne pas les sur-solliciter en remises ou conditions favorables</strong>
+       sous pretexte qu'ils paient sans broncher : c'est la cible numero 1 des
+       concurrents. Plan de fidelisation premium plutot que remise tarifaire.`
+  },
+  {
+    match: n => /Peu rentable/i.test(n),
+    definition: "Marge brute sous le seuil parametre.",
+    action: "Renegocier ou desinvestir — surtout si volume eleve.",
+    strategy: `<strong>Le pire risque silencieux du portefeuille</strong>.
+       Un VIP peu rentable mobilise du temps commercial, du middle / back
+       office, et detruit de la valeur. Plan d'action : (1) hausse tarifaire
+       graduelle (5-10% par renegociation), (2) reduction du cost-to-serve
+       (suppression des operations a perte), (3) sortie progressive si refus.
+       Cible KPI : zero VVIP / VIP en zone "peu rentable" sous 18 mois.`
+  },
+
+  // === DEVELOPPEMENT ===
+  {
+    match: n => /Mono-service/i.test(n),
+    definition: "Client actif sur une seule activite (Activity_Name distinct = 1).",
+    action: "<strong>Cible cross-sell prioritaire numero 1</strong>.",
+    strategy: `Effort commercial minimal (le client vous connait deja, le
+       referentiel est ouvert, l'onboarding est court), upside maximum.
+       <strong>Regle d'or</strong> : chaque KAM doit avoir un objectif annuel
+       de conversion mono-vers-multi sur son portefeuille. KPI : taux de
+       conversion mono-vers-multi a 12 mois (cible : 15-20%).`
+  },
+  {
+    match: n => /Multi-equipe \(>=2/i.test(n),
+    definition: "Client consommant 2 activites ou plus.",
+    action: "Profondeur de la relation — ancrage commercial.",
+    strategy: `Un client multi-equipe est 3 a 5x plus fidele qu'un mono-service.
+       <strong>Chaque activite supplementaire reduit la probabilite de churn
+       d'environ 30%</strong>. Focus : passer de 2 a 3 activites (palier
+       suivant = segment "premium" ci-dessous).`
+  },
+  {
+    match: n => /Multi-equipe premium/i.test(n),
+    definition: "Client consommant 3 activites ou plus.",
+    action: "Compte mur — proteger absolument.",
+    strategy: `Le verrouillage commercial est tres fort (cout de switch eleve
+       cote client). <strong>Tres faible probabilite de churn complet mais
+       attention au churn partiel</strong> (perte d'une activite au profit
+       d'un concurrent). Suivi par activite (et non agrege) au comite KAM.`
+  },
+
+  // === COMPORTEMENT ===
+  {
+    match: n => /Client spot/i.test(n),
+    definition: "Actif sur 1 seul mois en N.",
+    action: "Tester la conversion en client recurrent.",
+    strategy: `Profil opportuniste : appel d'offre ponctuel, depannage, projet
+       one-shot. <strong>Ne pas confondre avec un nouveau client</strong> : un
+       spot recurrent annee apres annee est un signal de positionnement
+       "fournisseur de secours" — peu de valeur strategique. A tester avec une
+       offre cadre annuelle pour basculer vers un usage recurrent.`
+  },
+  {
+    match: n => /Client occasionnel/i.test(n),
+    definition: "Actif sur 2 a 3 mois dans l'annee.",
+    action: "Identifier le potentiel de regularisation.",
+    strategy: `Client semi-engage. Diagnostic commercial : pic saisonnier ?
+       fournisseur secondaire ? portefeuille produit limite chez vous ?
+       Si le client a un potentiel volumique connu, plan d'action pour
+       basculer en "saisonnier" ou "recurrent". Sinon, accepter le profil
+       et le servir efficacement.`
+  },
+  {
+    match: n => /Client saisonnier/i.test(n),
+    definition: "Actif sur 4 a 6 mois dans l'annee — cycle saisonnier net.",
+    action: "Anticiper le cycle — capacite, pricing dynamique.",
+    strategy: `Predictible et planifiable. <strong>Cycle souvent lie au business
+       du client</strong> (ex : agro = mai-octobre, jouet = septembre-decembre).
+       Action : anticiper la saison commerciale, securiser la capacite,
+       proposer un cadre annuel avec engagement volumique pour lisser. KPI :
+       maintien du volume saisonnier annee apres annee.`
+  },
+  {
+    match: n => /Client recurrent/i.test(n),
+    definition: "Actif 7 a 11 mois dans l'annee — quasi-permanent.",
+    action: "Pilier du portefeuille — fideliser long terme.",
+    strategy: `<strong>La frequence est le meilleur predicteur de fidelite a
+       long terme</strong>, devant la valeur. Un recurrent moyen vaut souvent
+       plus a 5 ans qu'un VIP saisonnier. Plan : contrat-cadre pluriannuel,
+       conditions privilegiees, KAM dedie meme si valeur moyenne.`
+  },
+  {
+    match: n => /tres regulier/i.test(n),
+    definition: "Actif les 12 mois de l'annee — flux continu.",
+    action: "Ancrage maximum — partenariat strategique.",
+    strategy: `Profil flotte / e-commerce / industriel a flux continu.
+       <strong>Quasi-fournisseur strategique du client</strong>. Plan :
+       contractualisation pluriannuelle, integration EDI / API, KAM senior,
+       gouvernance trimestrielle. Risque a surveiller : forte concentration
+       de revenus chez vous = pouvoir de negociation du client.`
+  },
+  {
+    match: n => /Rocket client/i.test(n),
+    definition: "Croissance GM N vs N-1 >= +50%.",
+    action: "Pousser — c'est le moment d'investir commercialement.",
+    strategy: `<strong>Le segment a plus fort ROI marketing</strong>. Le client
+       est en momentum : il consomme plus, il est ouvert a la discussion, il
+       a probablement un projet de croissance interne. Action : meeting strategique
+       avec le directeur achats / supply, proposition d'offre etendue, conditions
+       d'engagement volumique. Risque : ne pas confondre rocket structurel
+       (croissance saine) et rocket "rattrapage" (post-perte N-1).`
+  },
+  {
+    match: n => /Client en croissance/i.test(n),
+    definition: "Croissance GM N vs N-1 entre +10% et +50%.",
+    action: "Nourrir la trajectoire — eviter le decrochage.",
+    strategy: `Croissance saine et durable. Plan : maintenir la relation
+       commerciale, identifier les nouveaux besoins, proposer du cross-sell.
+       <strong>Cible naturelle pour passer en Rocket l'annee suivante</strong>
+       avec un coup de pouce commercial cible.`
+  },
+  {
+    match: n => /Client stagnant/i.test(n),
+    definition: "Variation GM N vs N-1 entre -10% et +10%.",
+    action: "Diagnostic — pourquoi pas de croissance ?",
+    strategy: `Plateau qui peut basculer en croissance ou en decroissance selon
+       l'action commerciale. Probleme courant : saturation du potentiel chez
+       le client, manque de cross-sell, concurrence qui s'installe.
+       <strong>Cible cross-sell + relance KAM</strong>.`
+  },
+  {
+    match: n => /Client en decroissance/i.test(n),
+    definition: "Variation GM N vs N-1 entre -30% et -10%.",
+    action: "Signal de save — agir avant le passage en risque eleve.",
+    strategy: `Lead indicator du churn. Le client n'a pas encore disparu mais
+       reduit clairement son engagement. Action sous 60 jours : visite
+       KAM, diagnostic perte de part de wallet, post-mortem operationnel
+       (qualite, sinistre, prix). <strong>Statistique : 40% des clients en
+       decroissance moderee basculent en risque churn eleve l'annee
+       suivante</strong> si rien n'est fait.`
+  },
+
+  // === RISQUE ===
+  {
+    match: n => /Risque churn eleve/i.test(n),
+    definition: "Baisse de GM N vs N-1 superieure a 50%.",
+    action: "<strong>P0 — action commerciale sous 30 jours obligatoire</strong>.",
+    strategy: `Drapeau rouge. Le client est en train de partir (volontairement
+       ou pas). Action immediate : (1) escalade KAM + directeur commercial,
+       (2) rdv physique sous 30 jours, (3) audit operationnel + financier de
+       la relation, (4) proposition commerciale dediee. KPI : taux de save sur
+       segment risque churn eleve (benchmark : 25-40% si action structuree).`
+  },
+  {
+    match: n => /A risque de perte/i.test(n),
+    definition: "Baisse de GM N vs N-1 superieure a 30%.",
+    action: "Surveillance renforcee — review mensuelle.",
+    strategy: `Zone d'alerte preventive. Tous les comptes de ce segment doivent
+       avoir un owner identifie + une revue mensuelle en pipeline commercial.
+       <strong>Croiser avec la valeur</strong> : un VVIP "a risque de perte"
+       passe direct en P0 quel que soit le % de baisse.`
+  },
+  {
+    match: n => /Risque concentration/i.test(n),
+    definition: "Client representant >= 5% du GM total du portefeuille.",
+    action: "Diversifier la dependance — ou securiser le contrat.",
+    strategy: `<strong>Double lecture obligatoire</strong> : c'est une
+       opportunite (compte tres rentable) ET un risque structurel pour le P&L
+       global. Plan : (1) contractualisation pluriannuelle pour reduire la
+       volatilite, (2) developpement d'autres comptes de meme taille pour
+       diluer la dependance, (3) plan de continuite si perte du compte
+       (impact P&L, plan de reaffectation des ressources commerciales).
+       <strong>Regle saine : aucun client ne devrait depasser 10% du GM
+       portefeuille</strong>.`
+  },
+
+  // === A IMPORTER (placeholders) ===
+  {
+    match: n => /compliance/i.test(n),
+    definition: "A importer — donnees compliance (sanctions, KYC, blacklist).",
+    action: "Integration source compliance / risk management.",
+    strategy: `Une fois importe : filtrer systematiquement avant toute action
+       commerciale (no-go automatique sur clients flagues). Source typique :
+       Dow Jones, Refinitiv, base interne risk.`
+  },
+  {
+    match: n => /NPS|Detracteur/i.test(n),
+    definition: "A importer — score NPS / satisfaction client.",
+    action: "Integration source enquetes satisfaction.",
+    strategy: `Le NPS est <strong>le meilleur predicteur du churn cote
+       qualitatif</strong>, complementaire aux indicateurs quantitatifs des
+       autres blocs. Detracteur + En decroissance = P0 absolu.`
+  },
+  {
+    match: n => /Donnees incompletes/i.test(n),
+    definition: "A importer — flag qualite data du CRM.",
+    action: "Mise en qualite CRM.",
+    strategy: `Toute analyse de portefeuille suppose un referentiel propre.
+       Maintenance du CRM en continu (taux de remplissage, mise a jour, deduplication).`
+  },
+  {
+    match: n => /Cross-sell potentiel/i.test(n),
+    definition: "A importer — score de propension cross-sell (modele ou expertise).",
+    action: "Modele scoring + activation campagnes.",
+    strategy: `Combine signaux internes (mono-service + croissance) et externes
+       (CA client, secteur, geographie). Permet de prioriser au-dela du seul
+       statut "mono-service".`
+  },
+  {
+    match: n => /White space/i.test(n),
+    definition: "A importer — potentiel non adresse chez le client (parts de marche).",
+    action: "Modele estimant le potentiel theorique du compte.",
+    strategy: `White space = volume total que le client achete sur votre
+       categorie / votre concurrence. Permet de calculer la part de wallet
+       reelle et de cibler les comptes a fort upside non capte.`
+  }
+];
+
+function findStrategyEntry(segmentName) {
+  return STRATEGY_BY_SEGMENT.find(e => e.match(segmentName));
+}
+
+function renderStrategicAnalysis() {
+  const container = document.getElementById("strategy-content");
+  const section = document.getElementById("section-strategy");
+  if (!STATE.classifiedData.length) {
+    section.style.display = "none";
+    container.innerHTML = "";
+    return;
+  }
+  section.style.display = "block";
+
+  // recompute counts + value per segment (meme logique que renderRepartition)
+  const counts = {};
+  const vals = {};
+  const valueKey = repartitionValueKey();
+  for (const r of STATE.classifiedData) {
+    const segList = (r.segments && r.segments.length) ? r.segments : [r.segment || "Non classe"];
+    segList.forEach(s => {
+      counts[s] = (counts[s] || 0) + 1;
+      if (valueKey) vals[s] = (vals[s] || 0) + (r[valueKey] || 0);
+    });
+  }
+  const total = STATE.classifiedData.length;
+
+  // groupe les segments par categorie en respectant l'ordre dans STATE.segments
+  const catBySegment = {};
+  STATE.segments.forEach(s => { catBySegment[s.name] = s.category || "Autres"; });
+  const CATEGORY_ORDER = [
+    "Statut", "Cycle de vie", "Valeur", "Rentabilite", "Developpement",
+    "Comportement", "Risque", "A importer (donnees externes)"
+  ];
+  const groups = {};
+  STATE.segments.forEach(s => {
+    const cat = s.category || "Autres";
+    if (!groups[cat]) groups[cat] = [];
+    groups[cat].push(s.name);
+  });
+  const orderedCats = [
+    ...CATEGORY_ORDER.filter(c => groups[c]),
+    ...Object.keys(groups).filter(c => !CATEGORY_ORDER.includes(c))
+  ];
+
+  let html = `<div style="font-size: 13px; color: #6b7280; margin-bottom: 12px;">
+    Portefeuille analyse : <strong>${total.toLocaleString("fr-FR")}</strong> clients
+    ${valueKey ? `(${escapeHtml(valueKey)} total : ${
+      STATE.classifiedData.reduce((s, r) => s + (r[valueKey] || 0), 0)
+        .toLocaleString("fr-FR", { maximumFractionDigits: 0 })} EUR)` : ""}.
+    Analyses generees automatiquement a partir de votre classification courante.
+  </div>`;
+
+  orderedCats.forEach(cat => {
+    const intro = STRATEGY_BLOCK_INTRO[cat] || { title: cat, priority: "", text: "" };
+    const segNames = groups[cat] || [];
+    const catTotalGM = segNames.reduce((s, n) => s + (vals[n] || 0), 0);
+    const catTotalClients = segNames.reduce((s, n) => s + (counts[n] || 0), 0);
+
+    html += `<details open style="margin-bottom: 16px; border: 1px solid #e3e6ea;
+        border-radius: 8px; padding: 12px 16px; background: #fafbfc;">
+      <summary style="cursor: pointer; font-weight: 700; font-size: 15px; color: #1f2937;">
+        ${escapeHtml(intro.title)}
+        <span class="muted" style="font-weight: 400; font-size: 13px;">
+          — ${catTotalClients.toLocaleString("fr-FR")} client(s) cumules (multi-flag)
+        </span>
+      </summary>
+      ${intro.priority ? `<p style="margin: 8px 0 4px; font-size: 13px; color: #2563eb;
+        font-weight: 600;">${escapeHtml(intro.priority)}</p>` : ""}
+      ${intro.text ? `<p style="margin: 4px 0 14px; font-size: 13px; color: #374151;
+        line-height: 1.55;">${intro.text}</p>` : ""}`;
+
+    segNames.forEach(name => {
+      const n = counts[name] || 0;
+      const v = vals[name] || 0;
+      const pctClients = total ? (n / total * 100) : 0;
+      const entry = findStrategyEntry(name);
+      const def = entry?.definition || "(definition non documentee pour ce segment)";
+      const action = entry?.action || "";
+      const strat = entry?.strategy || "(analyse strategique non documentee)";
+
+      // KPI ligne
+      const kpis = `
+        <span style="display: inline-block; background: #eff6ff; color: #1e40af;
+          padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 600;
+          margin-right: 6px;">${n.toLocaleString("fr-FR")} clients</span>
+        <span style="display: inline-block; background: #f0fdf4; color: #166534;
+          padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 600;
+          margin-right: 6px;">${pctClients.toFixed(1)}% du portefeuille</span>
+        ${valueKey ? `<span style="display: inline-block; background: #fef3c7;
+          color: #92400e; padding: 2px 8px; border-radius: 4px; font-size: 12px;
+          font-weight: 600;">${v.toLocaleString("fr-FR",
+          { maximumFractionDigits: 0 })} ${escapeHtml(valueKey)}</span>` : ""}`;
+
+      html += `<div style="background: white; border: 1px solid #e3e6ea;
+          border-radius: 6px; padding: 12px 14px; margin-bottom: 10px;">
+        <div style="display: flex; justify-content: space-between; align-items: flex-start;
+            gap: 12px; flex-wrap: wrap; margin-bottom: 8px;">
+          <h4 style="margin: 0; font-size: 14px; color: #1f2937;">${escapeHtml(name)}</h4>
+          <div>${kpis}</div>
+        </div>
+        <p style="margin: 6px 0; font-size: 13px; color: #4b5563;">
+          <strong>Definition :</strong> ${def}
+        </p>
+        ${action ? `<p style="margin: 6px 0; font-size: 13px; color: #4b5563;">
+          <strong>Action :</strong> ${action}
+        </p>` : ""}
+        <p style="margin: 6px 0 0; font-size: 13px; color: #374151; line-height: 1.55;">
+          <strong>Analyse strategique :</strong> ${strat}
+        </p>
+      </div>`;
+    });
+
+    html += `</details>`;
+  });
+
+  container.innerHTML = html;
+}
+
+// Export de l'analyse en HTML autonome (utile pour partager en interne).
+function exportStrategyHtml() {
+  const content = document.getElementById("strategy-content").innerHTML;
+  if (!content.trim()) {
+    alert("Aucune analyse a exporter. Lancez d'abord la classification.");
+    return;
+  }
+  const title = `Analyse strategique segmentation — ${new Date().toLocaleDateString("fr-FR")}`;
+  const html = `<!doctype html><html lang="fr"><head><meta charset="utf-8">
+    <title>${title}</title>
+    <style>
+      body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        max-width: 1100px; margin: 24px auto; padding: 0 16px; color: #1f2937;
+        line-height: 1.55; }
+      h1 { font-size: 24px; }
+      details { margin-bottom: 16px; border: 1px solid #e3e6ea; border-radius: 8px;
+        padding: 12px 16px; background: #fafbfc; }
+      summary { cursor: pointer; font-weight: 700; font-size: 15px; }
+      .muted { color: #6b7280; }
+    </style></head><body>
+    <h1>${title}</h1>
+    ${content}
+    </body></html>`;
+  const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+  download(blob, `analyse-strategique-${new Date().toISOString().slice(0,10)}.html`);
+}
+
+document.getElementById("btn-export-strategy").addEventListener("click", exportStrategyHtml);
 
 // quelle metrique de valeur afficher dans la repartition (GM en priorite, sinon CA)
 function repartitionValueKey() {
