@@ -167,6 +167,7 @@
   <input type="file" id="file-input" accept=".xlsx,.xls" multiple>
   <div id="upload-status"></div>
   <div id="upload-metrics" class="row" style="margin-top: 12px;"></div>
+  <div id="upload-diagnostic" style="margin-top: 12px;"></div>
 </div>
 
 <!-- =============================================== -->
@@ -330,22 +331,47 @@ document.getElementById("file-input").addEventListener("change", async (e) => {
     await yieldUI();
     try {
       const buf = await file.arrayBuffer();
-      // options SheetJS pour la perf
+      // options SheetJS pour la perf (sans dense: true qui peut donner
+      // des resultats vides selon les versions)
       const wb = XLSX.read(buf, {
         type: "array",
         cellFormula: false, cellHTML: false, cellStyles: false,
-        cellNF: false, cellDates: false, dense: true
+        cellNF: false, cellDates: false
       });
       const ws = wb.Sheets[wb.SheetNames[0]];
       setStatus("upload-status",
         `[${fi + 1}/${files.length}] "${file.name}" : conversion en cours...`, "info");
       await yieldUI();
-      const raw = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null });
-      console.log(`[upload] ${file.name}: ${raw.length} lignes brutes`);
+      const raw = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null, blankrows: false });
+      console.log(`[upload] ${file.name}: ${raw.length} lignes brutes (incl. en-tete)`);
+      console.log(`[upload] 3 premieres lignes:`, raw.slice(0, 3));
 
       const headerIdx = detectHeaderRow(raw);
-      if (raw.length <= headerIdx) continue;
-      const headers = raw[headerIdx].map(h => String(h).trim());
+      console.log(`[upload] ligne d'en-tete detectee: index ${headerIdx}`);
+      if (raw.length <= headerIdx + 1) {
+        setStatus("upload-status",
+          `Fichier "${file.name}" : aucune donnee detectee apres la ligne d'en-tete (index ${headerIdx}).`,
+          "error");
+        return;
+      }
+      const headers = raw[headerIdx].map(h => h == null ? "" : String(h).trim());
+      console.log(`[upload] ${headers.filter(Boolean).length} colonnes detectees:`, headers);
+
+      // panneau diagnostic visible
+      const diag = document.getElementById("upload-diagnostic");
+      const sampleRow = raw[headerIdx + 1] || [];
+      diag.innerHTML = `
+        <details open style="background: #fffbeb; border: 1px solid #fde68a; border-radius: 6px; padding: 10px;">
+          <summary><strong>Diagnostic du fichier "${escapeHtml(file.name)}"</strong> (ouvre la console F12 pour plus)</summary>
+          <ul style="font-size: 13px; margin: 8px 0;">
+            <li><strong>${raw.length}</strong> lignes brutes lues dans la feuille</li>
+            <li>Ligne d'en-tete detectee : <strong>index ${headerIdx}</strong> (donc ${headerIdx} lignes avant)</li>
+            <li><strong>${headers.filter(Boolean).length}</strong> colonnes detectees</li>
+            <li>Colonnes : <code style="font-size: 11px;">${escapeHtml(headers.filter(Boolean).slice(0, 10).join(" | "))}${headers.length > 10 ? " | ..." : ""}</code></li>
+            <li>Premiere ligne de donnees (apercu) : <code style="font-size: 11px;">${escapeHtml(JSON.stringify(sampleRow.slice(0, 5)))}</code></li>
+          </ul>
+        </details>
+      `;
 
       setStatus("upload-status",
         `[${fi + 1}/${files.length}] "${file.name}" : indexation de ${(raw.length - headerIdx - 1).toLocaleString("fr-FR")} lignes...`,
@@ -420,10 +446,24 @@ document.getElementById("file-input").addEventListener("change", async (e) => {
 });
 
 function detectHeaderRow(rows) {
-  for (let i = 0; i < Math.min(rows.length, 15); i++) {
+  // 1) cherche une ligne avec les 3 marqueurs (Year, Customer, JobfileNumber)
+  for (let i = 0; i < Math.min(rows.length, 30); i++) {
     const r = rows[i] || [];
     const vals = new Set(r.filter(v => v !== null && v !== undefined).map(v => String(v).trim()));
     if (HEADER_MARKERS.every(m => vals.has(m))) return i;
+  }
+  // 2) sinon cherche une ligne avec au moins 2 des 3 marqueurs
+  for (let i = 0; i < Math.min(rows.length, 30); i++) {
+    const r = rows[i] || [];
+    const vals = new Set(r.filter(v => v !== null && v !== undefined).map(v => String(v).trim()));
+    const hits = HEADER_MARKERS.filter(m => vals.has(m)).length;
+    if (hits >= 2) return i;
+  }
+  // 3) sinon retourne la 1ere ligne non vide qui a plus de 5 colonnes non nulles
+  for (let i = 0; i < Math.min(rows.length, 30); i++) {
+    const r = rows[i] || [];
+    const nonEmpty = r.filter(v => v !== null && v !== undefined && v !== "").length;
+    if (nonEmpty >= 5) return i;
   }
   return 0;
 }
