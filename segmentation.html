@@ -2711,6 +2711,48 @@ function flattenForExport(rows) {
   });
 }
 
+// Serialise des objets en CSV "francais" : separateur ;, decimales ,,
+// quotes uniquement si necessaire, BOM UTF-8 + hint sep=; pour Excel.
+function toFrenchCsv(rows) {
+  if (!rows.length) return "﻿sep=;\n";
+  // ordre des colonnes : union de toutes les cles, en preservant l'ordre
+  // d'apparition dans la premiere ligne puis les nouvelles cles ensuite.
+  const cols = [];
+  const seen = new Set();
+  rows.forEach(r => {
+    Object.keys(r).forEach(k => {
+      if (!seen.has(k)) { seen.add(k); cols.push(k); }
+    });
+  });
+
+  const SEP = ";";
+  const needsQuote = (s) => /[";\n\r]/.test(s);
+  const quote = (s) => `"${String(s).replace(/"/g, '""')}"`;
+
+  const formatCell = (v) => {
+    if (v == null || v === "") return "";
+    if (typeof v === "number") {
+      if (!isFinite(v)) return "";
+      // entiers : pas de decimale ; sinon decimale "," avec max 4 chiffres significatifs
+      if (Number.isInteger(v)) return String(v);
+      // arrondi a 2 decimales par defaut, sans notation scientifique
+      const rounded = Math.round(v * 100) / 100;
+      return String(rounded).replace(".", ",");
+    }
+    if (v instanceof Date) {
+      const d = v.toISOString().slice(0, 10);
+      return d;
+    }
+    const s = String(v);
+    return needsQuote(s) ? quote(s) : s;
+  };
+
+  const header = cols.map(c => needsQuote(c) ? quote(c) : c).join(SEP);
+  const body = rows.map(r => cols.map(c => formatCell(r[c])).join(SEP)).join("\r\n");
+  // BOM + hint "sep=;" pour qu'Excel France ouvre directement avec le bon separateur
+  return "﻿sep=;\r\n" + header + "\r\n" + body + "\r\n";
+}
+
 function exportSegment(segName, format) {
   const rows = flattenForExport(STATE.classifiedData.filter(r =>
     (r.segments && r.segments.includes(segName)) || r.segment === segName
@@ -2722,9 +2764,8 @@ function exportSegment(segName, format) {
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "clients");
     XLSX.writeFile(wb, `segment_${safeName}.xlsx`);
   } else {
-    const ws = XLSX.utils.json_to_sheet(rows);
-    const csv = XLSX.utils.sheet_to_csv(ws);
-    const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
+    const csv = toFrenchCsv(rows);
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     download(blob, `segment_${safeName}.csv`);
   }
 }
@@ -2781,9 +2822,8 @@ function exportXlsx() {
 }
 
 function exportCsv() {
-  const ws = XLSX.utils.json_to_sheet(flattenForExport(STATE.classifiedData));
-  const csv = XLSX.utils.sheet_to_csv(ws);
-  const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
+  const csv = toFrenchCsv(flattenForExport(STATE.classifiedData));
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
   download(blob, "clients_segmentes.csv");
 }
 
