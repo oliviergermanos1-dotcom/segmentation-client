@@ -294,8 +294,13 @@
           <option value="6">6 mois</option>
           <option value="12" selected>12 mois (norme AGL)</option>
           <option value="24">24 mois</option>
+          <option value="36">36 mois (3 ans)</option>
+          <option value="48">48 mois (4 ans)</option>
+          <option value="60">60 mois (5 ans)</option>
+          <option value="72">72 mois (6 ans)</option>
+          <option value="auto" data-auto>Auto - toute la base</option>
         </select>
-        <p class="muted" style="font-size: 12px; margin: 4px 0 0;">
+        <p class="muted" style="font-size: 12px; margin: 4px 0 0;" id="param-window-hint">
           Seuil actif / dormant.
         </p>
       </div>
@@ -765,7 +770,16 @@ function applyFilters() {
     `<div class="metric"><div class="metric-label">Lignes apres filtres</div>
        <div class="metric-value">${STATE.filteredData.length.toLocaleString("fr-FR")}</div></div>`;
   renderAggregateSection();
+  // met a jour le hint de fenetre d'activite (depend du span de donnees filtrees)
+  if (typeof updateWindowHint === "function") updateWindowHint();
 }
+
+// Quand l'utilisateur change le selecteur de fenetre, met a jour le hint
+document.addEventListener("change", e => {
+  if (e.target && e.target.id === "param-window-months") {
+    updateWindowHint();
+  }
+});
 
 /* =============================================================
    ETAPE 3 : Agregation par client
@@ -1105,6 +1119,38 @@ document.getElementById("btn-clear-rules").addEventListener("click", () => {
 
 // Construit le framework complet de segments AGL en fonction des donnees agregees
 // et des parametres choisis. Inspire du framework pseudo-SQL fourni par l'utilisateur.
+// Calcule le nombre de mois couverts par les donnees actuellement chargees,
+// de la premiere periode (YYYY-MM) trouvee jusqu'a la plus recente. Pris en
+// compte par l'option "Auto" du selecteur Fenetre d'activite.
+function computeDataSpanMonths() {
+  const src = STATE.filteredData.length ? STATE.filteredData : STATE.rawData;
+  if (!src.length) return 12;
+  let minP = null, maxP = null;
+  for (const r of src) {
+    const p = r.Period;
+    if (!p || typeof p !== "string") continue;
+    if (!minP || p < minP) minP = p;
+    if (!maxP || p > maxP) maxP = p;
+  }
+  if (!minP || !maxP) return 12;
+  const [y1, m1] = minP.split("-").map(Number);
+  const [y2, m2] = maxP.split("-").map(Number);
+  return Math.max(1, (y2 - y1) * 12 + (m2 - m1) + 1);
+}
+
+// Met a jour le hint du selecteur Fenetre d'activite pour afficher
+// le nombre de mois reels de la base + la valeur effective utilisee
+function updateWindowHint() {
+  const hintEl = document.getElementById("param-window-hint");
+  const sel = document.getElementById("param-window-months");
+  if (!hintEl || !sel) return;
+  const span = computeDataSpanMonths();
+  const eff = sel.value === "auto" ? span : parseInt(sel.value, 10);
+  hintEl.textContent =
+    `Seuil actif / dormant. Donnees chargees : ${span} mois au total. ` +
+    `Valeur effective utilisee : ${eff} mois.`;
+}
+
 function buildAGLFrameworkRules() {
   if (!STATE.aggregatedData.length) return null;
   const cols = new Set(STATE.aggColumns);
@@ -1114,7 +1160,15 @@ function buildAGLFrameworkRules() {
   if (!cols.has(gmCol)) return null;
 
   // parametres saisis par l'utilisateur (avec defauts)
-  const windowMonths = parseInt(document.getElementById("param-window-months")?.value || "12", 10);
+  // fenetre d'activite : si "auto", on prend tout l'historique des donnees
+  // chargees (ex: 2021 -> 2026 = ~72 mois)
+  const rawWin = document.getElementById("param-window-months")?.value || "12";
+  let windowMonths;
+  if (rawWin === "auto") {
+    windowMonths = computeDataSpanMonths();
+  } else {
+    windowMonths = parseInt(rawWin, 10) || 12;
+  }
   const reacGap = parseInt(document.getElementById("param-reactivation-gap")?.value || "12", 10);
   const marginFloor = parseInt(document.getElementById("param-margin-floor")?.value || "15", 10) / 100;
 
