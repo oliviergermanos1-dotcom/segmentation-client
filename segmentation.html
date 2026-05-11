@@ -204,6 +204,15 @@
     </div>
   </div>
   <div style="margin-top: 12px;">
+    <label>Dimensions a garder par client (valeur la plus frequente)</label>
+    <p class="muted" style="margin: 2px 0 6px;">
+      Cochez les colonnes utiles pour vos regles de segmentation (ex : ARGOS
+      Type Name, Shipping Type Name, Activity Name). Pour chaque client, on
+      garde la valeur qui revient le plus souvent.
+    </p>
+    <div id="extras-list" class="checkbox-list"></div>
+  </div>
+  <div style="margin-top: 12px;">
     <button id="btn-aggregate">Lancer l'agregation</button>
   </div>
   <div id="agg-status"></div>
@@ -670,22 +679,83 @@ function applyFilters() {
 /* =============================================================
    ETAPE 3 : Agregation par client
    ============================================================= */
+// detection des colonnes numeriques dans les donnees brutes (utilise pour
+// distinguer dimensions vs metriques dans la liste "extras")
+function isNumericRawColumn(col) {
+  if (!STATE.rawData.length) return false;
+  let numericHits = 0, textHits = 0;
+  for (let i = 0; i < Math.min(STATE.rawData.length, 100); i++) {
+    const v = STATE.rawData[i][col];
+    if (v == null || v === "") continue;
+    if (typeof v === "number") numericHits++;
+    else if (typeof v === "string" && !isNaN(parseFloat(v)) && /^-?[\d., ]+$/.test(v)) numericHits++;
+    else textHits++;
+  }
+  return numericHits > textHits;
+}
+
 function renderAggregateSection() {
   document.getElementById("section-aggregate").style.display = "block";
 
-  const keys = ["Customer", "HQ CTO Customer Name", "CTO / RCU Customer Code", "CTO Name And Code"]
-    .filter(k => STATE.columns.includes(k));
+  // candidats client : toutes les colonnes du fichier, avec un ordre de tete
+  // pour les colonnes typiques d'identification
+  const preferred = [
+    "Customer", "HQ CTO Customer Name", "CTO / RCU Customer Code", "CTO Name And Code",
+    "CTO Email", "3rd Party Customer CTO",
+    "Dim Customer[CTO Email]", "Dim Customer[3rd Party Customer CTO]"
+  ];
+  const orderedKeys = [
+    ...preferred.filter(k => STATE.columns.includes(k)),
+    ...STATE.columns.filter(c => c && !preferred.includes(c) && c !== "__source__")
+  ];
   const keySel = document.getElementById("client-key");
-  if (!keySel.options.length || keySel.options.length !== keys.length) {
-    keySel.innerHTML = (keys.length ? keys : STATE.columns).map(k => `<option value="${k}">${k}</option>`).join("");
+  // on re-rend si la liste a change (apres un nouveau fichier par exemple)
+  const sig = orderedKeys.join("|");
+  if (keySel.dataset.sig !== sig) {
+    keySel.innerHTML = orderedKeys.map(k =>
+      `<option value="${escapeHtml(k)}">${escapeHtml(k)}</option>`
+    ).join("");
+    keySel.dataset.sig = sig;
   }
 
+  // metriques numeriques connues
   const metricsBox = document.getElementById("metrics-list");
-  if (!metricsBox.innerHTML) {
-    const availMetrics = Object.keys(NUMERIC_METRICS).filter(m => STATE.columns.includes(m));
+  const metricsSig = Object.keys(NUMERIC_METRICS).filter(m => STATE.columns.includes(m)).join("|");
+  if (metricsBox.dataset.sig !== metricsSig) {
+    const availMetrics = metricsSig.split("|").filter(Boolean);
     metricsBox.innerHTML = availMetrics.map(m =>
-      `<label><input type="checkbox" data-metric="${m}" checked> ${m}</label>`
-    ).join("");
+      `<label><input type="checkbox" data-metric="${escapeHtml(m)}" ${m === "Direct GM in EUR" ? "checked" : (availMetrics.length <= 2 ? "checked" : "")}> ${escapeHtml(m)}</label>`
+    ).join("") || `<span class="muted">Aucune metrique numerique reconnue.</span>`;
+    metricsBox.dataset.sig = metricsSig;
+  }
+
+  // dimensions a garder : toutes les colonnes non-numeriques, hors metriques et hors __source__
+  const numericNames = new Set(Object.keys(NUMERIC_METRICS));
+  const skip = new Set([
+    "__source__", "JobfileNumber", "Year", "Month", "Period",
+    ...Object.keys(NUMERIC_METRICS)
+  ]);
+  const dimCandidates = STATE.columns.filter(c =>
+    c && !skip.has(c) && !numericNames.has(c) && !isNumericRawColumn(c)
+  );
+  // defauts a cocher : les colonnes que l'utilisateur a explicitement demandees
+  const defaultChecked = new Set([
+    "ARGOS Type Name", "Shipping Type Name", "Activity Name (EN)",
+    "Market Segment Name", "Reporting Entity Label", "HQ CTO Customer Name",
+    "CTO Email", "3rd Party Customer CTO",
+    "Dim Activity[ARGOS Type Name]", "Dim Shipping Type[Shipping Type Name]",
+    "Dim Activity[Activity Name (EN)]", "Dim Customer[CTO Email]",
+    "Dim Customer[3rd Party Customer CTO]"
+  ]);
+  const extrasBox = document.getElementById("extras-list");
+  const extrasSig = dimCandidates.join("|");
+  if (extrasBox.dataset.sig !== extrasSig) {
+    extrasBox.innerHTML = dimCandidates.length
+      ? dimCandidates.map(c =>
+          `<label><input type="checkbox" data-extra="${escapeHtml(c)}" ${defaultChecked.has(c) ? "checked" : ""}> ${escapeHtml(c)}</label>`
+        ).join("")
+      : `<span class="muted">Aucune dimension texte disponible.</span>`;
+    extrasBox.dataset.sig = extrasSig;
   }
 }
 
@@ -694,6 +764,9 @@ document.getElementById("btn-aggregate").addEventListener("click", () => {
   const metricsSelected = Array.from(
     document.querySelectorAll("#metrics-list input:checked")
   ).map(cb => cb.dataset.metric);
+  const extrasSelected = Array.from(
+    document.querySelectorAll("#extras-list input:checked")
+  ).map(cb => cb.dataset.extra);
 
   if (!STATE.filteredData.length) {
     setStatus("agg-status", "Aucune ligne apres filtres.", "error");
@@ -729,7 +802,7 @@ document.getElementById("btn-aggregate").addEventListener("click", () => {
         o.Nb_mois_actifs = new Set(periods).size;
       }
     }
-    ["HQ CTO Customer Name", "Market Segment Name", "Reporting Entity Label"].forEach(extra => {
+    extrasSelected.forEach(extra => {
       if (STATE.columns.includes(extra) && extra !== key) {
         const counts = new Map();
         rows.forEach(r => {
@@ -746,7 +819,10 @@ document.getElementById("btn-aggregate").addEventListener("click", () => {
     });
     agg.push(o);
   }
-  agg.sort((a, b) => (b.CA_EUR || 0) - (a.CA_EUR || 0));
+  // tri decroissant sur la premiere metrique disponible (GM en priorite, sinon CA)
+  const sortKey = ["GM_EUR", "CA_EUR", "Billing_HT_EUR", "TEU", "Freight_Ton"]
+    .find(k => agg.length && k in agg[0]);
+  if (sortKey) agg.sort((a, b) => (b[sortKey] || 0) - (a[sortKey] || 0));
 
   STATE.aggregatedData = agg;
   STATE.aggColumns = agg.length ? Object.keys(agg[0]) : [];
