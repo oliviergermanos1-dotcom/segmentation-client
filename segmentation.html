@@ -1350,21 +1350,21 @@ function buildAGLFrameworkRules() {
   // ============================================================
   // SEGMENT 3 — CROSS SELL (Developpement)
   // Activites qui ont genere pour la 1ere fois du CAP sur un compte
-  // existant. Necessite la colonne "Nb_Activity_Name_EN_nouveaux_en_N".
+  // existant : nouvelle activite vendue sur un client deja en portefeuille.
   // Mutuellement exclusif de "New Business" (Annees_actives_hist >= 1).
+  // Necessite la colonne calculee "Nb_Activity_Name_EN_nouveaux_en_N"
+  // (produite a l'agregation si "Activity Name (EN)" est present dans les donnees).
   // ============================================================
-  if (cols.has("Nb_Activity_Name_EN_nouveaux_en_N")) {
-    segs.push({
-      name: "Cross Sell",
-      category: "Developpement",
-      logic: "AND",
-      conditions: [
-        { column: "GM_EUR_N", op: ">", value: "0" },
-        { column: "Annees_actives_hist", op: ">=", value: "1" },
-        { column: "Nb_Activity_Name_EN_nouveaux_en_N", op: ">=", value: "1" }
-      ]
-    });
-  }
+  segs.push({
+    name: "Cross Sell",
+    category: "Developpement",
+    logic: "AND",
+    conditions: [
+      { column: "GM_EUR_N", op: ">", value: "0" },
+      { column: "Annees_actives_hist", op: ">=", value: "1" },
+      { column: "Nb_Activity_Name_EN_nouveaux_en_N", op: ">=", value: "1" }
+    ]
+  });
 
   return segs;
 }
@@ -2476,7 +2476,10 @@ function renderSegmentSubtabs() {
     const segs = (r.segments && r.segments.length) ? r.segments : [r.segment || "Non classe"];
     segs.forEach(s => { counts[s] = (counts[s] || 0) + 1; });
   });
-  const orderedSegs = STATE.segments.map(s => s.name).filter(n => counts[n]);
+  // affiche TOUS les segments definis (meme avec 0 client), pour que le
+  // metier voie clairement quels segments existent dans le framework.
+  // Ajoute en suite les segments "orphelins" presents en data mais pas dans STATE.segments.
+  const orderedSegs = STATE.segments.map(s => s.name);
   Object.keys(counts).forEach(n => { if (!orderedSegs.includes(n)) orderedSegs.push(n); });
 
   if (!orderedSegs.length) {
@@ -2516,6 +2519,38 @@ function renderSegmentTabContent(segName) {
   const rows = STATE.classifiedData.filter(r =>
     (r.segments && r.segments.includes(segName)) || r.segment === segName
   );
+
+  // Cas 0 client : afficher message + diagnostic specifique pour Cross Sell
+  if (!rows.length) {
+    const isCrossSell = /Cross Sell/i.test(segName);
+    const cols = STATE.aggColumns || [];
+    const hasNewActCol = cols.includes("Nb_Activity_Name_EN_nouveaux_en_N");
+    const hasMultiYear = cols.includes("GM_EUR_N1") || cols.includes("GM_EUR_hist");
+    let diag = "";
+    if (isCrossSell && !hasNewActCol) {
+      diag = `<p style="margin-top: 12px; color: var(--warning);">
+        <strong>Colonne manquante</strong> : <code>Nb_Activity_Name_EN_nouveaux_en_N</code>
+        n'est pas dans l'agregation. Verifiez que la colonne <code>Activity Name (EN)</code>
+        est presente dans les fichiers source et qu'une <strong>annee de reference</strong>
+        a bien ete choisie a l'etape Agregation.</p>`;
+    } else if (isCrossSell && !hasMultiYear) {
+      diag = `<p style="margin-top: 12px; color: var(--warning);">
+        <strong>Donnees insuffisantes</strong> : la detection Cross Sell necessite
+        un historique multi-annees. Chargez les fichiers couvrant N-1 et plus
+        en arriere pour identifier les <em>nouvelles</em> activites en N.</p>`;
+    } else if (isCrossSell) {
+      diag = `<p style="margin-top: 12px;">Aucun client n'a vendu une activite
+        en N qui n'existait pas dans son historique. Possibles raisons : pas
+        d'effort cross-sell sur la periode, ou tous les clients existants n'ont
+        consomme que des activites deja connues.</p>`;
+    }
+    content.innerHTML = `<div class="empty-state">
+      <h3>0 client dans ce segment</h3>
+      <p>Aucun client ne matche les regles du segment <strong>${escapeHtml(segName)}</strong>.</p>
+      ${diag}
+    </div>`;
+    return;
+  }
   const keyCol = document.getElementById("client-key")?.value || Object.keys(rows[0] || {})[0];
 
   // KPI synthese du segment
