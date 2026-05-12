@@ -316,15 +316,6 @@
         </select>
       </div>
     </div>
-    <div style="margin-top: 10px;">
-      <label>Marge minimum "rentable" (GM / CA)</label>
-      <select id="param-margin-floor">
-        <option value="5">5%</option>
-        <option value="10">10%</option>
-        <option value="15" selected>15% (recommande)</option>
-        <option value="20">20%</option>
-      </select>
-    </div>
   </div>
   <button id="btn-classify">Lancer la classification (framework AGL automatique)</button>
   <button id="btn-show-rules" class="secondary" style="margin-left: 8px;">Voir / editer les regles generees</button>
@@ -1144,7 +1135,6 @@ function buildAGLFrameworkRules() {
   // parametres saisis par l'utilisateur (avec defauts)
   const windowMonths = parseInt(document.getElementById("param-window-months")?.value || "12", 10);
   const reacGap = parseInt(document.getElementById("param-reactivation-gap")?.value || "12", 10);
-  const marginFloor = parseInt(document.getElementById("param-margin-floor")?.value || "15", 10) / 100;
 
   // calcule des percentiles dynamiques sur la metrique de valeur
   const positive = STATE.aggregatedData.map(r => r[gmCol]).filter(v => typeof v === "number" && v > 0).sort((a, b) => a - b);
@@ -1312,32 +1302,8 @@ function buildAGLFrameworkRules() {
   // ============================================================
   // BLOC E — RENTABILITE (necessite CA + GM dans la metrique)
   // ============================================================
-  if (cols.has(caCol)) {
-    // GM% = GM / CA — on encode avec un seuil sur le GM en EUR mais conditionne par CA > 0
-    // Pour evaluer "GM% >= 15%" sans operateur dedie, on duplique la regle en absolute :
-    // mais une fois passe par le moteur, comparer GM avec un seuil absolu ne marche pas.
-    // Workaround : on cree une colonne derivee Marge_pct_N a l'agregation (voir patch precedent).
-    // En attendant, on encode via une condition relative grossiere : GM_N >= marginFloor * CA_N
-    // Pour cela, on n'a pas d'operateur, donc on ajoute un placeholder explique :
-    segs.push({
-      name: `Rentable (marge >= ${Math.round(marginFloor * 100)}%)`,
-      category: "Rentabilite",
-      logic: "AND",
-      conditions: [
-        { column: "Marge_pct_N", op: ">=", value: String(Math.round(marginFloor * 100)) },
-        { column: caCol, op: ">", value: "0" }
-      ]
-    });
-    segs.push({
-      name: `Peu rentable (marge < ${Math.round(marginFloor * 100)}%)`,
-      category: "Rentabilite",
-      logic: "AND",
-      conditions: [
-        { column: "Marge_pct_N", op: "<", value: String(Math.round(marginFloor * 100)) },
-        { column: caCol, op: ">", value: "0" }
-      ]
-    });
-  }
+  // (Bloc Rentabilite retire temporairement : en attente de la nouvelle
+  // definition des segments par l'utilisateur)
 
   // ============================================================
   // BLOC F — DEVELOPPEMENT (mono / multi-equipe)
