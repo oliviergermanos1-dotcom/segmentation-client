@@ -377,7 +377,7 @@
       <div class="metric-label">Regles definies</div>
       <div class="metric-value" id="rules-count">0</div>
     </div>
-    <button id="btn-preset-agl">Preset Segmentation AGL (complete)</button>
+    <button id="btn-preset-agl">Preset segmentation RCI (New Business, Reconquis, Cross Sell)</button>
     <button class="secondary" id="btn-quartiles">Preset quartiles CA</button>
     <button class="secondary" id="btn-export-rules">Exporter regles (JSON)</button>
     <input type="file" id="import-rules" accept=".json" style="display: none;">
@@ -447,11 +447,11 @@
       </div>
     </div>
   </div>
-  <button id="btn-classify">Lancer la classification (framework AGL automatique)</button>
+  <button id="btn-classify">Lancer la classification</button>
   <button id="btn-show-rules" class="secondary" style="margin-left: 8px;">Voir / editer les regles generees</button>
   <p class="muted" style="margin: 6px 0 0; font-size: 13px;">
-    Genere automatiquement ~25 segments organises en 7 categories
-    (Statut, Cycle de vie, Valeur, Rentabilite, Developpement, Comportement, Risque).
+    Genere automatiquement 3 segments (New Business, Reconquis, Cross Sell) selon
+    les definitions metier RCI.
   </p>
   <div id="classify-status"></div>
   <div id="export-buttons" style="margin-top: 12px;"></div>
@@ -1309,352 +1309,62 @@ function buildAGLFrameworkRules() {
   if (!STATE.aggregatedData.length) return null;
   const cols = new Set(STATE.aggColumns);
   const hasN = cols.has("GM_EUR_N");
-  const gmCol = hasN ? "GM_EUR_N" : "GM_EUR";
-  const caCol = hasN ? "CA_EUR_N" : "CA_EUR";
-  if (!cols.has(gmCol)) return null;
+  if (!hasN) return null; // necessite une annee de reference
 
-  // parametres saisis par l'utilisateur (avec defauts)
-  const windowMonths = parseInt(document.getElementById("param-window-months")?.value || "12", 10);
-  const reacGap = parseInt(document.getElementById("param-reactivation-gap")?.value || "12", 10);
-
-  // calcule des percentiles dynamiques sur la metrique de valeur
-  const positive = STATE.aggregatedData.map(r => r[gmCol]).filter(v => typeof v === "number" && v > 0).sort((a, b) => a - b);
-  const pct = p => positive.length ? Math.round(positive[Math.min(Math.floor(positive.length * p), positive.length - 1)]) : 0;
-  const p95 = pct(0.95), p80 = pct(0.80), p50 = pct(0.50);
-
-  // total GM_N pour le risque de concentration (>= 5% du portefeuille)
-  const totalGM = STATE.aggregatedData.reduce((s, r) => s + (r[gmCol] || 0), 0);
-  const concentrationThreshold = totalGM > 0 ? Math.round(totalGM * 0.05) : 0;
-
-  // detection des colonnes de comptage d'activite distinctes
-  const actCol = STATE.aggColumns.find(c => /^Nb_Activity_Name_EN_distincts_N$/.test(c))
-              || STATE.aggColumns.find(c => /^Nb_Activity_Name_EN_distincts$/.test(c))
-              || STATE.aggColumns.find(c => /Activity.*distincts/.test(c));
-
-  const moisCol = hasN ? "Nb_mois_actifs_N" : "Nb_mois_actifs";
   const segs = [];
 
   // ============================================================
-  // BLOC A — STATUT RELATIONNEL (toujours "Client" avec Siebel)
+  // SEGMENT 1 — NEW BUSINESS
+  // Client n'ayant genere aucun chiffre depuis 2020-2021 (profondeur
+  // de la base) et generant du chiffre en N (Direct_GM_in_EUR).
   // ============================================================
   segs.push({
-    name: "Client (avec historique business)",
-    category: "Statut",
-    logic: "AND",
-    conditions: [{ column: "Premiere_activite", op: "n'est pas vide", value: "" }]
-  });
-
-  // ============================================================
-  // BLOC B — CYCLE DE VIE (necessite annee de reference)
-  // ============================================================
-  if (hasN) {
-    segs.push({
-      name: "Perte (GM negatif sur N)",
-      category: "Cycle de vie",
-      logic: "AND",
-      conditions: [
-        { column: "GM_EUR_N", op: "<", value: "0" },
-        { column: moisCol, op: ">", value: "0" }
-      ]
-    });
-    segs.push({
-      name: "Nouveau client gagne",
-      category: "Cycle de vie",
-      logic: "AND",
-      conditions: [
-        { column: "GM_EUR_N", op: ">", value: "0" },
-        { column: "Annees_actives_hist", op: "==", value: "0" }
-      ]
-    });
-    // Client reconquis : pseudo-SQL = revenue_12m > 0 AND revenue_prev_12m = 0
-    //                                  AND exists jobfile avant snapshot - 12 mois
-    // → equivalent : actif en N, N-1 etait un gap, et il y a une vieille historique
-    segs.push({
-      name: `Client reconquis (gap N-1 = 0 + historique >= ${reacGap} mois)`,
-      category: "Cycle de vie",
-      logic: "AND",
-      conditions: [
-        { column: "GM_EUR_N", op: ">", value: "0" },
-        { column: "GM_EUR_N1", op: "==", value: "0" },
-        { column: "Annees_actives_hist", op: ">=", value: "1" },
-        { column: "Mois_depuis_derniere_activite_hist", op: ">=", value: String(reacGap) }
-      ]
-    });
-    // Client perdu : pseudo-SQL = revenue_prev_12m > 0 AND revenue_12m = 0
-    //                              AND last_engagement < snapshot - 365d
-    segs.push({
-      name: "Client perdu (actif en N-1, plus en N)",
-      category: "Cycle de vie",
-      logic: "AND",
-      conditions: [
-        { column: "GM_EUR_N", op: "==", value: "0" },
-        { column: "GM_EUR_N1", op: ">", value: "0" }
-      ]
-    });
-    // Nouveau business chez client existant : pseudo-SQL = first_business < snapshot - 365d
-    //   AND exists jobfile dans 365 derniers jours sur service jamais vendu avant
-    // → Annees_actives_hist >= 1 AND au moins 1 activite en N qui n'existait pas avant
-    if (cols.has("Nb_Activity_Name_EN_nouveaux_en_N")) {
-      segs.push({
-        name: "Nouveau business chez client existant",
-        category: "Cycle de vie",
-        logic: "AND",
-        conditions: [
-          { column: "GM_EUR_N", op: ">", value: "0" },
-          { column: "Annees_actives_hist", op: ">=", value: "1" },
-          { column: "Nb_Activity_Name_EN_nouveaux_en_N", op: ">=", value: "1" }
-        ]
-      });
-    }
-    segs.push({
-      name: `Client dormant (inactif > ${windowMonths} mois)`,
-      category: "Cycle de vie",
-      logic: "AND",
-      conditions: [
-        { column: "GM_EUR_N", op: "==", value: "0" },
-        { column: "GM_EUR_hist", op: ">", value: "0" },
-        { column: "Mois_depuis_derniere_activite_hist", op: ">=", value: String(windowMonths) }
-      ]
-    });
-    segs.push({
-      name: "Alerte endormissement (actif mais ralentit)",
-      category: "Cycle de vie",
-      logic: "AND",
-      conditions: [
-        { column: "GM_EUR_N", op: ">", value: "0" },
-        { column: moisCol, op: "<=", value: "3" },
-        { column: "GM_EUR_N1", op: ">", value: "0" }
-      ]
-    });
-    segs.push({
-      name: "Client actif (regle COMONE)",
-      category: "Cycle de vie",
-      logic: "AND",
-      conditions: [{ column: "GM_EUR_N", op: ">", value: "0" }]
-    });
-  }
-
-  // ============================================================
-  // BLOC D — VALEUR (percentiles dynamiques sur GM_N)
-  // ============================================================
-  segs.push({
-    name: `VVIP (top 5% - GM >= ${p95.toLocaleString("fr-FR")} EUR)`,
-    category: "Valeur",
-    logic: "AND",
-    conditions: [{ column: gmCol, op: ">=", value: String(p95) }]
-  });
-  segs.push({
-    name: `VIP (top 20% - GM >= ${p80.toLocaleString("fr-FR")} EUR)`,
-    category: "Valeur",
-    logic: "AND",
-    conditions: [{ column: gmCol, op: ">=", value: String(p80) }]
-  });
-  segs.push({
-    name: `Standard (top 50% - GM >= ${p50.toLocaleString("fr-FR")} EUR)`,
-    category: "Valeur",
-    logic: "AND",
-    conditions: [{ column: gmCol, op: ">=", value: String(p50) }]
-  });
-  segs.push({
-    name: "Long Tail (GM positif sous mediane)",
-    category: "Valeur",
+    name: "New Business",
+    category: "Cycle de vie",
     logic: "AND",
     conditions: [
-      { column: gmCol, op: ">", value: "0" },
-      { column: gmCol, op: "<", value: String(p50) }
+      { column: "GM_EUR_N", op: ">", value: "0" },
+      { column: "GM_EUR_N1", op: "==", value: "0" },
+      { column: "GM_EUR_hist", op: "==", value: "0" },
+      { column: "Annees_actives_hist", op: "==", value: "0" }
     ]
   });
-  const rankCol = hasN ? "Rank_GM_N" : "Rank_GM";
-  if (cols.has(rankCol) || hasN) {
-    segs.push({
-      name: "Top 20 du portefeuille (rang absolu)",
-      category: "Valeur",
-      logic: "AND",
-      conditions: [{ column: rankCol, op: "<=", value: "20" }]
-    });
-    segs.push({
-      name: "Top 100 du portefeuille",
-      category: "Valeur",
-      logic: "AND",
-      conditions: [{ column: rankCol, op: "<=", value: "100" }]
-    });
-  }
 
   // ============================================================
-  // BLOC E — RENTABILITE (necessite CA + GM dans la metrique)
+  // SEGMENT 2 — RECONQUIS
+  // Aucun chiffre en N-1, du chiffre en N, deja du chiffre en N-2 ou
+  // sur les annees anterieures couvertes par la base.
   // ============================================================
-  // (Bloc Rentabilite retire temporairement : en attente de la nouvelle
-  // definition des segments par l'utilisateur)
-
-  // ============================================================
-  // BLOC F — DEVELOPPEMENT (mono / multi-equipe)
-  // ============================================================
-  if (actCol) {
-    segs.push({
-      name: "Mono-service (cible cross-sell)",
-      category: "Developpement",
-      logic: "AND",
-      conditions: [
-        { column: gmCol, op: ">", value: "0" },
-        { column: actCol, op: "==", value: "1" }
-      ]
-    });
-    segs.push({
-      name: "Multi-equipe (>=2 activites)",
-      category: "Developpement",
-      logic: "AND",
-      conditions: [
-        { column: gmCol, op: ">", value: "0" },
-        { column: actCol, op: ">=", value: "2" }
-      ]
-    });
-    segs.push({
-      name: "Multi-equipe premium (>=3 activites)",
-      category: "Developpement",
-      logic: "AND",
-      conditions: [
-        { column: gmCol, op: ">", value: "0" },
-        { column: actCol, op: ">=", value: "3" }
-      ]
-    });
-  }
-
-  // ============================================================
-  // BLOC G — COMPORTEMENT D'ACHAT
-  // ============================================================
-  if (cols.has(moisCol)) {
-    segs.push({
-      name: "Client spot (1 mois actif)",
-      category: "Comportement",
-      logic: "AND",
-      conditions: [
-        { column: gmCol, op: ">", value: "0" },
-        { column: moisCol, op: "==", value: "1" }
-      ]
-    });
-    segs.push({
-      name: "Client occasionnel (2-3 mois)",
-      category: "Comportement",
-      logic: "AND",
-      conditions: [
-        { column: gmCol, op: ">", value: "0" },
-        { column: moisCol, op: "between", value: ["2", "3"] }
-      ]
-    });
-    segs.push({
-      name: "Client saisonnier (4-6 mois)",
-      category: "Comportement",
-      logic: "AND",
-      conditions: [
-        { column: gmCol, op: ">", value: "0" },
-        { column: moisCol, op: "between", value: ["4", "6"] }
-      ]
-    });
-    segs.push({
-      name: "Client recurrent (7-11 mois)",
-      category: "Comportement",
-      logic: "AND",
-      conditions: [
-        { column: gmCol, op: ">", value: "0" },
-        { column: moisCol, op: "between", value: ["7", "11"] }
-      ]
-    });
-    segs.push({
-      name: "Client tres regulier (12 mois)",
-      category: "Comportement",
-      logic: "AND",
-      conditions: [
-        { column: gmCol, op: ">", value: "0" },
-        { column: moisCol, op: "==", value: "12" }
-      ]
-    });
-  }
-  if (hasN && cols.has("Pct_var_GM_EUR")) {
-    segs.push({
-      name: "Rocket client (croissance >= +50%)",
-      category: "Comportement",
-      logic: "AND",
-      conditions: [
-        { column: "GM_EUR_N", op: ">", value: "0" },
-        { column: "GM_EUR_N1", op: ">", value: "0" },
-        { column: "Pct_var_GM_EUR", op: ">=", value: "50" }
-      ]
-    });
-    segs.push({
-      name: "Client en croissance (+10% a +50%)",
-      category: "Comportement",
-      logic: "AND",
-      conditions: [
-        { column: "GM_EUR_N", op: ">", value: "0" },
-        { column: "GM_EUR_N1", op: ">", value: "0" },
-        { column: "Pct_var_GM_EUR", op: "between", value: ["10", "50"] }
-      ]
-    });
-    segs.push({
-      name: "Client stagnant (-10% a +10%)",
-      category: "Comportement",
-      logic: "AND",
-      conditions: [
-        { column: "GM_EUR_N", op: ">", value: "0" },
-        { column: "GM_EUR_N1", op: ">", value: "0" },
-        { column: "Pct_var_GM_EUR", op: "between", value: ["-10", "10"] }
-      ]
-    });
-    segs.push({
-      name: "Client en decroissance (-30% a -10%)",
-      category: "Comportement",
-      logic: "AND",
-      conditions: [
-        { column: "GM_EUR_N", op: ">", value: "0" },
-        { column: "GM_EUR_N1", op: ">", value: "0" },
-        { column: "Pct_var_GM_EUR", op: "between", value: ["-30", "-10"] }
-      ]
-    });
-  }
-
-  // ============================================================
-  // BLOC J — RISQUE
-  // ============================================================
-  if (hasN && cols.has("Pct_var_GM_EUR")) {
-    segs.push({
-      name: "Risque churn eleve (baisse > 50%)",
-      category: "Risque",
-      logic: "AND",
-      conditions: [
-        { column: "GM_EUR_N", op: ">", value: "0" },
-        { column: "Pct_var_GM_EUR", op: "<=", value: "-50" }
-      ]
-    });
-    segs.push({
-      name: "A risque de perte (baisse > 30%)",
-      category: "Risque",
-      logic: "AND",
-      conditions: [
-        { column: "GM_EUR_N", op: ">", value: "0" },
-        { column: "Pct_var_GM_EUR", op: "<=", value: "-30" }
-      ]
-    });
-  }
-  if (concentrationThreshold > 0) {
-    segs.push({
-      name: `Risque concentration (>= 5% du portefeuille = ${concentrationThreshold.toLocaleString("fr-FR")} EUR)`,
-      category: "Risque",
-      logic: "AND",
-      conditions: [{ column: gmCol, op: ">=", value: String(concentrationThreshold) }]
-    });
-  }
-
-  // ============================================================
-  // PLACEHOLDERS (donnees externes a importer plus tard)
-  // ============================================================
-  ["Risque compliance (donnees externes)", "NPS / Detracteur (donnees externes)",
-   "Donnees incompletes (donnees externes)", "Cross-sell potentiel (donnees externes)",
-   "White space (donnees externes)"].forEach(name => {
-    segs.push({
-      name, category: "A importer (donnees externes)", logic: "AND",
-      conditions: [{ column: gmCol, op: "==", value: "__NEEDS_EXTERNAL_DATA__" }]
-    });
+  segs.push({
+    name: "Reconquis",
+    category: "Cycle de vie",
+    logic: "AND",
+    conditions: [
+      { column: "GM_EUR_N", op: ">", value: "0" },
+      { column: "GM_EUR_N1", op: "==", value: "0" },
+      { column: "GM_EUR_hist", op: ">", value: "0" },
+      { column: "Annees_actives_hist", op: ">=", value: "1" }
+    ]
   });
+
+  // ============================================================
+  // SEGMENT 3 — CROSS SELL (Developpement)
+  // Activites qui ont genere pour la 1ere fois du CAP sur un compte
+  // existant. Necessite la colonne "Nb_Activity_Name_EN_nouveaux_en_N".
+  // Mutuellement exclusif de "New Business" (Annees_actives_hist >= 1).
+  // ============================================================
+  if (cols.has("Nb_Activity_Name_EN_nouveaux_en_N")) {
+    segs.push({
+      name: "Cross Sell",
+      category: "Developpement",
+      logic: "AND",
+      conditions: [
+        { column: "GM_EUR_N", op: ">", value: "0" },
+        { column: "Annees_actives_hist", op: ">=", value: "1" },
+        { column: "Nb_Activity_Name_EN_nouveaux_en_N", op: ">=", value: "1" }
+      ]
+    });
+  }
 
   return segs;
 }
@@ -1666,9 +1376,8 @@ document.getElementById("btn-preset-agl").addEventListener("click", () => {
     return;
   }
   if (!confirm(
-    `Charger le framework AGL ?\n\n` +
-    `${segs.length} segments seront generes, organises en 7 categories ` +
-    `(Statut, Cycle de vie, Valeur, Rentabilite, Developpement, Comportement, Risque + A importer).\n\n` +
+    `Charger le framework de segmentation ?\n\n` +
+    `${segs.length} segments seront generes (New Business, Reconquis, Cross Sell).\n\n` +
     `Cela REMPLACERA les regles actuelles.`
   )) return;
   STATE.segments = segs;
@@ -2030,456 +1739,60 @@ function evaluateCondition(row, cond) {
    ============================================================= */
 
 // Intros strategiques par bloc (categorie). Affichees en tete de chaque section.
+// Intros strategiques par bloc (categorie). Affichees en tete de chaque section.
 const STRATEGY_BLOCK_INTRO = {
-  "Statut": {
-    title: "Bloc A — Statut relationnel",
-    priority: "Cadrage du portefeuille",
-    text: `Le statut "Client" est la base de reference : tout compte ayant deja
-       genere du business (Premiere_activite renseignee). Sert de denominateur
-       pour tous les % des autres blocs. <strong>Action</strong> : verifier la
-       qualite CRM (doublons, comptes fantomes, comptes a archiver) avant
-       d'engager les plans d'action des autres blocs.`
-  },
   "Cycle de vie": {
-    title: "Bloc B — Cycle de vie",
-    priority: "Rotation du portefeuille : acquerir, fideliser, recuperer",
-    text: `Ce bloc decrit ou est chaque client dans la relation : nouveau,
-       reconquis, actif, qui ralentit, dormant, perdu, en perte. <strong>C'est
-       le bloc le plus actionnable a court terme</strong> : chaque etat appelle
-       un plan d'action commercial different (onboarding, save, win-back,
-       desherbage CRM). Suivez l'evolution annuelle des effectifs : un
-       portefeuille sain renouvelle 10-20% via nouveaux + reconquis, et perd
-       moins de 15% en churn net.`
-  },
-  "Valeur": {
-    title: "Bloc D — Valeur",
-    priority: "Concentration de la marge — ou investir le temps commercial",
-    text: `Decoupe ABC du portefeuille : VVIP / VIP / Standard / Long Tail.
-       <strong>Loi de Pareto attendue</strong> : 80% du GM doit etre porte par
-       le top 20% des clients ; si ce n'est pas le cas, votre portefeuille est
-       trop atomise (risque structurel) ou au contraire trop concentre (cf.
-       bloc Risque). Le top 20 / top 100 absolus servent au pilotage des
-       comites strategiques.`
-  },
-  "Rentabilite": {
-    title: "Bloc E — Rentabilite",
-    priority: "Qualite de la marge — pas seulement le volume",
-    text: `Marge nette (GM / CA) sous le seuil parametre = client a renegocier
-       ou a desinvestir. <strong>Un client gros mais peu rentable detruit plus
-       de valeur qu'un petit client rentable</strong>. Croiser avec le bloc
-       Valeur : un VVIP "peu rentable" est une priorite P0 de renegociation
-       commerciale.`
+    title: "Cycle de vie",
+    priority: "Rotation du portefeuille : acquerir et reconquerir",
+    text: `Identifie les comptes qui entrent (ou re-entrent) dans le
+       portefeuille generateur de marge sur N. <strong>C'est le bloc
+       le plus actionnable</strong> : onboarding pour New Business, plan
+       de fidelisation specifique pour les Reconquis.`
   },
   "Developpement": {
-    title: "Bloc F — Developpement (cross-sell)",
-    priority: "Potentiel de croissance dans le compte (share of wallet)",
-    text: `Mesure le nombre d'activites / equipes consommees. <strong>Mono-service
-       = cible cross-sell prioritaire</strong> (le client vous connait, l'effort
-       commercial est faible). Multi-equipe premium = compte mur, on protege.
-       KPI : % de clients multi-equipe et evolution du nombre moyen
-       d'activites par client.`
-  },
-  "Comportement": {
-    title: "Bloc G — Comportement d'achat",
-    priority: "Frequence et dynamique — predit la fidelite future",
-    text: `Combine la frequence d'achat (1 mois, occasionnel, saisonnier,
-       recurrent) et la variation N vs N-1 (rocket, croissance, stagnant,
-       decroissance). <strong>Les segments comportementaux predisent mieux le
-       futur que la valeur seule</strong> : un Rocket Long Tail vaut souvent
-       plus qu'un VVIP stagnant a 3 ans.`
-  },
-  "Risque": {
-    title: "Bloc J — Risque",
-    priority: "Detection precoce du churn et de la concentration",
-    text: `Risque churn = baisse forte vs N-1 (lead indicator). Risque
-       concentration = dependance excessive a quelques comptes (>= 5% du GM).
-       <strong>Action prioritaire</strong> : revue mensuelle des comptes en
-       risque churn eleve + plan de diversification pour les comptes de
-       concentration (peut etre une opportunite a securiser, mais aussi un
-       risque business).`
-  },
-  "A importer (donnees externes)": {
-    title: "Bloc K — Signaux externes (a importer)",
-    priority: "Enrichissement futur : compliance, NPS, white space",
-    text: `Placeholders pour les donnees externes (compliance, NPS,
-       satisfaction, donnees de marche). Une fois importees, elles
-       enrichissent l'arbitrage strategique. Pour l'instant : pas d'analyse
-       calculable, prevoir l'integration source par source.`
+    title: "Developpement",
+    priority: "Extension de la part de portefeuille (cross-sell)",
+    text: `Identifie les comptes existants qui consomment une nouvelle
+       activite pour la 1ere fois en N. <strong>Indicateur direct du
+       succes commercial cross-sell</strong> : a suivre annee apres annee
+       pour mesurer l'efficacite des plans de developpement KAM.`
   }
 };
 
 // Analyses marketing par segment, matchees par mot-cle dans le nom du segment.
-// On utilise un matcher (function: name -> bool) pour gerer les noms dynamiques
-// (qui contiennent percentiles, seuils, etc.).
 const STRATEGY_BY_SEGMENT = [
-  // === STATUT ===
   {
-    match: n => /historique business/i.test(n),
-    definition: "Tout compte avec au moins une activite passee (Premiere_activite renseignee).",
-    action: "Base 100% — perimetre d'analyse de tous les autres blocs.",
-    strategy: `Verifier la qualite CRM : doublons (meme entite plusieurs codes
-       clients), comptes inactifs depuis > 36 mois a archiver, comptes "test"
-       a exclure. Ce dimensionnement determine la fiabilite de tous les % qui
-       suivent. KPI : taux de fiabilite du referentiel client.`
-  },
-
-  // === CYCLE DE VIE ===
-  {
-    match: n => /perte.*GM negatif/i.test(n),
-    definition: "Client avec marge brute (GM_EUR_N) negative sur l'annee de reference.",
-    action: "URGENT — audit pricing / cost-to-serve, decision keep / re-price / drop.",
-    strategy: `<strong>Drapeau rouge financier</strong>. Chaque client en perte
-       est analyse cas par cas : erreur d'imputation cost ? surcout exceptionnel
-       (litige, sinistre) ? pricing perdu sur appel d'offre ? Le commercial
-       doit produire une fiche "decision" sous 30 jours : renegociation, sortie
-       progressive, ou acceptation strategique (loss leader pour entrer chez un
-       grand groupe). Ne jamais laisser un client en perte sans owner.`
-  },
-  {
-    match: n => /Nouveau client gagne/i.test(n),
-    definition: "Premier business genere en N — aucun historique avant.",
+    match: n => /^New Business$/i.test(n),
+    definition: "Client generant du chiffre (GM > 0) en N, sans aucun chiffre en N-1, et aucun historique sur les annees anterieures couvertes par la base (depuis 2020-2021).",
     action: "Onboarding structure + plan de developpement Annee 1.",
-    strategy: `<strong>La conversion ne suffit pas : il faut consolider</strong>.
-       Statistiquement, un client gagne sur 1 seule activite a 60-70% de churn
-       a 24 mois. Mettre en place un onboarding de 90 jours (presentation de
-       l'offre complete, points reguliers, KAM nomme) et un objectif de
-       2e activite vendue dans les 12 mois. KPI : taux de retention N+1 et
-       taux de cross-sell sur les nouveaux.`
+    strategy: `<strong>Un client gagne sur 1 seule activite presente 60-70% de
+       risque de churn a 24 mois</strong>. Mettre en place un onboarding 90 jours :
+       presentation de l'offre complete, points commerciaux reguliers, KAM nomme,
+       objectif d'une 2e activite vendue dans l'annee. KPI cle : taux de
+       retention N+1 et taux de conversion mono-vers-multi.`
   },
   {
-    match: n => /reconquis/i.test(n),
-    definition: "Actif en N, mais inactif sur 12 mois precedents avec un historique ancien.",
-    action: "Capitaliser sur la reconquete — eviter une 2e perte.",
-    strategy: `Un client reconquis a deja churne une fois : il est <strong>3 a 5x
+    match: n => /^Reconquis$/i.test(n),
+    definition: "Client avec du chiffre en N, aucun chiffre en N-1, mais deja du chiffre en N-2 ou sur les annees anterieures (gap d'au moins 1 annee complete).",
+    action: "Capitaliser sur la reconquete pour eviter un 2e churn.",
+    strategy: `Un client reconquis a deja churne une fois — il est <strong>3 a 5x
        plus sensible</strong> qu'un nouveau client a une mauvaise experience.
        Action : revue de la cause de churn initiale + plan de fidelisation
-       agressif (KAM, SLA renforcees, tarification stable 24 mois). KPI :
-       maintien en segment "Actif" sur 24 mois apres reconquete.`
+       agressif (KAM, SLA renforcees, tarification stable 24 mois).
+       KPI : maintien en portefeuille actif sur 24 mois apres reconquete.`
   },
   {
-    match: n => /Client perdu/i.test(n),
-    definition: "Actif en N-1, plus aucune activite en N (GM_EUR_N = 0).",
-    action: "Win-back cible — segmenter les causes avant de relancer.",
-    strategy: `Ne pas relancer en masse. <strong>Segmenter par cause de churn</strong> :
-       (1) perte sur appel d'offre = revoir le pricing ; (2) insatisfaction
-       service = post-mortem operationnel avant relance ; (3) consolidation
-       fournisseurs cote client = approche directeur achats. Cibler en priorite
-       les ex-clients dont l'historique GM_EUR_hist depasse la mediane.
-       Win-back rate attendu : 15-25% sur 18 mois si action structuree.`
-  },
-  {
-    match: n => /Client dormant/i.test(n),
-    definition: "Aucune activite en N et derniere activite > 12 mois.",
-    action: "Desherbage CRM ou campagne reveil low-cost.",
-    strategy: `Au-dela de 12 mois d'inactivite, la probabilite de retour
-       organique tombe sous 5%. Deux options : (1) campagne d'email / call
-       automatisee a faible cout pour detecter les "endormis tiedes" qui
-       peuvent revenir, (2) sortie du pipeline commercial actif (libere le
-       temps des commerciaux). <strong>Ne pas confondre dormant et perdu</strong> :
-       le dormant n'a pas forcement choisi un concurrent, il peut juste avoir
-       arrete d'importer / exporter temporairement.`
-  },
-  {
-    match: n => /Alerte endormissement/i.test(n),
-    definition: "Actif en N mais sur <= 3 mois seulement, avec activite N-1 superieure.",
-    action: "<strong>Priorite N°1 du save</strong> — agir avant le churn complet.",
-    strategy: `Signal faible le plus precieux du framework. Un client qui passe
-       de 12 mois actifs a 2-3 mois actifs a deja bascule ailleurs pour une
-       partie de son volume. Action sous 30 jours : visite physique du KAM,
-       diagnostic perte de business, proposition commerciale specifique
-       (remise, nouveau service). <strong>ROI d'un save vs cout d'acquisition
-       d'un nouveau client : facteur 5 a 7</strong>.`
-  },
-  {
-    match: n => /Client actif/i.test(n),
-    definition: "GM_EUR_N > 0 — au moins une operation rentable en N (regle COMONE).",
-    action: "Baseline — segmenter ensuite par valeur / comportement / risque.",
-    strategy: `Segment cumulatif (englobe tout le portefeuille actif). Ne sert
-       pas a piloter en soi, mais a alimenter les autres blocs. KPI structurel :
-       <strong>nombre de clients actifs N vs N-1</strong> — c'est l'indicateur
-       de sante numero 1 du portefeuille.`
-  },
-
-  // === VALEUR ===
-  {
-    match: n => /^VVIP/i.test(n),
-    definition: "Top 5% par GM_EUR_N (percentile 95).",
-    action: "Account-Based Marketing — KAM dedie, comite executif client.",
-    strategy: `<strong>Concentration extreme : ~5% des clients = souvent 50-60%
-       du GM total</strong>. Chaque compte doit avoir : un KAM nomme, un plan de
-       compte ecrit annuel, une revue executive trimestrielle, un sponsor
-       direction generale. Tout dollar perdu sur un VVIP coute 20x plus cher a
-       remplacer. Verifier la presence de ces comptes dans le bloc Risque
-       (churn ou concentration) — c'est ici que se cache la fragilite du P&L.`
-  },
-  {
-    match: n => /^VIP/i.test(n) && !/VVIP/i.test(n),
-    definition: "Top 20% par GM_EUR_N (percentile 80).",
-    action: "Priorite commerciale forte — couverture KAM ou senior sales.",
-    strategy: `Le coeur des "comptes strategiques". Objectif : <strong>convertir
-       les VIP en VVIP via cross-sell et part de wallet</strong>. Croiser
-       systematiquement avec le bloc Developpement : un VIP mono-service est la
-       meilleure cible cross-sell du portefeuille (effort commercial faible,
-       upside fort).`
-  },
-  {
-    match: n => /^Standard/i.test(n),
-    definition: "Top 50% par GM_EUR_N (entre mediane et top 20%).",
-    action: "Couverture commerciale standard — automatiser ce qui peut l'etre.",
-    strategy: `Volume du portefeuille. La rentabilite par client suffit a
-       justifier une couverture commerciale, mais pas un KAM dedie.
-       <strong>Industrialiser</strong> : revues semestrielles, campagnes
-       de cross-sell automatisees, NPS systematique. Surveiller les
-       "Rocket clients" dans ce segment : ce sont les VIP de demain.`
-  },
-  {
-    match: n => /Long Tail/i.test(n),
-    definition: "GM positif mais sous la mediane du portefeuille.",
-    action: "Self-service / digital — minimiser le cout de service.",
-    strategy: `<strong>Piege classique : le Long Tail consomme souvent autant
-       de temps commercial qu'un VIP, pour 10x moins de marge</strong>.
-       Migration vers des canaux digitaux (e-booking, portail self-service),
-       seuils de service automatises, tarifs grille standard. Eviter les
-       remises commerciales sur ce segment : elles detruisent la rentabilite
-       sans creer de fidelite.`
-  },
-  {
-    match: n => /Top 20 du portefeuille/i.test(n),
-    definition: "Les 20 plus gros clients en rang absolu de GM_EUR_N.",
-    action: "Pilotage executif — revue mensuelle au comite de direction.",
-    strategy: `Pilotage strategique CEO / CFO. Suivre nominativement : evolution
-       GM N vs N-1, marge %, nombre d'activites, statut risque, NPS. <strong>La
-       sortie d'un client du Top 20 doit declencher une alerte automatique</strong>
-       au comex.`
-  },
-  {
-    match: n => /Top 100/i.test(n),
-    definition: "Les 100 plus gros clients en rang absolu.",
-    action: "Pilotage commercial — revue trimestrielle directeur commercial.",
-    strategy: `Perimetre de pilotage commercial structurant. Sert d'echantillon
-       de reference pour mesurer la qualite du portefeuille : marge moyenne,
-       taux de multi-equipe, taux de rocket / churn. Variations significatives
-       de cet echantillon = signal sur la sante globale.`
-  },
-
-  // === RENTABILITE ===
-  {
-    match: n => /^Rentable/i.test(n),
-    definition: "Marge brute (GM/CA) au-dessus du seuil parametre (defaut 15%).",
-    action: "Proteger la rentabilite — eviter les remises non justifiees.",
-    strategy: `Les clients rentables financent la croissance et l'innovation.
-       <strong>Ne pas les sur-solliciter en remises ou conditions favorables</strong>
-       sous pretexte qu'ils paient sans broncher : c'est la cible numero 1 des
-       concurrents. Plan de fidelisation premium plutot que remise tarifaire.`
-  },
-  {
-    match: n => /Peu rentable/i.test(n),
-    definition: "Marge brute sous le seuil parametre.",
-    action: "Renegocier ou desinvestir — surtout si volume eleve.",
-    strategy: `<strong>Le pire risque silencieux du portefeuille</strong>.
-       Un VIP peu rentable mobilise du temps commercial, du middle / back
-       office, et detruit de la valeur. Plan d'action : (1) hausse tarifaire
-       graduelle (5-10% par renegociation), (2) reduction du cost-to-serve
-       (suppression des operations a perte), (3) sortie progressive si refus.
-       Cible KPI : zero VVIP / VIP en zone "peu rentable" sous 18 mois.`
-  },
-
-  // === DEVELOPPEMENT ===
-  {
-    match: n => /Mono-service/i.test(n),
-    definition: "Client actif sur une seule activite (Activity_Name distinct = 1).",
-    action: "<strong>Cible cross-sell prioritaire numero 1</strong>.",
-    strategy: `Effort commercial minimal (le client vous connait deja, le
-       referentiel est ouvert, l'onboarding est court), upside maximum.
-       <strong>Regle d'or</strong> : chaque KAM doit avoir un objectif annuel
-       de conversion mono-vers-multi sur son portefeuille. KPI : taux de
-       conversion mono-vers-multi a 12 mois (cible : 15-20%).`
-  },
-  {
-    match: n => /Multi-equipe \(>=2/i.test(n),
-    definition: "Client consommant 2 activites ou plus.",
-    action: "Profondeur de la relation — ancrage commercial.",
-    strategy: `Un client multi-equipe est 3 a 5x plus fidele qu'un mono-service.
-       <strong>Chaque activite supplementaire reduit la probabilite de churn
-       d'environ 30%</strong>. Focus : passer de 2 a 3 activites (palier
-       suivant = segment "premium" ci-dessous).`
-  },
-  {
-    match: n => /Multi-equipe premium/i.test(n),
-    definition: "Client consommant 3 activites ou plus.",
-    action: "Compte mur — proteger absolument.",
-    strategy: `Le verrouillage commercial est tres fort (cout de switch eleve
-       cote client). <strong>Tres faible probabilite de churn complet mais
-       attention au churn partiel</strong> (perte d'une activite au profit
-       d'un concurrent). Suivi par activite (et non agrege) au comite KAM.`
-  },
-
-  // === COMPORTEMENT ===
-  {
-    match: n => /Client spot/i.test(n),
-    definition: "Actif sur 1 seul mois en N.",
-    action: "Tester la conversion en client recurrent.",
-    strategy: `Profil opportuniste : appel d'offre ponctuel, depannage, projet
-       one-shot. <strong>Ne pas confondre avec un nouveau client</strong> : un
-       spot recurrent annee apres annee est un signal de positionnement
-       "fournisseur de secours" — peu de valeur strategique. A tester avec une
-       offre cadre annuelle pour basculer vers un usage recurrent.`
-  },
-  {
-    match: n => /Client occasionnel/i.test(n),
-    definition: "Actif sur 2 a 3 mois dans l'annee.",
-    action: "Identifier le potentiel de regularisation.",
-    strategy: `Client semi-engage. Diagnostic commercial : pic saisonnier ?
-       fournisseur secondaire ? portefeuille produit limite chez vous ?
-       Si le client a un potentiel volumique connu, plan d'action pour
-       basculer en "saisonnier" ou "recurrent". Sinon, accepter le profil
-       et le servir efficacement.`
-  },
-  {
-    match: n => /Client saisonnier/i.test(n),
-    definition: "Actif sur 4 a 6 mois dans l'annee — cycle saisonnier net.",
-    action: "Anticiper le cycle — capacite, pricing dynamique.",
-    strategy: `Predictible et planifiable. <strong>Cycle souvent lie au business
-       du client</strong> (ex : agro = mai-octobre, jouet = septembre-decembre).
-       Action : anticiper la saison commerciale, securiser la capacite,
-       proposer un cadre annuel avec engagement volumique pour lisser. KPI :
-       maintien du volume saisonnier annee apres annee.`
-  },
-  {
-    match: n => /Client recurrent/i.test(n),
-    definition: "Actif 7 a 11 mois dans l'annee — quasi-permanent.",
-    action: "Pilier du portefeuille — fideliser long terme.",
-    strategy: `<strong>La frequence est le meilleur predicteur de fidelite a
-       long terme</strong>, devant la valeur. Un recurrent moyen vaut souvent
-       plus a 5 ans qu'un VIP saisonnier. Plan : contrat-cadre pluriannuel,
-       conditions privilegiees, KAM dedie meme si valeur moyenne.`
-  },
-  {
-    match: n => /tres regulier/i.test(n),
-    definition: "Actif les 12 mois de l'annee — flux continu.",
-    action: "Ancrage maximum — partenariat strategique.",
-    strategy: `Profil flotte / e-commerce / industriel a flux continu.
-       <strong>Quasi-fournisseur strategique du client</strong>. Plan :
-       contractualisation pluriannuelle, integration EDI / API, KAM senior,
-       gouvernance trimestrielle. Risque a surveiller : forte concentration
-       de revenus chez vous = pouvoir de negociation du client.`
-  },
-  {
-    match: n => /Rocket client/i.test(n),
-    definition: "Croissance GM N vs N-1 >= +50%.",
-    action: "Pousser — c'est le moment d'investir commercialement.",
-    strategy: `<strong>Le segment a plus fort ROI marketing</strong>. Le client
-       est en momentum : il consomme plus, il est ouvert a la discussion, il
-       a probablement un projet de croissance interne. Action : meeting strategique
-       avec le directeur achats / supply, proposition d'offre etendue, conditions
-       d'engagement volumique. Risque : ne pas confondre rocket structurel
-       (croissance saine) et rocket "rattrapage" (post-perte N-1).`
-  },
-  {
-    match: n => /Client en croissance/i.test(n),
-    definition: "Croissance GM N vs N-1 entre +10% et +50%.",
-    action: "Nourrir la trajectoire — eviter le decrochage.",
-    strategy: `Croissance saine et durable. Plan : maintenir la relation
-       commerciale, identifier les nouveaux besoins, proposer du cross-sell.
-       <strong>Cible naturelle pour passer en Rocket l'annee suivante</strong>
-       avec un coup de pouce commercial cible.`
-  },
-  {
-    match: n => /Client stagnant/i.test(n),
-    definition: "Variation GM N vs N-1 entre -10% et +10%.",
-    action: "Diagnostic — pourquoi pas de croissance ?",
-    strategy: `Plateau qui peut basculer en croissance ou en decroissance selon
-       l'action commerciale. Probleme courant : saturation du potentiel chez
-       le client, manque de cross-sell, concurrence qui s'installe.
-       <strong>Cible cross-sell + relance KAM</strong>.`
-  },
-  {
-    match: n => /Client en decroissance/i.test(n),
-    definition: "Variation GM N vs N-1 entre -30% et -10%.",
-    action: "Signal de save — agir avant le passage en risque eleve.",
-    strategy: `Lead indicator du churn. Le client n'a pas encore disparu mais
-       reduit clairement son engagement. Action sous 60 jours : visite
-       KAM, diagnostic perte de part de wallet, post-mortem operationnel
-       (qualite, sinistre, prix). <strong>Statistique : 40% des clients en
-       decroissance moderee basculent en risque churn eleve l'annee
-       suivante</strong> si rien n'est fait.`
-  },
-
-  // === RISQUE ===
-  {
-    match: n => /Risque churn eleve/i.test(n),
-    definition: "Baisse de GM N vs N-1 superieure a 50%.",
-    action: "<strong>P0 — action commerciale sous 30 jours obligatoire</strong>.",
-    strategy: `Drapeau rouge. Le client est en train de partir (volontairement
-       ou pas). Action immediate : (1) escalade KAM + directeur commercial,
-       (2) rdv physique sous 30 jours, (3) audit operationnel + financier de
-       la relation, (4) proposition commerciale dediee. KPI : taux de save sur
-       segment risque churn eleve (benchmark : 25-40% si action structuree).`
-  },
-  {
-    match: n => /A risque de perte/i.test(n),
-    definition: "Baisse de GM N vs N-1 superieure a 30%.",
-    action: "Surveillance renforcee — review mensuelle.",
-    strategy: `Zone d'alerte preventive. Tous les comptes de ce segment doivent
-       avoir un owner identifie + une revue mensuelle en pipeline commercial.
-       <strong>Croiser avec la valeur</strong> : un VVIP "a risque de perte"
-       passe direct en P0 quel que soit le % de baisse.`
-  },
-  {
-    match: n => /Risque concentration/i.test(n),
-    definition: "Client representant >= 5% du GM total du portefeuille.",
-    action: "Diversifier la dependance — ou securiser le contrat.",
-    strategy: `<strong>Double lecture obligatoire</strong> : c'est une
-       opportunite (compte tres rentable) ET un risque structurel pour le P&L
-       global. Plan : (1) contractualisation pluriannuelle pour reduire la
-       volatilite, (2) developpement d'autres comptes de meme taille pour
-       diluer la dependance, (3) plan de continuite si perte du compte
-       (impact P&L, plan de reaffectation des ressources commerciales).
-       <strong>Regle saine : aucun client ne devrait depasser 10% du GM
-       portefeuille</strong>.`
-  },
-
-  // === A IMPORTER (placeholders) ===
-  {
-    match: n => /compliance/i.test(n),
-    definition: "A importer — donnees compliance (sanctions, KYC, blacklist).",
-    action: "Integration source compliance / risk management.",
-    strategy: `Une fois importe : filtrer systematiquement avant toute action
-       commerciale (no-go automatique sur clients flagues). Source typique :
-       Dow Jones, Refinitiv, base interne risk.`
-  },
-  {
-    match: n => /NPS|Detracteur/i.test(n),
-    definition: "A importer — score NPS / satisfaction client.",
-    action: "Integration source enquetes satisfaction.",
-    strategy: `Le NPS est <strong>le meilleur predicteur du churn cote
-       qualitatif</strong>, complementaire aux indicateurs quantitatifs des
-       autres blocs. Detracteur + En decroissance = P0 absolu.`
-  },
-  {
-    match: n => /Donnees incompletes/i.test(n),
-    definition: "A importer — flag qualite data du CRM.",
-    action: "Mise en qualite CRM.",
-    strategy: `Toute analyse de portefeuille suppose un referentiel propre.
-       Maintenance du CRM en continu (taux de remplissage, mise a jour, deduplication).`
-  },
-  {
-    match: n => /Cross-sell potentiel/i.test(n),
-    definition: "A importer — score de propension cross-sell (modele ou expertise).",
-    action: "Modele scoring + activation campagnes.",
-    strategy: `Combine signaux internes (mono-service + croissance) et externes
-       (CA client, secteur, geographie). Permet de prioriser au-dela du seul
-       statut "mono-service".`
-  },
-  {
-    match: n => /White space/i.test(n),
-    definition: "A importer — potentiel non adresse chez le client (parts de marche).",
-    action: "Modele estimant le potentiel theorique du compte.",
-    strategy: `White space = volume total que le client achete sur votre
-       categorie / votre concurrence. Permet de calculer la part de wallet
-       reelle et de cibler les comptes a fort upside non capte.`
+    match: n => /^Cross Sell$/i.test(n),
+    definition: "Client existant (historique >= 1 an) generant du chiffre en N via au moins une activite jamais consommee auparavant.",
+    action: "Mesurer et reproduire — c'est le levier croissance N°1 sur portefeuille acquis.",
+    strategy: `<strong>Le cross-sell est le levier le plus rentable</strong> :
+       effort commercial minimal (le client vous connait), conversion plus rapide,
+       upside fort. Chaque KAM doit avoir un objectif annuel de nouvelles
+       activites vendues a son portefeuille. KPI : nombre d'activites moyennes
+       par client et taux annuel de conversion mono-vers-multi activite.`
   }
 ];
+
 
 function findStrategyEntry(segmentName) {
   return STRATEGY_BY_SEGMENT.find(e => e.match(segmentName));
