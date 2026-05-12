@@ -145,12 +145,137 @@
   details { margin: 12px 0; }
   summary { cursor: pointer; color: var(--primary); user-select: none; }
   .bar { height: 8px; background: var(--primary); border-radius: 4px; display: inline-block; vertical-align: middle; }
+
+  /* ====== Tabs principaux ====== */
+  .tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 24px;
+    border-bottom: 2px solid var(--border);
+    overflow-x: auto;
+    background: white;
+    border-radius: 10px 10px 0 0;
+    padding: 0 8px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  }
+  .tab {
+    background: transparent;
+    color: var(--muted);
+    border: none;
+    padding: 14px 22px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    border-bottom: 3px solid transparent;
+    margin-bottom: -2px;
+    white-space: nowrap;
+    border-radius: 0;
+  }
+  .tab:hover { background: #f8fafc; color: var(--text); }
+  .tab.active {
+    color: var(--primary);
+    border-bottom-color: var(--primary);
+    font-weight: 600;
+  }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  /* ====== KPI cards (dashboard) ====== */
+  .kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 14px;
+    margin-bottom: 20px;
+  }
+  .kpi-card {
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.03);
+  }
+  .kpi-label {
+    font-size: 12px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 600;
+  }
+  .kpi-value {
+    font-size: 26px;
+    font-weight: 700;
+    color: var(--text);
+    line-height: 1.2;
+  }
+  .kpi-sub { font-size: 12px; color: var(--muted); }
+  .kpi-accent-blue   { border-left: 4px solid #2563eb; }
+  .kpi-accent-green  { border-left: 4px solid #16a34a; }
+  .kpi-accent-amber  { border-left: 4px solid #d97706; }
+  .kpi-accent-red    { border-left: 4px solid #dc2626; }
+  .kpi-accent-purple { border-left: 4px solid #7c3aed; }
+
+  /* ====== Sous-onglets segments ====== */
+  .subtabs {
+    display: flex;
+    gap: 4px;
+    background: #f1f5f9;
+    padding: 4px;
+    border-radius: 10px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+  }
+  .subtab {
+    flex: 1 1 auto;
+    min-width: 110px;
+    background: transparent;
+    color: var(--muted);
+    border: none;
+    padding: 10px 14px;
+    font-size: 13px;
+    font-weight: 500;
+    border-radius: 8px;
+    cursor: pointer;
+    text-align: center;
+  }
+  .subtab:hover { background: #ffffff80; color: var(--text); }
+  .subtab.active {
+    background: white;
+    color: var(--text);
+    font-weight: 600;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  }
+  .subtab .count { color: var(--muted); font-weight: 400; font-size: 11px; }
+  .subtab.active .count { color: var(--primary); }
+  .empty-state {
+    background: #fafbfc;
+    border: 2px dashed var(--border);
+    border-radius: 10px;
+    padding: 40px 20px;
+    text-align: center;
+    color: var(--muted);
+  }
+  .empty-state h3 { color: var(--text); margin: 0 0 8px; }
 </style>
 </head>
 <body>
 
 <h1>Segmentation client</h1>
 <p class="subtitle">App locale - aucune donnee n'est envoyee, tout se passe dans votre navigateur.</p>
+
+<!-- Navigation par onglets -->
+<nav class="tabs" id="main-tabs">
+  <button class="tab active" data-tab="data">📥 Donnees</button>
+  <button class="tab" data-tab="segmentation">⚙️ Segmentation</button>
+  <button class="tab" data-tab="dashboard">📊 Tableau de bord</button>
+  <button class="tab" data-tab="segments">👥 Clients par segment</button>
+  <button class="tab" data-tab="strategy">📋 Analyse strategique</button>
+</nav>
+
+<!-- ===================== ONGLET DONNEES ===================== -->
+<div class="tab-panel active" data-panel="data">
 
 <!-- =============================================== -->
 <!-- ETAPE 1 : Upload                                -->
@@ -226,6 +351,11 @@
   <div id="agg-status"></div>
   <div id="agg-preview"></div>
 </div>
+
+</div><!-- /tab-panel data -->
+
+<!-- ===================== ONGLET SEGMENTATION ===================== -->
+<div class="tab-panel" data-panel="segmentation">
 
 <!-- =============================================== -->
 <!-- ETAPE 4 : Regles de segmentation                -->
@@ -342,6 +472,55 @@
   </div>
 </div>
 
+</div><!-- /tab-panel segmentation -->
+
+<!-- ===================== ONGLET TABLEAU DE BORD ===================== -->
+<div class="tab-panel" data-panel="dashboard">
+  <div class="section">
+    <div class="section-head">
+      <h2>Tableau de bord — synthese du portefeuille</h2>
+    </div>
+    <div id="dashboard-content">
+      <div class="empty-state">
+        <h3>Pas encore de classification</h3>
+        <p>Lancez d'abord la classification depuis l'onglet <strong>Segmentation</strong>.<br/>
+        Le tableau de bord s'affichera automatiquement ici.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== ONGLET CLIENTS PAR SEGMENT ===================== -->
+<div class="tab-panel" data-panel="segments">
+  <div class="section">
+    <div class="section-head">
+      <h2>Liste des clients par segment</h2>
+    </div>
+    <p class="muted">
+      Selectionnez un segment dans la barre ci-dessous pour voir la liste detaillee de ses clients,
+      avec recherche, tri et export.
+    </p>
+    <div id="segments-subtabs" class="subtabs"></div>
+    <div id="segment-tab-content">
+      <div class="empty-state">
+        <h3>Pas encore de classification</h3>
+        <p>Lancez la classification depuis l'onglet <strong>Segmentation</strong> pour voir les listes par segment.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== ONGLET ANALYSE STRATEGIQUE ===================== -->
+<div class="tab-panel" data-panel="strategy">
+
+<div class="section" id="strategy-empty">
+  <div class="empty-state">
+    <h3>Pas encore de classification</h3>
+    <p>Lancez la classification depuis l'onglet <strong>Segmentation</strong>
+       pour generer l'analyse strategique automatiquement.</p>
+  </div>
+</div>
+
 <!-- =============================================== -->
 <!-- ETAPE 6 : Analyse strategique marketing         -->
 <!-- =============================================== -->
@@ -361,6 +540,8 @@
   </p>
   <div id="strategy-content"></div>
 </div>
+
+</div><!-- /tab-panel strategy -->
 
 <script>
 /* =============================================================
@@ -1782,10 +1963,14 @@ document.getElementById("btn-classify").addEventListener("click", () => {
     `Annee de reference N = ${STATE.refYear || "(globale)"}.`,
     "success");
   STATE.selectedSegment = null;
+  STATE.activeSegmentTab = null;
+  STATE.segmentTabSearch = "";
   renderRepartition();
   renderSegmentDetail();
   renderExportButtons();
   renderStrategicAnalysis();
+  renderDashboard();
+  renderSegmentSubtabs();
 });
 
 function segmentMatches(row, seg) {
@@ -2303,12 +2488,15 @@ function findStrategyEntry(segmentName) {
 function renderStrategicAnalysis() {
   const container = document.getElementById("strategy-content");
   const section = document.getElementById("section-strategy");
+  const empty = document.getElementById("strategy-empty");
   if (!STATE.classifiedData.length) {
     section.style.display = "none";
+    if (empty) empty.style.display = "block";
     container.innerHTML = "";
     return;
   }
   section.style.display = "block";
+  if (empty) empty.style.display = "none";
 
   // recompute counts + value per segment (meme logique que renderRepartition)
   const counts = {};
@@ -2828,6 +3016,293 @@ function formatCell(v) {
   if (v == null) return "";
   if (typeof v === "number") return v.toLocaleString("fr-FR", { maximumFractionDigits: 2 });
   return v;
+}
+
+/* =============================================================
+   NAVIGATION PAR ONGLETS (principaux + sous-onglets segments)
+   ============================================================= */
+function activateTab(tabName) {
+  document.querySelectorAll("#main-tabs .tab").forEach(t => {
+    t.classList.toggle("active", t.dataset.tab === tabName);
+  });
+  document.querySelectorAll(".tab-panel").forEach(p => {
+    p.classList.toggle("active", p.dataset.panel === tabName);
+  });
+  // re-render selon l'onglet (rafraichit les vues dependantes des donnees)
+  if (tabName === "dashboard") renderDashboard();
+  if (tabName === "segments") renderSegmentSubtabs();
+}
+document.querySelectorAll("#main-tabs .tab").forEach(t => {
+  t.addEventListener("click", () => activateTab(t.dataset.tab));
+});
+
+/* =============================================================
+   TABLEAU DE BORD (KPI cards + repartition)
+   ============================================================= */
+function renderDashboard() {
+  const c = document.getElementById("dashboard-content");
+  if (!STATE.classifiedData.length) {
+    c.innerHTML = `<div class="empty-state">
+      <h3>Pas encore de classification</h3>
+      <p>Lancez d'abord la classification depuis l'onglet
+        <strong>Segmentation</strong>.</p>
+    </div>`;
+    return;
+  }
+  const data = STATE.classifiedData;
+  const valueKey = repartitionValueKey();
+  const nbClients = data.length;
+  const totalGM = valueKey ? data.reduce((s, r) => s + (r[valueKey] || 0), 0) : 0;
+  const avgGM = nbClients ? totalGM / nbClients : 0;
+  const nbActifs = data.filter(r => valueKey && r[valueKey] > 0).length;
+  const nbPositifs = data.filter(r => valueKey && r[valueKey] > 0).length;
+  const nbNegatifs = data.filter(r => valueKey && r[valueKey] < 0).length;
+
+  // top segment par GM
+  const segGM = {};
+  const segCount = {};
+  data.forEach(r => {
+    const segs = (r.segments && r.segments.length) ? r.segments : [r.segment || "Non classe"];
+    segs.forEach(s => {
+      segCount[s] = (segCount[s] || 0) + 1;
+      if (valueKey) segGM[s] = (segGM[s] || 0) + (r[valueKey] || 0);
+    });
+  });
+  const topSegByGM = Object.entries(segGM).sort((a, b) => b[1] - a[1])[0];
+
+  const fmt = (v) => v.toLocaleString("fr-FR", { maximumFractionDigits: 0 });
+  const fmtPct = (v) => (v * 100).toFixed(1) + "%";
+
+  let html = `<div class="kpi-grid">
+    <div class="kpi-card kpi-accent-blue">
+      <div class="kpi-label">Clients evalues</div>
+      <div class="kpi-value">${fmt(nbClients)}</div>
+      <div class="kpi-sub">Portefeuille total</div>
+    </div>
+    <div class="kpi-card kpi-accent-green">
+      <div class="kpi-label">${valueKey || "Valeur"} total</div>
+      <div class="kpi-value">${fmt(totalGM)}</div>
+      <div class="kpi-sub">Annee de reference</div>
+    </div>
+    <div class="kpi-card kpi-accent-purple">
+      <div class="kpi-label">${valueKey || "Valeur"} moyen / client</div>
+      <div class="kpi-value">${fmt(avgGM)}</div>
+      <div class="kpi-sub">Sur les ${fmt(nbClients)} clients</div>
+    </div>
+    <div class="kpi-card kpi-accent-amber">
+      <div class="kpi-label">Clients actifs</div>
+      <div class="kpi-value">${fmt(nbActifs)}</div>
+      <div class="kpi-sub">${fmtPct(nbClients ? nbActifs / nbClients : 0)} du portefeuille</div>
+    </div>
+    <div class="kpi-card kpi-accent-red">
+      <div class="kpi-label">Clients en perte</div>
+      <div class="kpi-value">${fmt(nbNegatifs)}</div>
+      <div class="kpi-sub">${fmtPct(nbClients ? nbNegatifs / nbClients : 0)} (GM negatif)</div>
+    </div>
+    ${topSegByGM ? `<div class="kpi-card kpi-accent-blue">
+      <div class="kpi-label">Top segment par GM</div>
+      <div class="kpi-value" style="font-size: 18px;">${escapeHtml(topSegByGM[0])}</div>
+      <div class="kpi-sub">${fmt(topSegByGM[1])} ${valueKey || ""}</div>
+    </div>` : ""}
+  </div>`;
+
+  // Repartition par categorie
+  const catBySeg = {};
+  STATE.segments.forEach(s => { catBySeg[s.name] = s.category || "Autres"; });
+  const catData = {};
+  Object.keys(segCount).forEach(s => {
+    const cat = catBySeg[s] || "Autres";
+    if (!catData[cat]) catData[cat] = { clients: 0, gm: 0, segments: [] };
+    catData[cat].clients += segCount[s];
+    catData[cat].gm += (segGM[s] || 0);
+    catData[cat].segments.push({ name: s, clients: segCount[s], gm: segGM[s] || 0 });
+  });
+
+  html += `<h3 style="margin-top: 20px;">Repartition par categorie</h3>
+    <div style="display: grid; gap: 10px;">`;
+  Object.entries(catData).sort((a, b) => b[1].gm - a[1].gm).forEach(([cat, d]) => {
+    const pct = totalGM > 0 ? (d.gm / totalGM * 100) : 0;
+    html += `<div style="background: white; border: 1px solid var(--border);
+        border-radius: 8px; padding: 12px 16px;">
+      <div style="display: flex; justify-content: space-between; align-items: baseline;">
+        <strong style="font-size: 14px;">${escapeHtml(cat)}</strong>
+        <span style="font-size: 13px; color: var(--muted);">
+          ${fmt(d.clients)} clients · ${fmt(d.gm)} ${valueKey || ""} · ${pct.toFixed(1)}%
+        </span>
+      </div>
+      <div style="background: #f1f5f9; height: 8px; border-radius: 4px; margin-top: 8px; overflow: hidden;">
+        <div style="background: linear-gradient(90deg, #2563eb, #7c3aed);
+          height: 100%; width: ${Math.min(pct, 100)}%; border-radius: 4px;"></div>
+      </div>
+    </div>`;
+  });
+  html += `</div>`;
+
+  c.innerHTML = html;
+}
+
+/* =============================================================
+   SOUS-ONGLETS PAR SEGMENT (liste clients par segment)
+   ============================================================= */
+function renderSegmentSubtabs() {
+  const subtabs = document.getElementById("segments-subtabs");
+  const content = document.getElementById("segment-tab-content");
+  if (!STATE.classifiedData.length) {
+    subtabs.innerHTML = "";
+    content.innerHTML = `<div class="empty-state">
+      <h3>Pas encore de classification</h3>
+      <p>Lancez la classification depuis l'onglet
+        <strong>Segmentation</strong> pour voir les listes par segment.</p>
+    </div>`;
+    return;
+  }
+
+  // recense les segments avec au moins 1 client (en respectant l'ordre dans STATE.segments)
+  const counts = {};
+  STATE.classifiedData.forEach(r => {
+    const segs = (r.segments && r.segments.length) ? r.segments : [r.segment || "Non classe"];
+    segs.forEach(s => { counts[s] = (counts[s] || 0) + 1; });
+  });
+  const orderedSegs = STATE.segments.map(s => s.name).filter(n => counts[n]);
+  Object.keys(counts).forEach(n => { if (!orderedSegs.includes(n)) orderedSegs.push(n); });
+
+  if (!orderedSegs.length) {
+    content.innerHTML = `<div class="empty-state">
+      <h3>Aucun segment matche</h3>
+      <p>La classification a tourne mais aucun client n'a ete affecte a un segment.</p>
+    </div>`;
+    return;
+  }
+
+  // restaure ou initialise le sous-onglet actif
+  if (!STATE.activeSegmentTab || !orderedSegs.includes(STATE.activeSegmentTab)) {
+    STATE.activeSegmentTab = orderedSegs[0];
+  }
+
+  // construit les sous-onglets
+  subtabs.innerHTML = orderedSegs.map(s => `
+    <button class="subtab ${STATE.activeSegmentTab === s ? "active" : ""}"
+      data-seg="${escapeHtml(s)}">
+      ${escapeHtml(s)} <span class="count">(${counts[s].toLocaleString("fr-FR")})</span>
+    </button>
+  `).join("");
+
+  subtabs.querySelectorAll(".subtab").forEach(b => {
+    b.addEventListener("click", () => {
+      STATE.activeSegmentTab = b.dataset.seg;
+      renderSegmentSubtabs();
+    });
+  });
+
+  renderSegmentTabContent(STATE.activeSegmentTab);
+}
+
+function renderSegmentTabContent(segName) {
+  const content = document.getElementById("segment-tab-content");
+  const valueKey = repartitionValueKey();
+  const rows = STATE.classifiedData.filter(r =>
+    (r.segments && r.segments.includes(segName)) || r.segment === segName
+  );
+  const keyCol = document.getElementById("client-key")?.value || Object.keys(rows[0] || {})[0];
+
+  // KPI synthese du segment
+  const nbClients = rows.length;
+  const totalGM = valueKey ? rows.reduce((s, r) => s + (r[valueKey] || 0), 0) : 0;
+  const avgGM = nbClients ? totalGM / nbClients : 0;
+  const maxGM = valueKey ? Math.max(...rows.map(r => r[valueKey] || 0)) : 0;
+  const fmt = (v) => v.toLocaleString("fr-FR", { maximumFractionDigits: 0 });
+
+  // colonnes essentielles
+  const preferred = [
+    keyCol,
+    "GM_EUR_N", "GM_EUR_N1", "Pct_var_GM_EUR",
+    "CA_EUR_N", "Marge_pct_N",
+    "Nb_operations_N", "Nb_mois_actifs_N",
+    "Annees_actives_hist", "Mois_depuis_derniere_activite_hist",
+    "Nb_Activity_Name_EN_distincts_N",
+    "Reporting Entity Label", "Market Segment Name"
+  ];
+  const cols = rows.length ? preferred.filter(c => c in rows[0]) : [];
+  const sortKey = ["GM_EUR_N", "GM_EUR", "CA_EUR_N", "CA_EUR"].find(k => rows[0] && k in rows[0]);
+  const sorted = sortKey ? [...rows].sort((a, b) => (b[sortKey] || 0) - (a[sortKey] || 0)) : rows;
+  const search = (STATE.segmentTabSearch || "").toLowerCase();
+  const filtered = search
+    ? sorted.filter(r => String(r[keyCol] || "").toLowerCase().includes(search))
+    : sorted;
+  const preview = filtered.slice(0, 200);
+
+  let html = `
+    <div class="kpi-grid" style="margin-bottom: 16px;">
+      <div class="kpi-card kpi-accent-blue">
+        <div class="kpi-label">Clients dans le segment</div>
+        <div class="kpi-value">${fmt(nbClients)}</div>
+      </div>
+      ${valueKey ? `<div class="kpi-card kpi-accent-green">
+        <div class="kpi-label">${valueKey} total</div>
+        <div class="kpi-value">${fmt(totalGM)}</div>
+      </div>
+      <div class="kpi-card kpi-accent-purple">
+        <div class="kpi-label">${valueKey} moyen</div>
+        <div class="kpi-value">${fmt(avgGM)}</div>
+      </div>
+      <div class="kpi-card kpi-accent-amber">
+        <div class="kpi-label">Top client (${valueKey})</div>
+        <div class="kpi-value">${fmt(maxGM)}</div>
+      </div>` : ""}
+    </div>
+    <div class="row" style="margin-bottom: 12px;">
+      <input type="text" id="seg-tab-search" placeholder="Rechercher un client..."
+        value="${escapeHtml(STATE.segmentTabSearch || "")}" style="flex: 1; min-width: 240px;">
+      <button id="btn-seg-tab-xlsx">Exporter Excel</button>
+      <button id="btn-seg-tab-csv" class="secondary">Exporter CSV</button>
+    </div>`;
+
+  if (!preview.length) {
+    html += `<div class="empty-state"><h3>Aucun client</h3>
+      <p>Aucun client ne correspond a la recherche.</p></div>`;
+  } else {
+    html += `<div class="table-wrap"><table>
+      <thead><tr>
+        <th style="text-align: right; width: 40px;">#</th>
+        ${cols.map(col => {
+          const align = isNumericColumn(col) ? "right" : "left";
+          return `<th style="text-align: ${align};">${escapeHtml(col)}</th>`;
+        }).join("")}
+      </tr></thead>
+      <tbody>${preview.map((r, i) =>
+        `<tr><td style="text-align: right; color: var(--muted);">${i + 1}</td>
+        ${cols.map((col, ci) => {
+          const v = r[col];
+          const align = isNumericColumn(col) ? "right" : "left";
+          const weight = ci === 0 ? "font-weight: 600;" : "";
+          return `<td style="text-align: ${align}; ${weight}">${escapeHtml(formatCell(v))}</td>`;
+        }).join("")}</tr>`
+      ).join("")}</tbody></table></div>
+      <p class="muted" style="margin-top: 8px; font-size: 12px;">
+        Apercu : ${preview.length} sur ${filtered.length} client(s) du segment
+        ${search ? `(filtre actif : "${escapeHtml(search)}")` : ""}.
+        L'export contient tous les clients du segment.
+      </p>`;
+  }
+
+  content.innerHTML = html;
+
+  // listeners
+  const searchInput = document.getElementById("seg-tab-search");
+  if (searchInput) {
+    searchInput.addEventListener("input", (e) => {
+      STATE.segmentTabSearch = e.target.value;
+      renderSegmentTabContent(segName);
+      // refocus + remettre le curseur a la fin (le innerHTML reset)
+      const newInput = document.getElementById("seg-tab-search");
+      if (newInput) {
+        newInput.focus();
+        newInput.setSelectionRange(newInput.value.length, newInput.value.length);
+      }
+    });
+  }
+  document.getElementById("btn-seg-tab-xlsx")?.addEventListener("click", () => exportSegment(segName, "xlsx"));
+  document.getElementById("btn-seg-tab-csv")?.addEventListener("click", () => exportSegment(segName, "csv"));
 }
 
 // init au chargement : si on a deja des regles persistees, on les affiche
