@@ -1162,7 +1162,14 @@ const COUNT_DISTINCT_DIMS = [
   "Product Name"
 ];
 function shortDimName(dim) {
-  return dim.replace(/^Dim [^[]+\[/, "").replace(/\]$/, "").replace(/[^A-Za-z0-9]+/g, "_");
+  // 1. strip "Dim X[" prefix et "]" suffix
+  // 2. remplace tout caractere non-alphanum par "_"
+  // 3. supprime les "_" en debut/fin pour eviter les "Nb_X__suffix" en double underscore
+  return dim
+    .replace(/^Dim [^[]+\[/, "")
+    .replace(/\]$/, "")
+    .replace(/[^A-Za-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
 }
 
 document.getElementById("btn-aggregate").addEventListener("click", () => {
