@@ -285,11 +285,18 @@
     <h2><span class="badge">1</span> Importer les fichiers Excel</h2>
   </div>
   <p class="muted">
-    Chargez vos fichiers Excel <strong>un par un OU plusieurs a la fois</strong>.
-    Chaque nouveau fichier <strong>s'ajoute</strong> aux precedents (concat +
-    dedup automatique sur <code>JobfileNumber</code>). Pour repartir de zero,
-    cliquez "Vider tout".
+    Chargez vos fichiers Excel <strong>un par un OU plusieurs a la fois</strong>
+    (concat + dedup automatique sur <code>JobfileNumber</code>). Pour repartir
+    de zero, cliquez "Vider tout".
   </p>
+  <div style="background: #eff6ff; border: 1px solid #bfdbfe; color: #1e40af;
+       padding: 10px 14px; border-radius: 8px; font-size: 13px; margin-bottom: 12px;">
+    <strong>Mode automatique :</strong> apres le chargement, l'app lance
+    automatiquement l'agregation par client + le preset RCI
+    (<em>New Business, Reconquis, Cross Sell</em>) + la classification, et
+    bascule sur le <strong>Tableau de bord</strong>. Vous pouvez tout ajuster
+    via les onglets si besoin.
+  </div>
   <div class="row">
     <input type="file" id="file-input" accept=".xlsx,.xls" multiple style="flex: 1;">
     <button id="btn-reset-upload" class="secondary">Vider tout</button>
@@ -811,7 +818,83 @@ document.getElementById("file-input").addEventListener("change", async (e) => {
   document.getElementById("section-filters").style.display = "block";
   applyFilters();
   console.log("[upload] fin");
+
+  // Pipeline automatique : agregation + preset RCI + classification.
+  // L'utilisateur peut toujours ajuster manuellement via les onglets.
+  try {
+    await runAutoPipeline();
+  } catch (err) {
+    console.warn("[auto-pipeline] echec :", err);
+    setStatus("upload-status",
+      `Donnees chargees. Pipeline auto en echec (${err.message}) — vous pouvez agreger / classifier manuellement.`,
+      "warning");
+  }
 });
+
+/* =============================================================
+   PIPELINE AUTOMATIQUE : agregation + preset RCI + classification
+   ============================================================= */
+async function runAutoPipeline() {
+  if (!STATE.filteredData.length) return;
+
+  setStatus("upload-status", "Pipeline automatique en cours (agregation + classification)...", "info");
+  await yieldUI();
+
+  // 1) Forcer les valeurs par defaut dans l'UI d'agregation
+  //    - cle client : 1re option du dropdown (deja triee par preference)
+  //    - annee de reference : la plus recente (deja triee desc)
+  //    - metriques : Direct GM in EUR coche (defaut deja appliquee)
+  //    - dimensions : Activity Name (EN) coche (defaut deja appliquee)
+  const yearSel = document.getElementById("ref-year");
+  if (yearSel && yearSel.options.length) {
+    yearSel.selectedIndex = 0;
+  }
+  // forcer Direct GM in EUR coche si dispo
+  const gmCb = document.querySelector('#metrics-list input[data-metric="Direct GM in EUR"]');
+  if (gmCb) gmCb.checked = true;
+  // forcer Activity Name (EN) coche si dispo
+  ["Activity Name (EN)", "Dim Activity[Activity Name (EN)]"].forEach(name => {
+    const cb = document.querySelector(`#extras-list input[data-extra="${name}"]`);
+    if (cb) cb.checked = true;
+  });
+
+  // 2) Lancer l'agregation
+  document.getElementById("btn-aggregate").click();
+  await yieldUI();
+
+  if (!STATE.aggregatedData.length) {
+    throw new Error("agregation a produit 0 ligne");
+  }
+
+  // 3) Appliquer le preset RCI (sans confirmation)
+  const segs = buildAGLFrameworkRules();
+  if (!segs || !segs.length) {
+    throw new Error("framework RCI non genere (verifiez les colonnes / annee de reference)");
+  }
+  STATE.segments = segs;
+  saveSegments();
+  renderRules();
+
+  // 4) Synchroniser l'annee de reference dans la section classify
+  const yearSelClassify = document.getElementById("ref-year-classify");
+  if (yearSelClassify && yearSel && yearSel.value) {
+    yearSelClassify.value = yearSel.value;
+  }
+
+  // 5) Lancer la classification
+  document.getElementById("btn-classify").click();
+  await yieldUI();
+
+  // 6) Basculer sur l'onglet Tableau de bord pour montrer le resultat
+  activateTab("dashboard");
+
+  setStatus("upload-status",
+    `Pipeline termine : ${STATE.aggregatedData.length.toLocaleString("fr-FR")} clients agreges, ` +
+    `${STATE.segments.length} segments appliques, ` +
+    `${STATE.classifiedData.length.toLocaleString("fr-FR")} clients classes. ` +
+    `Resultat visible dans l'onglet "Tableau de bord".`,
+    "success");
+}
 
 function detectHeaderRow(rows) {
   // 1) cherche une ligne avec les 3 marqueurs (Year, Customer, JobfileNumber)
