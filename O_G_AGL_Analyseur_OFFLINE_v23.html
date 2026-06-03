@@ -5574,6 +5574,34 @@ function renderAccostage(p){
 
 /* ===================== RENDER STATS BASE LOGISTIQUE — vue directeur data ===================== */
 function _statsFmt(n,unit){if(n==null||!isFinite(n))return'—';var s=fmtInt(Math.round(n));return unit?(s+' '+unit):s;}
+/* Déduplication : regroupe les KPIs par label normalisé (lower + sans accents + espaces compressés).
+   Plusieurs feuilles peuvent avoir le même item ("TEUS pleins import" présent 2x, "Tonnage non
+   conteneurisé" 3x, etc.). On les fusionne en 1 ligne avec total cumulé + sources distinctes. */
+function _statsNormLabel(s){return String(s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^a-z0-9]+/g,' ').trim();}
+function _statsDedupKpis(kpis){
+  var byKey={};
+  kpis.forEach(function(k){
+    if(!k.hasData)return;
+    var nk=_statsNormLabel(k.label);
+    if(!byKey[nk]){
+      byKey[nk]={label:k.label,famille:k.famille,sub:k.sub,cat:k.cat,total:0,sources:[],subs:[],count:0,values:new Array(12).fill(null)};
+    }
+    var bk=byKey[nk];
+    bk.total+=k.total;
+    bk.count++;
+    if(bk.sources.indexOf(k.sheet)<0)bk.sources.push(k.sheet);
+    if(k.sub&&bk.subs.indexOf(k.sub)<0)bk.subs.push(k.sub);
+    for(var i=0;i<12;i++){
+      if(typeof k.values[i]==='number'){
+        bk.values[i]=(bk.values[i]||0)+k.values[i];
+      }
+    }
+  });
+  return Object.keys(byKey).map(function(k){return byKey[k];});
+}
+/* Toggle mode synthèse / détaillé. Variable globale + re-render. */
+window._statsMode=window._statsMode||'synthese';
+function _statsToggleMode(m){window._statsMode=m;var pn=el('panel-STATS');if(pn){pn.removeAttribute('data-rendered');renderPanel('STATS');}}
 function _statsCard(title,value,sub,color){
   return'<div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px;border-left:3px solid '+(color||COLORS.teal)+'">'+
     '<div style="font-size:10px;color:var(--text3);text-transform:uppercase;font-weight:700;letter-spacing:.05em;line-height:1.3;min-height:28px">'+title+'</div>'+
@@ -5585,6 +5613,13 @@ function renderStats(p){
   var html=panelHead('📈','Stats logistiques','Activité opérationnelle base · vue directeur','STATS');
   if(!datasets.STATS||!datasets.STATS.length){p.innerHTML=html+'<div class="card"><div style="padding:20px;color:var(--text3)">Aucune statistique chargée.</div></div>';return;}
   var d=datasets.STATS[0].data;
+  var mode=window._statsMode||'synthese';
+  // Toggle vue synthèse / détaillée
+  html+='<div style="display:flex;align-items:center;gap:8px;margin-top:8px;margin-bottom:6px">'+
+    '<button class="btn btn-ghost btn-sm" style="'+(mode==='synthese'?'background:var(--navy);color:#fff;border-color:var(--navy)':'')+'" onclick="_statsToggleMode(\'synthese\')">📊 Synthèse</button>'+
+    '<button class="btn btn-ghost btn-sm" style="'+(mode==='detail'?'background:var(--navy);color:#fff;border-color:var(--navy)':'')+'" onclick="_statsToggleMode(\'detail\')">📋 Détaillé</button>'+
+    '<span style="font-size:11px;color:var(--text3);margin-left:8px">'+(mode==='synthese'?'Vue condensée : 8 KPIs stratégiques + insights + croisement CA':'Vue complète : tous les KPIs par famille (dédupliqués)')+'</span>'+
+    '</div>';
   // Barre de filtre période (cohérent avec autres onglets)
   html+=periodBar('STATS');
   // Déterminer la sélection — si un mois précis, on isole l'index
@@ -5714,41 +5749,50 @@ function renderStats(p){
       if(caCards)html+='<div class="card" style="margin-top:16px;border-left:4px solid '+COLORS.emerald+'"><div style="padding:16px 20px"><div style="font-weight:700;color:var(--navy);margin-bottom:10px;display:flex;align-items:center;gap:8px">🔗 Croisement CA × STATS <span style="font-size:11px;font-weight:500;color:var(--text3)">— ratios de rentabilité opérationnelle</span></div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px">'+caCards+'</div></div></div>';
     }
   }
-  // ╭──────────────────── ⑤ SECTIONS THÉMATIQUES (familles) ────────────────────╮
-  var FAMILLES=[
-    {key:'ESCALES',ico:'🚢',title:'Activité portuaire — Escales'},
-    {key:'CONTENEURS',ico:'📦',title:'Flux conteneurs (TEUS & BL)'},
-    {key:'TONNAGES',ico:'⚓',title:'Tonnages par catégorie produit'},
-    {key:'ARMATEURS',ico:'🏢',title:'Armateurs (lignes régulières)'},
-    {key:'CAPACITE',ico:'🏗️',title:'Capacité & infrastructures'},
-    {key:'MATERIEL',ico:'🛠️',title:'Parc matériel'},
-    {key:'PRODUCTIVITE',ico:'⏱️',title:'Productivité & dossiers'},
-    {key:'TOTAUX',ico:'📊',title:'CAP & totalisations'},
-    {key:'AUTRES',ico:'📁',title:'Autres KPIs'}
-  ];
-  html+='<div style="margin-top:18px"><div style="font-weight:700;font-size:14px;color:var(--navy);margin-bottom:10px">📋 Détail par famille métier</div>';
-  FAMILLES.forEach(function(f){
-    var kpisFam=d.kpis.filter(function(k){return k.famille===f.key&&k.hasData;});
-    if(!kpisFam.length)return;
-    var totFam=kpisFam.reduce(function(a,k){return a+valOf(k);},0);
-    var sigFam=kpisFam.length;
-    html+='<details class="qhse-sec" '+(['ESCALES','CONTENEURS','TONNAGES','ARMATEURS'].indexOf(f.key)>=0?'open':'')+' style="margin-top:10px">'+
-      '<summary style="cursor:pointer;padding:12px 16px;font-weight:700;background:var(--surface2);border-radius:8px"><span style="font-size:15px;margin-right:6px">'+f.ico+'</span>'+esc(f.title)+
-      ' <span style="color:var(--text3);font-size:11px;font-weight:400;margin-left:8px">'+sigFam+' KPI'+(sigFam>1?'s':'')+(totFam>0?' · total '+_statsFmt(totFam):'')+'</span></summary>';
-    // Grouper par sub (sous-catégorie)
-    var bySub={};
-    kpisFam.forEach(function(k){var sub=k.sub||'—';if(!bySub[sub])bySub[sub]=[];bySub[sub].push(k);});
-    html+='<div style="padding:8px 0"><table class="cl-table" style="width:100%;font-size:12px;margin-top:6px"><thead><tr><th style="width:30%">KPI</th><th>Sous-catégorie</th><th>Source</th><th style="text-align:right">Valeur '+(selIdx==null?'cumul':'mois')+'</th><th style="text-align:right">Mois renseignés</th></tr></thead><tbody>';
-    Object.keys(bySub).sort().forEach(function(sub){
-      bySub[sub].sort(function(a,b){return valOf(b)-valOf(a);}).forEach(function(k){
-        var nbVal=k.values.filter(function(v){return typeof v==='number'&&v!==0;}).length;
-        var v=valOf(k);
-        html+='<tr><td style="font-weight:500">'+esc(k.label)+'</td><td style="color:var(--text2);font-size:11px">'+esc(sub)+'</td><td style="color:var(--text3);font-size:11px">'+esc(k.sheet)+'</td><td style="text-align:right;font-variant-numeric:tabular-nums;font-weight:700;color:var(--navy)">'+(v===0?'<span style="color:var(--text3);font-weight:400">0</span>':_statsFmt(v))+'</td><td style="text-align:right;color:var(--text2);font-variant-numeric:tabular-nums">'+nbVal+'/12</td></tr>';
+  // ╭──────────────────── ⑤ SECTIONS THÉMATIQUES — affiché uniquement en mode DÉTAILLÉ ────────────────────╮
+  if(mode==='detail'){
+    var FAMILLES=[
+      {key:'ESCALES',ico:'🚢',title:'Activité portuaire — Escales'},
+      {key:'CONTENEURS',ico:'📦',title:'Flux conteneurs (TEUS & BL)'},
+      {key:'TONNAGES',ico:'⚓',title:'Tonnages par catégorie produit'},
+      {key:'ARMATEURS',ico:'🏢',title:'Armateurs (lignes régulières)'},
+      {key:'CAPACITE',ico:'🏗️',title:'Capacité & infrastructures'},
+      {key:'MATERIEL',ico:'🛠️',title:'Parc matériel'},
+      {key:'PRODUCTIVITE',ico:'⏱️',title:'Productivité & dossiers'},
+      {key:'TOTAUX',ico:'📊',title:'CAP & totalisations'},
+      {key:'AUTRES',ico:'📁',title:'Autres KPIs'}
+    ];
+    html+='<div style="margin-top:18px"><div style="font-weight:700;font-size:14px;color:var(--navy);margin-bottom:10px;display:flex;align-items:center;gap:8px">📋 Détail par famille métier <span style="font-size:11px;font-weight:500;color:var(--text3)">— items dédupliqués entre feuilles · cliquer pour déployer</span></div>';
+    FAMILLES.forEach(function(f){
+      var kpisFam=d.kpis.filter(function(k){return k.famille===f.key&&k.hasData;});
+      if(!kpisFam.length)return;
+      // Déduplication : 1 ligne par label normalisé, total cumulé, sources distinctes
+      var dedupKpis=_statsDedupKpis(kpisFam);
+      // Pour le filtre période : recalculer valeur si selIdx
+      function valDedupOf(dk){
+        if(selIdx==null)return dk.total;
+        return typeof dk.values[selIdx]==='number'?dk.values[selIdx]:0;
+      }
+      var totFam=dedupKpis.reduce(function(a,dk){return a+valDedupOf(dk);},0);
+      var nbUniq=dedupKpis.length,nbBrut=kpisFam.length;
+      var savedNote=nbBrut>nbUniq?' <span style="color:var(--green);font-size:10px;font-weight:500">('+nbUniq+' uniques / '+nbBrut+' bruts)</span>':'';
+      html+='<details class="qhse-sec" style="margin-top:8px">'+
+        '<summary style="cursor:pointer;padding:10px 14px;font-weight:700;background:var(--surface2);border-radius:8px;font-size:13px"><span style="font-size:14px;margin-right:6px">'+f.ico+'</span>'+esc(f.title)+
+        ' <span style="color:var(--text3);font-size:11px;font-weight:400;margin-left:8px">'+nbUniq+' item'+(nbUniq>1?'s':'')+(totFam>0?' · total '+_statsFmt(totFam):'')+'</span>'+savedNote+'</summary>';
+      // Tri par valeur décroissante
+      dedupKpis.sort(function(a,b){return valDedupOf(b)-valDedupOf(a);});
+      html+='<div style="padding:6px 0"><table class="cl-table" style="width:100%;font-size:12px"><thead><tr><th style="width:38%">Item</th><th>Sous-catégorie</th><th style="text-align:right">Valeur '+(selIdx==null?'cumul':'mois')+'</th><th style="text-align:right;width:90px">Mois</th><th>Sources</th></tr></thead><tbody>';
+      dedupKpis.forEach(function(dk){
+        var nbVal=dk.values.filter(function(v){return typeof v==='number'&&v!==0;}).length;
+        var v=valDedupOf(dk);
+        var srcsBadges=dk.sources.map(function(s){return '<span style="display:inline-block;background:var(--surface2);color:var(--text2);font-size:10px;padding:1px 6px;border-radius:8px;margin-right:3px">'+esc(s.slice(0,12))+'</span>';}).join('');
+        var dupBadge=dk.count>1?'<span style="display:inline-block;background:'+COLORS.teal+';color:#fff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:7px;margin-left:4px" title="'+dk.count+' occurrences fusionnées">×'+dk.count+'</span>':'';
+        html+='<tr><td style="font-weight:500;color:var(--text)">'+esc(dk.label)+dupBadge+'</td><td style="color:var(--text2);font-size:11px">'+esc(dk.sub||'—')+'</td><td style="text-align:right;font-variant-numeric:tabular-nums;font-weight:700;color:var(--navy)">'+(v===0?'<span style="color:var(--text3);font-weight:400">0</span>':_statsFmt(v))+'</td><td style="text-align:right;color:var(--text2);font-variant-numeric:tabular-nums">'+nbVal+'/12</td><td style="line-height:1.6">'+srcsBadges+'</td></tr>';
       });
+      html+='</tbody></table></div></details>';
     });
-    html+='</tbody></table></div></details>';
-  });
-  html+='</div>';
+    html+='</div>';
+  }
   // ── Footer : qualité des données ──
   var refPct=d.nbKpis?Math.round(d.nbRef/d.nbKpis*100):0;
   var dataPct=d.nbKpis?Math.round(d.nbWithData/d.nbKpis*100):0;
