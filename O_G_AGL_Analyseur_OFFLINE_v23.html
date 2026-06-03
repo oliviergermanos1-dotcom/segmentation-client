@@ -32,7 +32,8 @@
   }
   body{font-family:'Inter',-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.5;padding:0 0 80px}
   .topbar{position:sticky;top:0;z-index:50;background:linear-gradient(135deg,var(--navy) 0%,var(--navy2) 100%);border-bottom:2px solid var(--gold);padding:0 20px;box-shadow:var(--shadow-lg)}
-  .topbar-inner{max-width:1280px;margin:0 auto;height:58px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  .topbar-inner{max-width:1280px;margin:0 auto;height:58px;display:flex;align-items:center;gap:10px;flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;scrollbar-width:thin}
+  .topbar-inner > .btn,.topbar-inner > .dark-toggle{white-space:nowrap;flex-shrink:0}
   .logo{font-size:18px;font-weight:800;display:flex;align-items:center;gap:12px;color:#fff;letter-spacing:.01em}
   .logo img.agl-logo{height:36px;width:auto;display:block;mix-blend-mode:screen;filter:brightness(1.1) contrast(1.05)}
   .logo .tag{background:linear-gradient(135deg,var(--gold),var(--gold2));color:#0A2540;font-size:10px;padding:3px 9px;border-radius:20px;font-weight:800;letter-spacing:.06em;box-shadow:0 2px 6px rgba(201,150,58,.4)}
@@ -5652,18 +5653,25 @@ function applyClientFilter(){
   if(_filterApplying)return;
   _filterApplying=true;
   var sel=el('clientGlobalSel');
-  _activeClientFilter=sel&&sel.value?canonClient(sel.value)||sel.value:null;
+  var rawClient=sel&&sel.value?sel.value:null;
+  _activeClientFilter=rawClient?(canonClient(rawClient)||rawClient):null;
   var info=el('clientGlobalInfo');if(info)info.textContent=_activeClientFilter?'👤 '+_activeClientFilter:'';
   var fb=el('clientFilterBadge');if(fb){fb.textContent=_activeClientFilter?('👤 '+_activeClientFilter+' ×'):'';fb.style.display=_activeClientFilter?'inline-flex':'none';}
   var activeP=document.querySelector('.panel.active');
   if(activeP){activeP.removeAttribute('data-rendered');renderPanel(activeP.id.replace('panel-',''));}
   document.querySelectorAll('.panel[data-rendered]:not(.active)').forEach(function(p){p.removeAttribute('data-rendered');});
+  if(rawClient&&typeof openBattleCard==='function'){try{openBattleCard(rawClient);}catch(e){}}
+  else if(!rawClient&&typeof closeBattleCard==='function'){try{closeBattleCard();}catch(e){}}
   setTimeout(function(){_filterApplying=false;},100);
 }
 function clearClientFilter(){
   _activeClientFilter=null;var sel=el('clientGlobalSel');if(sel)sel.value='';
   var info=el('clientGlobalInfo');if(info)info.textContent='';
+  var fb=el('clientFilterBadge');if(fb){fb.style.display='none';fb.textContent='';}
   var ov=el('clientDashOverlay');if(ov)ov.remove();
+  if(typeof closeBattleCard==='function'){try{closeBattleCard();}catch(e){}}
+  var activeP=document.querySelector('.panel.active');
+  if(activeP){activeP.removeAttribute('data-rendered');renderPanel(activeP.id.replace('panel-',''));}
 }
 function showClientDashboard(cli){
   var old=el('clientDashOverlay');if(old)old.remove();if(!cli)return;
