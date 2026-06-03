@@ -3456,19 +3456,28 @@ function exportTableExcel(tableId,filename){
 
 function renderPanel(t){
   var p=el('panel-'+t);p.setAttribute('data-rendered','1');
-  if(t==='SYNTHESE')renderSynthese(p);
-  else if(t==='QHSE')renderQHSE(p);
-  else if(t==='POINTAGE')renderPointage(p);
-  else if(t==='PLANNING')renderPlanning(p);
-  else if(t==='CORRELATION')renderCorrelation(p);
-  else if(t==='ACTIONS')renderActions(p);
-  else if(t==='CHARGES')renderCharges(p);
-  else if(t==='LOYERS')renderCA(p); // CAP fusionné dans CA
-  else if(t==='CA')renderCA(p);
-  else if(t==='ACCOSTAGE')renderAccostage(p);
-  else if(t==='STATS')renderStats(p);
-  else if(t==='GENERIQUE')renderGenerique(p);
-  else if(t==='MARGE')renderMarge(p);
+  try{
+    if(t==='SYNTHESE')renderSynthese(p);
+    else if(t==='QHSE')renderQHSE(p);
+    else if(t==='POINTAGE')renderPointage(p);
+    else if(t==='PLANNING')renderPlanning(p);
+    else if(t==='CORRELATION')renderCorrelation(p);
+    else if(t==='ACTIONS')renderActions(p);
+    else if(t==='CHARGES')renderCharges(p);
+    else if(t==='LOYERS')renderCA(p); // CAP fusionné dans CA
+    else if(t==='CA')renderCA(p);
+    else if(t==='ACCOSTAGE')renderAccostage(p);
+    else if(t==='STATS')renderStats(p);
+    else if(t==='GENERIQUE')renderGenerique(p);
+    else if(t==='MARGE')renderMarge(p);
+  }catch(err){
+    console.error('renderPanel('+t+') ERREUR :',err);
+    p.innerHTML='<div class="card" style="border-left:4px solid #ef4444;background:rgba(239,68,68,.06)"><div style="padding:18px 22px">'+
+      '<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px"><span style="font-size:22px">⚠️</span><b style="font-size:14px;color:#ef4444">Erreur de rendu : '+esc(t)+'</b></div>'+
+      '<div style="font-size:12px;color:var(--text2);font-family:monospace;background:rgba(0,0,0,.04);padding:10px;border-radius:6px;word-break:break-word">'+esc(String(err&&err.message?err.message:err))+'</div>'+
+      '<div style="font-size:11px;color:var(--text3);margin-top:8px">Détails dans la console navigateur (F12). Recharge la page et ré-essaye, ou signale ce message.</div>'+
+      '</div></div>';
+  }
   if(t!=='SYNTHESE'){var _ab=document.createElement('div');_ab.innerHTML=annotationBlock(t);p.appendChild(_ab);}
   // Déclencher compteurs animés après le rendu
   setTimeout(function(){animateCounters(p);activateSortableAll();},50);
@@ -5470,52 +5479,59 @@ function renderStats(p){
       '<div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;font-weight:700">Liens cassés</div><div style="font-size:20px;font-weight:800;color:'+(refPct>20?COLORS.red:COLORS.text3)+'">'+refPct+'%</div></div>'+
       '</div></div>';
   }
-  // ── KPI quick wins ── (uniquement si on a des données)
+  // ── TOP KPIs avec données réelles (cards) ──
   if(d.hasData){
-    var quickKpis=[
-      {label:'Escales lignes régulières',rx:/escales\s*lignes?\s*r[ée]g/i},
-      {label:'Escales Tramps',rx:/^nombre\s*d'?escales\s*tramps$/i},
-      {label:'TEUS pleins import',rx:/teus\s*pleins?\s*import\s*$/i},
-      {label:'TEUS pleins export',rx:/teus\s*pleins?\s*export\s*$/i},
-      {label:'TEUS vides entrés',rx:/teus\s*vides?\s*entr/i},
-      {label:'TEUS vides sortis',rx:/teus\s*vides?\s*sortis/i},
-      {label:'BL échangés',rx:/bl\s*[ée]chang/i},
-      {label:'Surface terre-pleins (m²)',rx:/surface\s*terre[- ]?pleins/i},
-      {label:'Taux d\'occupation',rx:/taux\s*d'?occupation/i}
+    // Quick wins prioritaires (match optionnel)
+    var quickRx=[
+      /escales\s*lignes?\s*r[ée]g/i,/^nombre\s*d'?escales\s*tramps$/i,
+      /escales\s*slot/i,/teus\s*pleins?\s*import/i,/teus\s*pleins?\s*export/i,
+      /teus\s*vides?\s*entr/i,/teus\s*vides?\s*sortis/i,/bl\s*[ée]chang/i,
+      /surface\s*terre[- ]?pleins/i,/taux\s*d'?occupation/i,
+      /nombre.*location.*engins/i,/grues?\s*automotrices/i,/superstackers?/i,
+      /chariot/i,/tonnage/i,/heures?/i
     ];
-    var cards='';
-    quickKpis.forEach(function(qk){
-      var match=d.kpis.find(function(k){return qk.rx.test(k.label)&&k.hasData;});
-      if(match){
-        var val=match.total;
-        var disp=qk.label.indexOf('Taux')>-1?(Math.round(val*100/Math.max(1,match.values.filter(function(v){return v!=null;}).length))+'%'):fmtInt(val);
-        cards+='<div class="bc-kpi"><div class="bk-label" style="font-size:10px;color:var(--text3);text-transform:uppercase;font-weight:700">'+esc(qk.label)+'</div><div class="bk-value accent" style="font-size:18px;font-weight:800;color:'+COLORS.accent+'">'+disp+'</div><div class="bk-sub" style="font-size:10px;color:var(--text3)">cumul '+match.values.filter(function(v){return v!=null&&v!==0;}).length+' mois</div></div>';
-      }
+    // Construire un set ordonné : quick wins matchés en premier, puis top KPIs par valeur
+    var seen={};var ordered=[];
+    quickRx.forEach(function(rx){
+      d.kpis.filter(function(k){return k.hasData&&rx.test(k.label)&&!seen[k.label];}).forEach(function(k){seen[k.label]=1;ordered.push(k);});
     });
-    if(cards)html+='<div class="card"><div style="padding:14px;display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px">'+cards+'</div></div>';
+    // Compléter avec les KPI avec données triés par total desc
+    d.kpis.filter(function(k){return k.hasData&&!seen[k.label];}).sort(function(a,b){return b.total-a.total;}).slice(0,20).forEach(function(k){ordered.push(k);});
+    var topKpis=ordered.slice(0,16);
+    if(topKpis.length){
+      var cards='';
+      topKpis.forEach(function(k){
+        var nbMois=k.values.filter(function(v){return v!=null&&v!==0;}).length;
+        var disp=fmtInt(k.total);
+        // Détecter si c'est un taux/pourcentage (valeurs entre 0 et 1)
+        var maxV=Math.max.apply(null,k.values.filter(function(v){return v!=null;}).concat([0]));
+        if(maxV>0&&maxV<=1.5&&/taux|%|ratio/i.test(k.label)){disp=Math.round(k.total*100/Math.max(1,nbMois))+'%';}
+        cards+='<div class="bc-kpi" style="background:#0f2040;border:1px solid #1e3a5f;border-radius:10px;padding:12px 14px"><div class="bk-label" style="font-size:10px;color:#94a3b8;text-transform:uppercase;font-weight:700;line-height:1.3;min-height:28px">'+esc(k.label.slice(0,55))+'</div><div class="bk-value" style="font-size:20px;font-weight:800;color:#fff;margin-top:6px">'+disp+'</div><div class="bk-sub" style="font-size:10px;color:#64748b;margin-top:3px">cumul '+nbMois+' mois · <span style="color:'+COLORS.teal+'">'+esc(k.sheet.slice(0,18))+'</span></div></div>';
+      });
+      html+='<div class="card"><div style="padding:14px"><div style="font-weight:700;font-size:13px;color:var(--navy);margin-bottom:10px;display:flex;align-items:center;gap:8px">📊 TOP KPIs avec données <span style="font-size:11px;font-weight:500;color:var(--text3)">— '+topKpis.length+' indicateurs avec valeurs réelles</span></div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px">'+cards+'</div></div></div>';
+    }
   }
   // ── Sections détaillées ──
   Object.keys(d.sheets).forEach(function(sn){
     var s=d.sheets[sn];
     if(!s.sections.length&&!s.kpis.length)return;
-    html+='<details class="qhse-sec" '+(s===d.sheets[Object.keys(d.sheets)[0]]?'open':'')+'><summary style="cursor:pointer;padding:12px 16px;font-weight:700;background:var(--surface2);border-radius:8px;margin-top:14px">📋 '+esc(sn)+' <span style="color:var(--text3);font-size:11px;font-weight:400">('+s.sections.length+' sections, '+s.kpis.length+' KPIs)</span></summary>';
+    // N'afficher que les feuilles qui ont au moins 1 KPI avec données
+    var nbWithData=s.kpis.filter(function(k){return k.hasData;}).length;
+    if(nbWithData===0)return;
+    html+='<details class="qhse-sec" open><summary style="cursor:pointer;padding:12px 16px;font-weight:700;background:var(--surface2);border-radius:8px;margin-top:14px">📋 '+esc(sn)+' <span style="color:var(--text3);font-size:11px;font-weight:400">('+nbWithData+' KPIs avec données / '+s.kpis.length+' total)</span></summary>';
     html+='<div style="padding:8px 0">';
     s.sections.forEach(function(sec){
       var kpisWithData=sec.kpis.filter(function(k){return k.hasData;});
-      var kpisRef=sec.kpis.filter(function(k){return k.hasRef;});
+      if(!kpisWithData.length)return; // skip sections sans données réelles
       html+='<div class="card" style="margin:10px 0"><div style="padding:12px 16px">'+
         '<div style="font-weight:700;color:'+COLORS.navy+';font-size:13px;margin-bottom:8px;text-transform:uppercase;letter-spacing:.04em">'+esc(sec.label)+
-          ' <span style="font-size:10px;color:var(--text3);text-transform:none;font-weight:500;letter-spacing:0">— '+sec.kpis.length+' KPIs, '+kpisWithData.length+' avec données'+(kpisRef.length?', '+kpisRef.length+' #REF!':'')+'</span></div>';
-      if(sec.kpis.length){
-        html+='<table class="bc-dept-tbl" style="width:100%;font-size:12px"><thead><tr><th>KPI</th><th class="num">Total</th><th class="num">Mois renseignés</th><th>État</th></tr></thead><tbody>';
-        sec.kpis.forEach(function(k){
-          var nbVal=k.values.filter(function(v){return v!=null&&v!==0;}).length;
-          var etat=k.hasData?'<span style="color:'+COLORS.green+'">● données OK</span>':(k.hasRef?'<span style="color:'+COLORS.amber+'">⚠ #REF!</span>':'<span style="color:var(--text3)">○ vide</span>');
-          html+='<tr><td style="padding:5px 8px">'+esc(k.label)+'</td><td class="num" style="padding:5px 8px;text-align:right;font-variant-numeric:tabular-nums">'+(k.hasData?fmtInt(k.total):'—')+'</td><td class="num" style="padding:5px 8px;text-align:right">'+nbVal+'/12</td><td style="padding:5px 8px">'+etat+'</td></tr>';
-        });
-        html+='</tbody></table>';
-      }
-      html+='</div></div>';
+          ' <span style="font-size:10px;color:var(--text3);text-transform:none;font-weight:500;letter-spacing:0">— '+kpisWithData.length+'/'+sec.kpis.length+' KPIs avec données</span></div>';
+      html+='<table class="bc-dept-tbl" style="width:100%;font-size:12px"><thead><tr><th>KPI</th><th class="num">Total cumulé</th><th class="num">Mois renseignés</th></tr></thead><tbody>';
+      kpisWithData.forEach(function(k){
+        var nbVal=k.values.filter(function(v){return v!=null&&v!==0;}).length;
+        html+='<tr><td style="padding:5px 8px">'+esc(k.label)+'</td><td class="num" style="padding:5px 8px;text-align:right;font-variant-numeric:tabular-nums;font-weight:600">'+fmtInt(k.total)+'</td><td class="num" style="padding:5px 8px;text-align:right">'+nbVal+'/12</td></tr>';
+      });
+      html+='</tbody></table></div></div>';
     });
     html+='</div></details>';
   });
