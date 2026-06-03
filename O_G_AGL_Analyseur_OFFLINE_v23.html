@@ -1702,6 +1702,8 @@ function parseActions(wb){
 function parseCharges(wb){
   var months=[];
   wb.SheetNames.forEach(function(name){
+    // Skip onglets méta du nouveau format (templates v1)
+    if(/mode\s*d['’]emploi/i.test(name)||/^_sys$/i.test(name))return;
     var g=SHEET(wb,name);
     var hr=g.findIndex(function(r){var j=r.map(norm).join('|').toLowerCase();return j.indexOf('libellé')>-1&&j.indexOf('montant')>-1;});
     if(hr<0)return;
