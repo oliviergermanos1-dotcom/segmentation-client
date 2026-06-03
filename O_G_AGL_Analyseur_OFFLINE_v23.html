@@ -2801,7 +2801,8 @@ var EXPECTED_SOURCES=[
   {type:'ACTIONS',rx:/action/i,freshDays:10,rythme:'hebdo'},
   {type:'CHARGES',rx:/charge|40b0/i,freshDays:40,rythme:'mensuel'},
   {type:'CA',rx:/flash.?ca|cap|loyer|facturation|chiffre.?d.?affaire|\bca\b/i,freshDays:40,rythme:'mensuel'},
-  {type:'ACCOSTAGE',rx:/accostage|navire/i,freshDays:40,rythme:'mensuel'}
+  {type:'ACCOSTAGE',rx:/accostage|navire/i,freshDays:40,rythme:'mensuel'},
+  {type:'STATS',rx:/stats?[\W_]*base[\W_]*log|base[\W_]*logistique|conso[\W_]*agl|statistiques[\W_]*.*log/i,freshDays:40,rythme:'mensuel'}
 ];
 var LS_FRESH_KEY='oeg_agl_fresh';
 (function loadFreshConfig(){
