@@ -1598,6 +1598,8 @@ function parsePlanning(wb){
   var days=[];
   wb.SheetNames.forEach(function(name){
     if(/feuil/i.test(name))return;
+    // Skip onglets méta du nouveau format (templates v1)
+    if(/mode\s*d['’]emploi/i.test(name)||/^_sys$/i.test(name))return;
     var g=SHEET(wb,name);
     var hr=g.findIndex(function(r){var j=r.map(norm).join('|').toLowerCase();return j.indexOf('client')>-1&&(j.indexOf('positif')>-1||j.indexOf('nature')>-1);});
     if(hr<0)return;
@@ -1638,15 +1640,61 @@ function parsePlanning(wb){
 function parseActions(wb){
   var out=[];
   wb.SheetNames.forEach(function(name){
+    // Skip onglets non-données du nouveau format
+    if(/mode\s*d['’]emploi/i.test(name)||/^_sys$/i.test(name))return;
     var g=SHEET(wb,name);
-    var sections={},cur='Autres';
-    g.forEach(function(r){
-      var a=norm(r[0]),b=norm(r[1]);
-      if(/^[IVX]+\./.test(a))cur=a.replace(/\s+/g,' ');
-      if(b&&b.indexOf(':')>-1){var ct=b.split(':').slice(1).join(':').trim();if(ct.length>2){(sections[cur]=sections[cur]||[]).push(ct);}}
-    });
+    var sections={},cur='Autres',actions=[];
+    // Détection format v1 (templates) : en-tête col B = "Section" et col C = "Action"
+    var hrV1=-1;
+    for(var hi=0;hi<Math.min(g.length,5);hi++){
+      var jl=(g[hi]||[]).map(norm).join('|').toLowerCase();
+      if(jl.indexOf('section')>-1&&jl.indexOf('action')>-1){hrV1=hi;break;}
+    }
+    if(hrV1>=0){
+      var hh=g[hrV1].map(norm);
+      var iSec=hh.findIndex(function(x){return /^section$/i.test(x);});
+      var iAct=hh.findIndex(function(x){return /^action$/i.test(x);});
+      var iStatutA=hh.findIndex(function(x){return /^statut/i.test(x);});
+      var iRespA=hh.findIndex(function(x){return /responsable/i.test(x);});
+      var iDatePrev=hh.findIndex(function(x){return /date\s*pr[ée]vue/i.test(x);});
+      var iDateReal=hh.findIndex(function(x){return /date\s*r[ée]alis/i.test(x);});
+      var iPriorite=hh.findIndex(function(x){return /priorit[ée]/i.test(x);});
+      var iLienIncident=hh.findIndex(function(x){return /lien\s*incident/i.test(x);});
+      var iProgres=hh.findIndex(function(x){return /progr[èe]s/i.test(x);});
+      var iCommA=hh.findIndex(function(x){return /commentaire/i.test(x);});
+      for(var rr=hrV1+1;rr<g.length;rr++){
+        var rw=g[rr];if(!rw)continue;
+        var secV=iSec>=0?norm(rw[iSec]):'';
+        var actV=iAct>=0?norm(rw[iAct]):'';
+        if(!secV&&!actV)continue;
+        if(secV)cur=secV;
+        if(actV){
+          // Strip bullet prefix and "Act N :" préfixe pour cohérence avec ancien format
+          var txt=actV.replace(/^[·\-•\s]+/,'').trim();
+          var stripped=txt;var ci=txt.indexOf(':');if(ci>-1)stripped=txt.slice(ci+1).trim();
+          (sections[cur]=sections[cur]||[]).push(stripped);
+          var act={section:cur,action:stripped,raw:actV};
+          if(iStatutA>=0)act.statut=norm(rw[iStatutA]);
+          if(iRespA>=0)act.responsable=norm(rw[iRespA]);
+          if(iDatePrev>=0)act.datePrevue=rw[iDatePrev];
+          if(iDateReal>=0)act.dateRealisee=rw[iDateReal];
+          if(iPriorite>=0)act.priorite=norm(rw[iPriorite]);
+          if(iLienIncident>=0)act.lienIncident=norm(rw[iLienIncident]);
+          if(iProgres>=0){var pv=cellNumOrNull(rw[iProgres]);if(pv!=null)act.progres=pv;}
+          if(iCommA>=0)act.commentaire=norm(rw[iCommA]);
+          actions.push(act);
+        }
+      }
+    }else{
+      // Ancien format : col A = section "I.", col B = "X : action"
+      g.forEach(function(r){
+        var a=norm(r[0]),b=norm(r[1]);
+        if(/^[IVX]+\./.test(a))cur=a.replace(/\s+/g,' ');
+        if(b&&b.indexOf(':')>-1){var ct=b.split(':').slice(1).join(':').trim();if(ct.length>2){(sections[cur]=sections[cur]||[]).push(ct);actions.push({section:cur,action:ct,raw:b});}}
+      });
+    }
     var total=Object.keys(sections).reduce(function(a,k){return a+sections[k].length;},0);
-    out.push({sheet:name.trim(),label:name.trim(),sections:sections,total:total});
+    out.push({sheet:name.trim(),label:name.trim(),sections:sections,total:total,actions:actions});
   });
   return{periods:out};
 }
@@ -1684,11 +1732,16 @@ function parseCharges(wb){
 }
 
 function parseLoyers(wb){
-  var sheetName=wb.SheetNames[0];
+  // Nouveau format (templates v1) : le 1er onglet est "Mode d'emploi", chercher "Loyers" en priorité.
+  var sheetName=wb.SheetNames.find(function(n){return /^loyers$/i.test(n);})||wb.SheetNames.find(function(n){return !/mode\s*d['’]emploi|^_sys$/i.test(n);})||wb.SheetNames[0];
   var g=SHEET(wb,sheetName);
   var hr=g.findIndex(function(r){return r.map(norm).join('|').toLowerCase().indexOf('client')>-1;});
   if(hr<0)hr=1;
   var h=g[hr];
+  // Calculer l'index où commencent les colonnes M1..M12. Ancien : c=3. Nouveau (ID Espace inséré) : c=4. On part juste après "Montant H.T".
+  var hLowL=h.map(norm);
+  var iMontL=hLowL.findIndex(function(x){return /montant\s*h\.?\s*t|montant\s+ht|montant\s+annuel/i.test(x);});
+  var startColL=iMontL>=0?iMontL+1:3;
   var monthCols=[];
   var MOIS_FR_ABBR=['','janv.','févr.','mars','avr.','mai','juin','juil.','août','sept.','oct.','nov.','déc.'];
   function loyerMonthLabel(serial,colIdx){
@@ -1700,7 +1753,7 @@ function parseLoyers(wb){
     }catch(e){}
     return 'M'+colIdx;
   }
-  for(var c=3;c<h.length;c++){if(isNum(h[c])){monthCols.push({idx:c,label:loyerMonthLabel(h[c],c)});}}
+  for(var c=startColL;c<h.length;c++){if(isNum(h[c])){monthCols.push({idx:c,label:loyerMonthLabel(h[c],c)});}}
   // build per-month "periods" so filter works: each month is a period
   var periods=monthCols.map(function(mc){return{sheet:mc.label,label:mc.label,idx:mc.idx,byClient:{},total:0};});
   var globalByClient={},totalAnnuel=0,nbLignes=0;
@@ -1829,6 +1882,8 @@ function ymLabelSafe(ym){try{return ymLabel(ym);}catch(e){return ym;}}
 function parseAccostage(wb){
   var months=[];
   wb.SheetNames.forEach(function(name){
+    // Skip onglets méta du nouveau format (templates v1)
+    if(/mode\s*d['’]emploi/i.test(name)||/^_sys$/i.test(name))return;
     var g=SHEET(wb,name);
     // ligne d'en-tête = contient NAVIRES + CLIENTS
     var hr=-1;
@@ -5847,6 +5902,31 @@ function renderStats(p){
   if(nbUnitesMat>0)sCards+=statCard('🛠️ Parc matériel',fmtInt(nbUnitesMat),'unités déclarées',COLORS.pink);
   if(sCards)html+='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-top:14px">'+sCards+'</div>';
 
+  // ── ⚠ Alertes intelligentes (Point 4) ──────────────────────────────────
+  var sAlerts=[];
+  if(kTauxTP){var occTP=vOf(kTauxTP);if(occTP>=0.9)sAlerts.push({sev:'high',ico:'🚨',tit:'Saturation terre-pleins',msg:'Taux d\'occupation '+Math.round(occTP*100)+'% — capacité quasi épuisée, prévoir extension ou rotation.'});else if(occTP>=0.8)sAlerts.push({sev:'med',ico:'⚠️',tit:'Occupation élevée terre-pleins',msg:'Taux '+Math.round(occTP*100)+'% — surveillance requise.'});}
+  if(kTauxMag){var occMag=vOf(kTauxMag);if(occMag>=0.9)sAlerts.push({sev:'high',ico:'🚨',tit:'Saturation magasins',msg:'Taux d\'occupation '+Math.round(occMag*100)+'% — capacité quasi épuisée.'});else if(occMag>=0.8)sAlerts.push({sev:'med',ico:'⚠️',tit:'Occupation élevée magasins',msg:'Taux '+Math.round(occMag*100)+'% — surveillance requise.'});}
+  if(kHeures){var vH=vOf(kHeures),bH=bOf(kHeures);if(bH&&bH>0){var ratio=vH/bH;if(ratio>1.1)sAlerts.push({sev:'med',ico:'💸',tit:'Dépassement budget heures',msg:'Cumul '+fmtInt(vH)+' h vs budget '+fmtInt(bH)+' h (+'+Math.round((ratio-1)*100)+'%).'});else if(ratio<0.5&&selIdx==null)sAlerts.push({sev:'low',ico:'ℹ️',tit:'Sous-utilisation budget heures',msg:'Cumul '+fmtInt(vH)+' h ≪ budget '+fmtInt(bH)+' h ('+Math.round((1-ratio)*100)+'% en-dessous).'});}}
+  // Tendance haussière 3 mois consécutifs sur heures location
+  if(kHeures){var vals=kHeures.values.filter(function(v){return typeof v==='number';});if(vals.length>=3){var t=vals.slice(-3);if(t[0]>0&&t[0]<t[1]&&t[1]<t[2]){var pctEvol=(t[2]-t[0])/t[0];if(pctEvol>0.10)sAlerts.push({sev:'low',ico:'📈',tit:'Tendance haussière heures location',msg:'+'+Math.round(pctEvol*100)+'% sur les 3 derniers mois renseignés (de '+fmtInt(t[0])+' à '+fmtInt(t[2])+' h).'});}}}
+  if(sAlerts.length){
+    var aCol={high:COLORS.red,med:COLORS.amber,low:COLORS.accent};
+    var aCards='';
+    sAlerts.forEach(function(a){aCards+='<div style="background:var(--bg);border:1px solid var(--border);border-left:4px solid '+aCol[a.sev]+';border-radius:8px;padding:11px 14px"><div style="display:flex;align-items:center;gap:8px;margin-bottom:3px"><span style="font-size:16px">'+a.ico+'</span><b style="font-size:12px;color:var(--navy)">'+a.tit+'</b></div><div style="font-size:11.5px;color:var(--text2);line-height:1.4">'+a.msg+'</div></div>';});
+    html+='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:10px;margin-top:14px">'+aCards+'</div>';
+  }
+
+  // ── 📈 Graphe d'évolution mensuelle (Point 3) ──────────────────────────
+  var allValidKpis=[];
+  bl.sections.forEach(function(sec){sec.kpis.forEach(function(k){if(k.hasData&&k.values.some(function(v){return typeof v==='number'&&v!==0;}))allValidKpis.push(k);});});
+  if(allValidKpis.length){
+    var defaultKpi=allValidKpis.find(function(k){return /heures\s*location/i.test(k.label);})||allValidKpis[0];
+    window._statsEvolKpis=allValidKpis;
+    html+='<div class="card" style="margin-top:14px"><div style="padding:14px 18px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px"><div style="font-weight:700;font-size:13px;color:var(--navy);text-transform:uppercase;letter-spacing:.05em">📈 Évolution mensuelle</div><select id="statsKpiChart" onchange="_statsRenderEvolChart()" style="font-size:11.5px;padding:5px 9px;border:1px solid var(--border);border-radius:6px;background:var(--surface);max-width:280px">';
+    allValidKpis.forEach(function(k,i){html+='<option value="'+i+'"'+(k===defaultKpi?' selected':'')+'>'+esc(k.label.length>45?k.label.slice(0,44)+'…':k.label)+'</option>';});
+    html+='</select></div><div style="height:240px;position:relative"><canvas id="statsEvolChart"></canvas></div></div></div>';
+  }
+
   // ── Tableau détaillé par section ───────────────────────────────────────
   bl.sections.forEach(function(sec){
     if(!sec.kpis.length)return;
@@ -5920,6 +6000,23 @@ function renderStats(p){
     '<span style="margin-left:auto">année : <b style="color:var(--text2)">'+d.year+'</b></span>'+
     '</div>';
   p.innerHTML=html;
+  // Déclencher le rendu Chart.js après injection HTML (DOM disponible)
+  if(typeof Chart!=='undefined'&&allValidKpis&&allValidKpis.length){setTimeout(function(){_statsRenderEvolChart();},80);}
+}
+/* Rendu du graphe d'évolution mensuelle dans le panel STATS — appelé au changement du <select>. */
+function _statsRenderEvolChart(){
+  var sel=el('statsKpiChart');if(!sel||!window._statsEvolKpis)return;
+  var idx=parseInt(sel.value,10);var k=window._statsEvolKpis[idx];if(!k)return;
+  var isTaux=/taux/i.test(k.label);
+  var labels=_STATS_MOIS_LBL;
+  var data=k.values.map(function(v){return typeof v==='number'?(isTaux?v*100:v):null;});
+  var bgColor=isTaux?'rgba(245,158,11,.15)':'rgba(20,184,166,.15)';
+  var borderColor=isTaux?COLORS.amber:COLORS.teal;
+  mkChart('statsEvolChart',{
+    type:'line',
+    data:{labels:labels,datasets:[{label:k.label,data:data,borderColor:borderColor,backgroundColor:bgColor,fill:true,tension:0.3,spanGaps:false,pointRadius:4,pointHoverRadius:6,borderWidth:2.5,pointBackgroundColor:borderColor,pointBorderColor:'#fff',pointBorderWidth:2}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:function(c){if(c.parsed.y==null)return c.label+' : —';return isTaux?(c.parsed.y.toFixed(1)+'%'):fmtInt(c.parsed.y);}}}},scales:{y:{beginAtZero:true,ticks:{font:{size:10},callback:function(v){return isTaux?(v+'%'):fmtInt(v);}}},x:{ticks:{font:{size:10}}}}}
+  });
 }
 
 function renderAccostageSLA(selM,byClientAgg,totalAgg,escalesAgg){
