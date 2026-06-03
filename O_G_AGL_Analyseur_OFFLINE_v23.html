@@ -754,7 +754,7 @@
         <div class="mode-ico">🗂️</div>
         <div class="mode-title">Dossier RECEPTION</div>
         <div class="mode-desc">Pointez le dossier intranet partagé une fois. L'app lit tous les fichiers d'un coup et suit qui a livré.</div>
-        <button class="btn btn-primary" id="btnPickFolder" style="font-size:14px;padding:12px 24px" onclick="(function(){var fi=document.getElementById('fileInput');if(typeof window.showDirectoryPicker==='function'){try{window.showDirectoryPicker({mode:'read'}).then(function(h){window._folderHandle=h;if(typeof scanFolder==='function'){scanFolder(h);}else if(typeof _scanFolderMini==='function'){_scanFolderMini(h);}}).catch(function(e){if(e&&e.name==='AbortError')return;if(fi)fi.click();});}catch(e){if(fi)fi.click();}}else{if(fi)fi.click();}})()">📂 Choisir le dossier RECEPTION</button>
+        <button class="btn btn-primary" id="btnPickFolder" style="font-size:14px;padding:12px 24px" onclick="(function(){if(window._folderWired)return;var fi=document.getElementById('fileInput');if(typeof window.showDirectoryPicker==='function'){try{window.showDirectoryPicker({mode:'read'}).then(function(h){window._folderHandle=h;if(typeof scanFolder==='function'){scanFolder(h);}else if(typeof _scanFolderMini==='function'){_scanFolderMini(h);}}).catch(function(e){if(e&&e.name==='AbortError')return;if(fi)fi.click();});}catch(e){if(fi)fi.click();}}else{if(fi)fi.click();}})()">📂 Choisir le dossier RECEPTION</button>
         <input type="file" id="fileInput" multiple accept=".xlsx,.xls,.csv" style="display:none" onchange="if(typeof handleFiles==='function'){handleFiles(Array.prototype.slice.call(this.files));this.value='';}">
         <script>
         // Scanner dossier 100% autonome
@@ -2416,7 +2416,7 @@ function expertSynthese(){
     handleFiles(Array.prototype.slice.call(e.dataTransfer.files));
   });
 })();
-el('btnAnalyze').addEventListener('click',runAnalysis);
+/* btnAnalyze : géré uniquement par l'onclick inline (robuste + anti double-exécution) */
 var _ab=el('alertsBtn');if(_ab)_ab.addEventListener('click',openAlerts);
 el('btnClear').addEventListener('click',clearAll);
 el('btnResetTop').addEventListener('click',clearAll);
@@ -2448,6 +2448,7 @@ var FS_API_OK=(typeof window!=='undefined'&&typeof window.showDirectoryPicker===
         if(inp)inp.click();
       }
     });
+    window._folderWired=true; // neutralise le fallback onclick inline (anti double-pick)
     // Adapter le texte selon la disponibilité
     if(!FS_API_OK){
       btn.textContent='📂 Sélectionner les fichiers Excel';
