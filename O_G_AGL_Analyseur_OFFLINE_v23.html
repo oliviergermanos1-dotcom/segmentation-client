@@ -1560,6 +1560,8 @@ function parsePointage(wb){
   var shifts=[];
   wb.SheetNames.forEach(function(name){
     if(/feuil/i.test(name))return;
+    // Nouveau format (templates v1) : onglet master matricules → skip (pas d'agrégation pointage).
+    if(/^source[_\s-]*personnel$/i.test(name)||/mode\s*d['’]emploi/i.test(name)||/^_sys$/i.test(name))return;
     var g=SHEET(wb,name);
     var hr=-1;
     for(var i=0;i<g.length;i++){var j=g[i].map(norm).join('|').toLowerCase();if(j.indexOf('matricule')>-1&&j.indexOf('fonction')>-1){hr=i;break;}}
@@ -1568,11 +1570,19 @@ function parsePointage(wb){
     var iMat=h.findIndex(function(x){return /matricule/i.test(x);}),iNom=h.findIndex(function(x){return /nom/i.test(x);}),
         iFonc=h.findIndex(function(x){return /^fonction/i.test(x);}),iCode=h.findIndex(function(x){return /code/i.test(x);}),
         iChant=h.findIndex(function(x){return /chantier|activit/i.test(x);});
+    // Nouveau format (templates v1) : Produit (H), Heures (J), Validation (K). Si absents => -1 (rétro-compat).
+    var iProduit=h.findIndex(function(x){return /^produits?$/i.test(x);});
+    var iHeures=h.findIndex(function(x){return /heures?\s*travaill/i.test(x);});
+    var iValidation=h.findIndex(function(x){return /validation/i.test(x);});
     var workers=[];
     for(var k=hr+1;k<g.length;k++){
       var r=g[k];var mat=iMat>=0?norm(r[iMat]):'';var nom=iNom>=0?norm(r[iNom]):'';
       if(!mat&&!nom)continue;if(/total/i.test(nom)&&!mat)continue;
-      workers.push({mat:mat,nom:nom,fonction:iFonc>=0?norm(r[iFonc]):'',code:iCode>=0?norm(r[iCode]):'',chantier:iChant>=0?norm(r[iChant]):''});
+      var w={mat:mat,nom:nom,fonction:iFonc>=0?norm(r[iFonc]):'',code:iCode>=0?norm(r[iCode]):'',chantier:iChant>=0?norm(r[iChant]):''};
+      if(iProduit>=0)w.produit=norm(r[iProduit]);
+      if(iHeures>=0){var hv=cellNumOrNull(r[iHeures]);if(hv!=null)w.heures=hv;}
+      if(iValidation>=0)w.validation=norm(r[iValidation]);
+      workers.push(w);
     }
     var m=name.match(/(\d{2})(\d{2})(\d{4})/);
     var date=m?(m[1]+'/'+m[2]+'/'+m[3]):name;
@@ -1595,6 +1605,10 @@ function parsePlanning(wb){
     var iCli=h.findIndex(function(x){return /client/i.test(x);}),iSec=h.findIndex(function(x){return /section/i.test(x);}),
         iNat=h.findIndex(function(x){return /nature/i.test(x);}),iPos=h.findIndex(function(x){return /positif/i.test(x);}),
         iNeg=h.findIndex(function(x){return /n[ée]ga/i.test(x);});
+    // Nouveau format (templates v1) : DEMANDE EMISE, OBSERVATIONS, Équipement. Si absents => -1 (rétro-compat).
+    var iDemande=h.findIndex(function(x){return /demande\s*[ée]mise/i.test(x);});
+    var iObs=h.findIndex(function(x){return /observation/i.test(x);});
+    var iEquip=h.findIndex(function(x){return /[ée]quipement/i.test(x);});
     var ops=[],pos=0,neg=0,lastClient='';
     for(var i=hr+1;i<g.length;i++){
       var r=g[i];var cli=iCli>=0?norm(r[iCli]):'';
@@ -1602,7 +1616,14 @@ function parsePlanning(wb){
       if(cli)lastClient=cli;
       var p=isNum(r[iPos])?num(r[iPos]):null;var n=isNum(r[iNeg])?num(r[iNeg]):null;var nat=iNat>=0?norm(r[iNat]):'';
       if(p===null&&n===null&&!nat)continue;
-      if(p!==null||n!==null){pos+=p||0;neg+=n||0;ops.push({client:lastClient||cli,section:iSec>=0?norm(r[iSec]):'',nature:nat,pos:p||0,neg:n||0});}
+      if(p!==null||n!==null){
+        pos+=p||0;neg+=n||0;
+        var op={client:lastClient||cli,section:iSec>=0?norm(r[iSec]):'',nature:nat,pos:p||0,neg:n||0};
+        if(iDemande>=0)op.demande=norm(r[iDemande]);
+        if(iObs>=0)op.obs=norm(r[iObs]);
+        if(iEquip>=0)op.equip=norm(r[iEquip]);
+        ops.push(op);
+      }
     }
     var m=name.match(/(\d{2})(\d{2})(\d{4})/);
     var date=m?(m[1]+'/'+m[2]+'/'+m[3]):name;var sortKey=m?(m[3]+m[2]+m[1]):name;
@@ -1638,16 +1659,26 @@ function parseCharges(wb){
     if(hr<0)return;
     var h=g[hr].map(norm);
     var iM=h.findIndex(function(x){return /montant/i.test(x);}),iA=h.findIndex(function(x){return /affectation/i.test(x);}),iF=h.findIndex(function(x){return /fournisseur/i.test(x);});
-    var total=0,byAff={},byFour={},count=0,lignes=[];
+    // Nouveau format (templates v1) : colonnes additionnelles. Si absentes => -1 (rétro-compat).
+    var iUM=h.findIndex(function(x){return /n°?\s*um|num[ée]ro\s*um/i.test(x);});
+    var iStatut=h.findIndex(function(x){return /^statut/i.test(x);});
+    var iPaiement=h.findIndex(function(x){return /mode\s*paiement|paiement/i.test(x);});
+    var iMois=h.findIndex(function(x){return /^mois$/i.test(x);});
+    var total=0,byAff={},byFour={},byStatut={},byPaiement={},count=0,lignes=[];
     for(var i=hr+1;i<g.length;i++){
       var r=g[i];var m=num(r[iM]);if(/total/i.test(norm(r[0])))continue;
       if(isNum(m)&&m>0){total+=m;count++;
         var a=norm(r[iA])||'N/A';byAff[a]=(byAff[a]||0)+m;
         var f=norm(r[iF])||'N/A';byFour[f]=(byFour[f]||0)+m;
-        lignes.push({lib:norm(r[0]),aff:a,four:f,montant:m});
+        var lig={lib:norm(r[0]),aff:a,four:f,montant:m};
+        if(iUM>=0){lig.numUM=norm(r[iUM]);}
+        if(iStatut>=0){var st=norm(r[iStatut])||'N/A';lig.statut=st;byStatut[st]=(byStatut[st]||0)+m;}
+        if(iPaiement>=0){var pa=norm(r[iPaiement])||'N/A';lig.modePaiement=pa;byPaiement[pa]=(byPaiement[pa]||0)+m;}
+        if(iMois>=0){lig.mois=norm(r[iMois]);}
+        lignes.push(lig);
       }
     }
-    months.push({sheet:name.trim(),label:name.trim(),total:total,byAff:byAff,byFour:byFour,count:count,lignes:lignes});
+    months.push({sheet:name.trim(),label:name.trim(),total:total,byAff:byAff,byFour:byFour,byStatut:byStatut,byPaiement:byPaiement,count:count,lignes:lignes});
   });
   return{periods:months};
 }
@@ -1815,8 +1846,19 @@ function parseAccostage(wb){
     var iEta=h.findIndex(function(x){return /\beta\b|arriv|accost|debut|début/i.test(x);});
     var iEtd=h.findIndex(function(x){return /\betd\b|depart|départ|appareil|\bfin\b|sortie/i.test(x);});
     var iQuai=h.findIndex(function(x){return /quai|poste|berth/i.test(x);});
+    // Nouveau format (templates v1) : blocs GOTTWALD (J-N) et MAFI (O-R). Si absents => -1 (rétro-compat).
+    var iGotDate=h.findIndex(function(x){return /gottwald\s*date/i.test(x);});
+    var iGotMob=h.findIndex(function(x){return /gottwald\s*mob/i.test(x);});
+    var iGotDemob=h.findIndex(function(x){return /gottwald\s*demob/i.test(x);});
+    var iGotNbreH=h.findIndex(function(x){return /gottwald\s*nbre/i.test(x);});
+    var iGotBL=h.findIndex(function(x){return /gottwald\s*bl/i.test(x);});
+    var iMafiDate=h.findIndex(function(x){return /mafi\s*date/i.test(x);});
+    var iMafiJour=h.findIndex(function(x){return /mafi\s*shift\s*jour/i.test(x);});
+    var iMafiNuit=h.findIndex(function(x){return /mafi\s*shift\s*nuit/i.test(x);});
+    var iMafiTotal=h.findIndex(function(x){return /mafi\s*total/i.test(x);});
     var lignes=[],byClient={},byNavire={},total=0,escales=0,freeCount=0;
     var quaiSet={},turnSum=0,turnN=0,occupSum=0;
+    var byQuai={},byGottwald={totalNbreH:0,totalBLs:0,count:0},byMafi={totalShifts:0,totalJour:0,totalNuit:0,count:0};
     for(var r=hr+1;r<g.length;r++){
       var nav=norm(g[r][iNav]),cli=norm(g[r][iCli]);
       if(!nav&&!cli)continue;
@@ -1835,11 +1877,40 @@ function parseAccostage(wb){
         if(!(cc in byClient))byClient[cc]=byClient[cc]||0;
       }
       // KPIs portuaires : turnaround (ETD-ETA) & occupation des postes à quai
-      var qv=iQuai>=0?norm(g[r][iQuai]):'';if(qv)quaiSet[qv]=true;
+      var qv=iQuai>=0?norm(g[r][iQuai]):'';if(qv){quaiSet[qv]=true;byQuai[qv]=(byQuai[qv]||0)+1;}
       var eta=iEta>=0?xlsToDate(g[r][iEta]):null,etd=iEtd>=0?xlsToDate(g[r][iEtd]):null;
       var th=(eta&&etd)?(etd-eta)/3600000:null;
       if(th!=null&&th>0&&th<2000){turnSum+=th;turnN++;occupSum+=th;}
-      lignes.push({navire:nav,client:cli,montant:mont||0,free:isFree,quai:qv,turnH:th});
+      // Sous-objets GOTTWALD / MAFI (nouveau format, optionnels)
+      var gottwald=null,mafi=null;
+      if(iGotDate>=0||iGotMob>=0||iGotDemob>=0||iGotNbreH>=0||iGotBL>=0){
+        var gDate=iGotDate>=0?g[r][iGotDate]:null;
+        var gMob=iGotMob>=0?g[r][iGotMob]:null;
+        var gDemob=iGotDemob>=0?g[r][iGotDemob]:null;
+        var gNb=iGotNbreH>=0?cellNumOrNull(g[r][iGotNbreH]):null;
+        var gBL=iGotBL>=0?norm(g[r][iGotBL]):'';
+        if(gDate!=null||gMob!=null||gDemob!=null||gNb!=null||gBL){
+          gottwald={date:gDate,mobH:gMob,demobH:gDemob,nbreH:gNb,bl:gBL};
+          if(gNb!=null&&gNb>0){byGottwald.totalNbreH+=gNb;byGottwald.count++;}
+          if(gBL){byGottwald.totalBLs++;}
+        }
+      }
+      if(iMafiDate>=0||iMafiJour>=0||iMafiNuit>=0||iMafiTotal>=0){
+        var mDate=iMafiDate>=0?g[r][iMafiDate]:null;
+        var mJour=iMafiJour>=0?cellNumOrNull(g[r][iMafiJour]):null;
+        var mNuit=iMafiNuit>=0?cellNumOrNull(g[r][iMafiNuit]):null;
+        var mTot=iMafiTotal>=0?cellNumOrNull(g[r][iMafiTotal]):null;
+        if(mTot==null&&(mJour!=null||mNuit!=null))mTot=(mJour||0)+(mNuit||0);
+        if(mDate!=null||mJour!=null||mNuit!=null||mTot!=null){
+          mafi={date:mDate,jour:mJour||0,nuit:mNuit||0,total:mTot||0};
+          if(mTot!=null&&mTot>0){byMafi.totalShifts+=mTot;byMafi.count++;}
+          byMafi.totalJour+=mJour||0;byMafi.totalNuit+=mNuit||0;
+        }
+      }
+      var lig={navire:nav,client:cli,montant:mont||0,free:isFree,quai:qv,turnH:th};
+      if(gottwald)lig.gottwald=gottwald;
+      if(mafi)lig.mafi=mafi;
+      lignes.push(lig);
     }
     // mois depuis nom de feuille (ex "AVRIL 26")
     var up=name.toUpperCase();
@@ -1853,7 +1924,7 @@ function parseAccostage(wb){
     var capacityH=nbQuais*daysInMonth*24;
     var occupancyPct=(capacityH>0&&occupSum>0)?Math.min(100,occupSum/capacityH*100):null;
     var turnaroundAvgH=turnN?turnSum/turnN:null;
-    months.push({sheet:name,label:name.trim(),ym:ym,lignes:lignes,byClient:byClient,byNavire:byNavire,total:total,escales:escales,nbNavires:Object.keys(byNavire).length,nbClients:Object.keys(byClient).length,freeCount:freeCount,nbQuais:nbQuais,escalesTimed:turnN,turnaroundAvgH:turnaroundAvgH,occupancyPct:occupancyPct});
+    months.push({sheet:name,label:name.trim(),ym:ym,lignes:lignes,byClient:byClient,byNavire:byNavire,total:total,escales:escales,nbNavires:Object.keys(byNavire).length,nbClients:Object.keys(byClient).length,freeCount:freeCount,nbQuais:nbQuais,escalesTimed:turnN,turnaroundAvgH:turnaroundAvgH,occupancyPct:occupancyPct,byQuai:byQuai,byGottwald:byGottwald,byMafi:byMafi});
   });
   months.sort(function(a,b){return(a.ym||'')<(b.ym||'')?-1:1;});
   return{periods:months};
