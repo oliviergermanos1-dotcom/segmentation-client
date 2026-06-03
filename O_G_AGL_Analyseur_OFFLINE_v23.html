@@ -2825,11 +2825,14 @@ function renderChecklist(){
   if(allFiles.length===0){area.innerHTML='';return;}
   var now=Date.now();
   // map files to expected sources by name (freshest wins per type)
-  var byType={};
+  // + garde TOUS les fichiers par type pour afficher les versions antérieures
+  var byType={},allByType={};
   allFiles.forEach(function(f){
     var t=f._type||classifyByName(f.name);
     if(!t)return;
     var lm=f.lastModified||0;
+    if(!allByType[t])allByType[t]=[];
+    allByType[t].push({file:f,lm:lm});
     if(!byType[t]||lm>byType[t].lm)byType[t]={file:f,lm:lm};
   });
   var nbOk=0,nbOld=0,nbMiss=0;
@@ -2845,14 +2848,21 @@ function renderChecklist(){
       else if(ageDays<=src.freshDays){freshHtml='<span class="cl-dot cl-fresh"></span>récent';nbOk++;statusHtml='<span class="cl-status cl-ok">✅ Reçu</span>';}
       else{freshHtml='<span class="cl-dot cl-stale"></span>+'+Math.round(ageDays)+' j';nbOld++;statusHtml='<span class="cl-status cl-old">⚠️ Périmé</span>';}
     }
-    return'<tr><td><span class="type-badge '+meta.badge+'">'+meta.icon+' '+meta.label+'</span> <span style="color:var(--text3);font-size:10px">('+src.rythme+')</span></td><td>'+statusHtml+'</td><td>'+(got?esc(got.file.name):'<span style="color:var(--text3)">—</span>')+'</td><td>'+dateHtml+'</td><td>'+freshHtml+'</td></tr>';
+    // Badge si plusieurs fichiers du même type (versions antérieures conservées)
+    var nbExtra=(allByType[src.type]||[]).length-1;
+    var fileCell=got?esc(got.file.name):'<span style="color:var(--text3)">—</span>';
+    if(nbExtra>0){
+      var others=allByType[src.type].filter(function(x){return x.file!==got.file;}).map(function(x){return x.file.name;});
+      fileCell+=' <span title="'+esc(others.join('\n'))+'" style="display:inline-block;background:linear-gradient(135deg,var(--navy),var(--navy2));color:#fff;font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;margin-left:6px;cursor:help">+'+nbExtra+' fichier'+(nbExtra>1?'s':'')+' antérieur'+(nbExtra>1?'s':'')+'</span>';
+    }
+    return'<tr><td><span class="type-badge '+meta.badge+'">'+meta.icon+' '+meta.label+'</span> <span style="color:var(--text3);font-size:10px">('+src.rythme+')</span></td><td>'+statusHtml+'</td><td>'+fileCell+'</td><td>'+dateHtml+'</td><td>'+freshHtml+'</td></tr>';
   }).join('');
   // unrecognised files
   var unknown=allFiles.filter(function(f){return !(f._type||classifyByName(f.name));});
   var thresholds=EXPECTED_SOURCES.map(function(s){var meta=TYPE_META[s.type];if(!meta)return'';return'<div class="fresh-cfg-item"><span class="type-badge '+meta.badge+'">'+meta.icon+' '+meta.label+'</span><input type="number" min="1" value="'+s.freshDays+'" oninput="setFreshDays(\''+s.type+'\',this.value)"><span class="fresh-unit">jours</span></div>';}).join('');
   area.innerHTML='<div class="checklist"><h3>📋 Suivi de complétude des livrables</h3><div class="cl-sub">Qui a livré, quand, et fraîcheur de l\'information · '+new Date().toLocaleString('fr-FR')+'</div>'+
     '<div class="table-wrap"><table class="cl-table"><thead><tr><th>Source attendue</th><th>Statut</th><th>Fichier reçu</th><th>Dernière MAJ</th><th>Fraîcheur</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
-    '<div class="cl-summary"><div class="cl-stat"><b>'+nbOk+'</b>reçus & à jour</div><div class="cl-stat"><b>'+nbOld+'</b>périmés</div><div class="cl-stat"><b>'+nbMiss+'</b>manquants</div>'+(unknown.length?'<div class="cl-stat"><b>'+unknown.length+'</b>non reconnus</div>':'')+'</div>'+
+    '<div class="cl-summary"><div class="cl-stat"><b>'+nbOk+'</b>reçus & à jour</div><div class="cl-stat"><b>'+nbOld+'</b>périmés</div><div class="cl-stat"><b>'+nbMiss+'</b>manquants</div>'+(unknown.length?'<div class="cl-stat"><b>'+unknown.length+'</b>non reconnus</div>':'')+'<div class="cl-stat" style="margin-left:auto;font-size:11px;color:var(--text3)"><b style="color:var(--text2)">'+allFiles.length+'</b> fichier'+(allFiles.length>1?'s':'')+' chargé'+(allFiles.length>1?'s':'')+' au total</div></div>'+
     '<details class="fresh-cfg"><summary>⚙️ Régler les seuils de fraîcheur</summary><div class="fresh-cfg-grid">'+thresholds+'</div><div class="fresh-cfg-note">Au-delà de ce délai depuis la dernière modification, une source est marquée « périmée ». Réglages mémorisés sur ce poste.</div></details></div>';
 }
 function clearAll(){
