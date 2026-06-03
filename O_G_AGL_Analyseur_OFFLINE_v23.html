@@ -1309,6 +1309,7 @@ var TYPE_META={
   CHARGES:{label:'Charges',badge:'tb-charges',icon:'💸',color:COLORS.red},
   CA:{label:'CA / CAP',badge:'tb-ca',icon:'💰',color:COLORS.emerald},
   ACCOSTAGE:{label:'Accostage navires',badge:'tb-accostage',icon:'🚢',color:COLORS.sky},
+  STATS:{label:'Stats logistiques',badge:'tb-stats',icon:'📈',color:COLORS.teal},
   GENERIQUE:{label:'Générique',badge:'tb-generique',icon:'📄',color:COLORS.purple},
   MARGE:{label:'Marge analytique',badge:'tb-marge',icon:'📊',color:COLORS.emerald},
   CORRELATION:{label:'Corrélation Ptg×Pln',badge:'tb-correlation',icon:'⚡',color:'#fbbf24'}
@@ -1317,9 +1318,9 @@ var TYPE_META={
 /* ── Score qualité données ── */
 function computeQualityScore(){
   var sc=0,tot=0,issues=[];
-  var types=['QHSE','POINTAGE','PLANNING','ACTIONS','CHARGES','LOYERS','CA','ACCOSTAGE'];
+  var types=['QHSE','POINTAGE','PLANNING','ACTIONS','CHARGES','LOYERS','CA','ACCOSTAGE','STATS'];
   var loaded=types.filter(function(t){return datasets[t]&&datasets[t].length;});
-  sc+=loaded.length;tot+=8;
+  sc+=loaded.length;tot+=9;
   var hF1=datasets.CA&&datasets.CA.length,hF2=datasets.LOYERS&&datasets.LOYERS.length,hF3=datasets.CHARGES&&datasets.CHARGES.length;
   if((hF1||hF2)&&hF3){sc+=2;}else if(hF1||hF2||hF3){sc+=1;issues.push('Finance incomplète (CA/CAP+Charges recommandé)');}
   tot+=2;
@@ -1514,6 +1515,9 @@ function detectType(wb){
   // ACCOSTAGE navires — en-têtes navires + clients + (eta/etd ou quai), 1 feuille/mois
   if(flat.indexOf('navires')>-1&&flat.indexOf('clients')>-1&&(flat.indexOf('eta')>-1||flat.indexOf('etd')>-1||flat.indexOf('quai')>-1||flat.indexOf('accosta')>-1))return'ACCOSTAGE';
   if(flat.indexOf('accosta')>-1&&flat.indexOf('navire')>-1)return'ACCOSTAGE';
+  // STATS BASE LOGISTIQUE — stats opérationnelles (escales, TEUS, tonnages, surfaces, dwell time)
+  if(sheetsLow.some(function(s){return s.indexOf('base logistique')>-1||(s.indexOf('stats')>-1&&s.indexOf('exp')>-1)||s.indexOf('conso agl')>-1;}))return'STATS';
+  if(flat.indexOf('statistiques')>-1&&(flat.indexOf('logistique')>-1||flat.indexOf('tonnage')>-1||flat.indexOf('escales')>-1))return'STATS';
   return'GENERIQUE';
 }
 
@@ -1869,7 +1873,83 @@ function parseGenerique(wb){
   return{sheets:sheets};
 }
 
-var PARSERS={QHSE:parseQHSE,POINTAGE:parsePointage,PLANNING:parsePlanning,ACTIONS:parseActions,CHARGES:parseCharges,LOYERS:parseLoyers,CA:parseCA,ACCOSTAGE:parseAccostage,GENERIQUE:parseGenerique};
+/* ===================== STATS BASE LOGISTIQUE =====================
+   Statistiques opérationnelles : escales (régulières/tramps), TEUS import/export,
+   tonnages par produit, surfaces, dwell time, parc matériel.
+   Le fichier source utilise massivement des formules vers fichiers externes (#REF!).
+   Le parser tolère les valeurs manquantes et flag les KPIs sans données. */
+function _statsIsRef(v){var s=String(v==null?'':v);return s.indexOf('#REF')>-1||s.indexOf('#DIV')>-1||s.indexOf('#N/A')>-1;}
+function _statsIsHeader(s){
+  var t=String(s||'').trim();if(!t||t.length>60)return false;
+  // Section : presque tout en MAJUSCULES OU mots-clés connus
+  var KW=/^(SURFACES|TEUS|DWELL|MATERIEL|MATÉRIEL|CONSIGNATION|TONNAGE|CONTROLE|CONTRÔLE|BUDGET|ARMATEURS|ENGINS|REMORQUES|TRACTEURS|PORTEURS)$/i;
+  if(KW.test(t))return true;
+  var alphaCount=0,upperCount=0;for(var i=0;i<t.length;i++){var c=t.charCodeAt(i);if((c>=65&&c<=90)||(c>=97&&c<=122)){alphaCount++;if(c>=65&&c<=90)upperCount++;}}
+  return alphaCount>=3&&(upperCount/alphaCount)>0.7;
+}
+function _statsMonthLabel(idx){var L=['Janv','Févr','Mars','Avr','Mai','Juin','Juil','Août','Sept','Oct','Nov','Déc'];return L[idx]||('M'+(idx+1));}
+function parseStats(wb){
+  var sheetsOut={},allKpis=[],sections=[],armateurs={},refCount=0,emptyCount=0,validCount=0;
+  wb.SheetNames.forEach(function(sn){
+    var g=SHEET(wb,sn);if(!g||!g.length)return;
+    // Détecter ligne d'en-tête mois (3+ dates ou nombres 1-12 en cols B-N)
+    var headerRow=-1,monthCols=[];
+    for(var r=0;r<Math.min(15,g.length);r++){
+      var dateCount=0,cols=[];
+      for(var c=1;c<Math.min(20,(g[r]||[]).length);c++){
+        var v=g[r][c];
+        if(v instanceof Date){dateCount++;cols.push(c);}
+        else if(typeof v==='number'&&v>=1&&v<=12){dateCount++;cols.push(c);}
+      }
+      if(dateCount>=3){headerRow=r;monthCols=cols.slice(0,12);break;}
+    }
+    var sheetSections=[],sheetKpis=[],currentSec=null;
+    for(var r2=0;r2<g.length;r2++){
+      var row=g[r2]||[];var a=norm(row[0]);
+      if(!a)continue;
+      // Section ?
+      if(_statsIsHeader(a)){
+        currentSec={label:a,sheet:sn,row:r2,kpis:[]};
+        sheetSections.push(currentSec);sections.push(currentSec);continue;
+      }
+      // KPI candidat : ligne avec libellé + valeurs en mois
+      var values=[],hasData=false,total=0,hasRef=false;
+      var sourceCols=monthCols.length?monthCols:[];
+      if(!sourceCols.length){for(var cc=1;cc<Math.min(15,row.length);cc++)sourceCols.push(cc);}
+      sourceCols.forEach(function(c){var v=row[c];
+        if(_statsIsRef(v)){hasRef=true;values.push(null);return;}
+        if(typeof v==='number'&&isFinite(v)){values.push(v);total+=v;if(v!==0)hasData=true;}
+        else values.push(null);
+      });
+      if(hasRef)refCount++;
+      if(hasData)validCount++;else emptyCount++;
+      var kpi={label:a,sheet:sn,row:r2,values:values,total:total,hasData:hasData,hasRef:hasRef,section:currentSec?currentSec.label:null};
+      sheetKpis.push(kpi);allKpis.push(kpi);
+      if(currentSec)currentSec.kpis.push(kpi);
+      // Détection armateur (présent comme section mais sans data — déjà capté)
+      if(currentSec&&/(armateur|CMA CGM|MAERSK|MSC|SAFMARINE|MOL|OOCL|PIL|GSL|ZIM|EVERGREEN|COSCO|GRIMALDI|HAPAG|NILEDUTCH|HÖEGH|HOEGH|BOLUDA|NMT|BOCS)/i.test(a)){
+        armateurs[a]=(armateurs[a]||0)+total;
+      }
+    }
+    sheetsOut[sn]={headerRow:headerRow,monthCols:monthCols,sections:sheetSections,kpis:sheetKpis};
+  });
+  return{
+    sheets:sheetsOut,
+    sections:sections,
+    kpis:allKpis,
+    armateurs:armateurs,
+    nbSheets:wb.SheetNames.length,
+    nbKpis:allKpis.length,
+    nbSections:sections.length,
+    nbWithData:validCount,
+    nbEmpty:emptyCount,
+    nbRef:refCount,
+    hasData:validCount>0,
+    periods:[{label:'Stats',ym:'',hasData:validCount>0,nbKpis:allKpis.length}]
+  };
+}
+
+var PARSERS={QHSE:parseQHSE,POINTAGE:parsePointage,PLANNING:parsePlanning,ACTIONS:parseActions,CHARGES:parseCharges,LOYERS:parseLoyers,CA:parseCA,ACCOSTAGE:parseAccostage,GENERIQUE:parseGenerique,STATS:parseStats};
 
 /* ===================== FILTRE PÉRIODE ===================== */
 function getPeriods(type){
@@ -3012,7 +3092,7 @@ function buildDashboard(){
   sidebar.appendChild(d);})();
   var NAV_GROUPS=[
     {label:'',items:['SYNTHESE']},
-    {label:'Opérations',items:['QHSE','POINTAGE','PLANNING','CORRELATION','ACTIONS','ACCOSTAGE']},
+    {label:'Opérations',items:['QHSE','POINTAGE','PLANNING','CORRELATION','ACTIONS','ACCOSTAGE','STATS']},
     {label:'Finance',items:['CA','MARGE','CHARGES']},
     {label:'Données',items:['GENERIQUE']}
   ];
@@ -3385,6 +3465,7 @@ function renderPanel(t){
   else if(t==='LOYERS')renderCA(p); // CAP fusionné dans CA
   else if(t==='CA')renderCA(p);
   else if(t==='ACCOSTAGE')renderAccostage(p);
+  else if(t==='STATS')renderStats(p);
   else if(t==='GENERIQUE')renderGenerique(p);
   else if(t==='MARGE')renderMarge(p);
   if(t!=='SYNTHESE'){var _ab=document.createElement('div');_ab.innerHTML=annotationBlock(t);p.appendChild(_ab);}
@@ -5367,6 +5448,91 @@ function renderAccostage(p){
   var topNav=nkeys.slice(0,10);
   mkChart('ac-nav',{type:'bar',data:{labels:topNav.map(function(n){return n.length>18?n.slice(0,18)+'…':n;}),datasets:[{data:topNav.map(function(n){return byNavire[n];}),backgroundColor:COLORS.accent+'cc',borderColor:COLORS.accent,borderWidth:1}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:function(c){return fmtXOF(c.parsed.x);}}}},scales:{x:{ticks:{color:'#586172',font:{size:10},callback:function(v){return(v/1e6)+'M';}},grid:DARK_GRID,beginAtZero:true},y:{ticks:{color:'#586172',font:{size:10}},grid:{display:false}}}}});
 }
+
+/* ===================== RENDER STATS BASE LOGISTIQUE ===================== */
+function renderStats(p){
+  var html=panelHead('📈','Stats logistiques','Activité opérationnelle base','STATS');
+  if(!datasets.STATS||!datasets.STATS.length){p.innerHTML=html+'<div class="card"><div style="padding:20px;color:var(--text3)">Aucune statistique chargée.</div></div>';return;}
+  var d=datasets.STATS[0].data;
+  // ── Score qualité données ──
+  var refPct=d.nbKpis?Math.round(d.nbRef/d.nbKpis*100):0;
+  var dataPct=d.nbKpis?Math.round(d.nbWithData/d.nbKpis*100):0;
+  if(!d.hasData){
+    html+='<div class="card" style="border-left:4px solid '+COLORS.amber+';background:rgba(245,158,11,.06)"><div style="padding:16px 20px">'+
+      '<div style="display:flex;align-items:center;gap:12px;margin-bottom:6px"><span style="font-size:24px">⚠️</span><b style="font-size:14px">Données externes non résolues</b></div>'+
+      '<div style="font-size:12px;color:var(--text2);line-height:1.55">Le fichier STATS chargé contient '+d.nbKpis+' KPIs répartis en '+d.nbSections+' sections, mais '+d.nbRef+' utilisent des formules vers des classeurs externes (<code>#REF!</code>) qui ne peuvent pas être résolues hors d\'Excel. La structure est lisible mais les chiffres ne sont pas disponibles. Pour exploiter ces stats, remplir directement les valeurs dans le fichier (sans liens externes) ou utiliser le futur <code>11_STATS_v1.xlsx</code>.</div></div></div>';
+  } else {
+    html+='<div class="card"><div style="padding:14px 18px;display:flex;gap:24px;flex-wrap:wrap">'+
+      '<div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;font-weight:700">KPIs lus</div><div style="font-size:20px;font-weight:800">'+fmtInt(d.nbKpis)+'</div></div>'+
+      '<div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;font-weight:700">Sections</div><div style="font-size:20px;font-weight:800">'+fmtInt(d.nbSections)+'</div></div>'+
+      '<div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;font-weight:700">Avec données</div><div style="font-size:20px;font-weight:800;color:'+(dataPct>50?COLORS.green:COLORS.amber)+'">'+dataPct+'%</div></div>'+
+      '<div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;font-weight:700">Liens cassés</div><div style="font-size:20px;font-weight:800;color:'+(refPct>20?COLORS.red:COLORS.text3)+'">'+refPct+'%</div></div>'+
+      '</div></div>';
+  }
+  // ── KPI quick wins ── (uniquement si on a des données)
+  if(d.hasData){
+    var quickKpis=[
+      {label:'Escales lignes régulières',rx:/escales\s*lignes?\s*r[ée]g/i},
+      {label:'Escales Tramps',rx:/^nombre\s*d'?escales\s*tramps$/i},
+      {label:'TEUS pleins import',rx:/teus\s*pleins?\s*import\s*$/i},
+      {label:'TEUS pleins export',rx:/teus\s*pleins?\s*export\s*$/i},
+      {label:'TEUS vides entrés',rx:/teus\s*vides?\s*entr/i},
+      {label:'TEUS vides sortis',rx:/teus\s*vides?\s*sortis/i},
+      {label:'BL échangés',rx:/bl\s*[ée]chang/i},
+      {label:'Surface terre-pleins (m²)',rx:/surface\s*terre[- ]?pleins/i},
+      {label:'Taux d\'occupation',rx:/taux\s*d'?occupation/i}
+    ];
+    var cards='';
+    quickKpis.forEach(function(qk){
+      var match=d.kpis.find(function(k){return qk.rx.test(k.label)&&k.hasData;});
+      if(match){
+        var val=match.total;
+        var disp=qk.label.indexOf('Taux')>-1?(Math.round(val*100/Math.max(1,match.values.filter(function(v){return v!=null;}).length))+'%'):fmtInt(val);
+        cards+='<div class="bc-kpi"><div class="bk-label" style="font-size:10px;color:var(--text3);text-transform:uppercase;font-weight:700">'+esc(qk.label)+'</div><div class="bk-value accent" style="font-size:18px;font-weight:800;color:'+COLORS.accent+'">'+disp+'</div><div class="bk-sub" style="font-size:10px;color:var(--text3)">cumul '+match.values.filter(function(v){return v!=null&&v!==0;}).length+' mois</div></div>';
+      }
+    });
+    if(cards)html+='<div class="card"><div style="padding:14px;display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px">'+cards+'</div></div>';
+  }
+  // ── Sections détaillées ──
+  Object.keys(d.sheets).forEach(function(sn){
+    var s=d.sheets[sn];
+    if(!s.sections.length&&!s.kpis.length)return;
+    html+='<details class="qhse-sec" '+(s===d.sheets[Object.keys(d.sheets)[0]]?'open':'')+'><summary style="cursor:pointer;padding:12px 16px;font-weight:700;background:var(--surface2);border-radius:8px;margin-top:14px">📋 '+esc(sn)+' <span style="color:var(--text3);font-size:11px;font-weight:400">('+s.sections.length+' sections, '+s.kpis.length+' KPIs)</span></summary>';
+    html+='<div style="padding:8px 0">';
+    s.sections.forEach(function(sec){
+      var kpisWithData=sec.kpis.filter(function(k){return k.hasData;});
+      var kpisRef=sec.kpis.filter(function(k){return k.hasRef;});
+      html+='<div class="card" style="margin:10px 0"><div style="padding:12px 16px">'+
+        '<div style="font-weight:700;color:'+COLORS.navy+';font-size:13px;margin-bottom:8px;text-transform:uppercase;letter-spacing:.04em">'+esc(sec.label)+
+          ' <span style="font-size:10px;color:var(--text3);text-transform:none;font-weight:500;letter-spacing:0">— '+sec.kpis.length+' KPIs, '+kpisWithData.length+' avec données'+(kpisRef.length?', '+kpisRef.length+' #REF!':'')+'</span></div>';
+      if(sec.kpis.length){
+        html+='<table class="bc-dept-tbl" style="width:100%;font-size:12px"><thead><tr><th>KPI</th><th class="num">Total</th><th class="num">Mois renseignés</th><th>État</th></tr></thead><tbody>';
+        sec.kpis.forEach(function(k){
+          var nbVal=k.values.filter(function(v){return v!=null&&v!==0;}).length;
+          var etat=k.hasData?'<span style="color:'+COLORS.green+'">● données OK</span>':(k.hasRef?'<span style="color:'+COLORS.amber+'">⚠ #REF!</span>':'<span style="color:var(--text3)">○ vide</span>');
+          html+='<tr><td style="padding:5px 8px">'+esc(k.label)+'</td><td class="num" style="padding:5px 8px;text-align:right;font-variant-numeric:tabular-nums">'+(k.hasData?fmtInt(k.total):'—')+'</td><td class="num" style="padding:5px 8px;text-align:right">'+nbVal+'/12</td><td style="padding:5px 8px">'+etat+'</td></tr>';
+        });
+        html+='</tbody></table>';
+      }
+      html+='</div></div>';
+    });
+    html+='</div></details>';
+  });
+  // ── Cross-analyse CA × STATS (placeholder, actif quand vraies données) ──
+  if(d.hasData&&datasets.CA&&datasets.CA.length){
+    var caTotal=datasets.CA[0].data.totalCA||0;
+    var nbEscales=0;d.kpis.forEach(function(k){if(/escales\s*lignes?\s*r[ée]g/i.test(k.label)&&k.hasData)nbEscales+=k.total;if(/^nombre\s*d'?escales\s*tramps$/i.test(k.label)&&k.hasData)nbEscales+=k.total;});
+    var nbTEUS=0;d.kpis.forEach(function(k){if(/teus\s*pleins?\s*\(import.*export\)/i.test(k.label)&&k.hasData)nbTEUS+=k.total;});
+    if(caTotal>0&&(nbEscales>0||nbTEUS>0)){
+      html+='<div class="card" style="margin-top:16px"><div style="padding:16px 20px"><div style="font-weight:700;color:'+COLORS.navy+';margin-bottom:10px">🔗 Croisement CA × STATS</div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px">';
+      if(nbEscales>0)html+='<div><div style="font-size:10px;color:var(--text3);text-transform:uppercase">CA par escale</div><div style="font-size:18px;font-weight:800;color:'+COLORS.emerald+'">'+fmtXOF(caTotal/nbEscales)+'</div></div>';
+      if(nbTEUS>0)html+='<div><div style="font-size:10px;color:var(--text3);text-transform:uppercase">CA par TEU</div><div style="font-size:18px;font-weight:800;color:'+COLORS.emerald+'">'+fmtXOF(caTotal/nbTEUS)+'</div></div>';
+      html+='</div></div></div>';
+    }
+  }
+  p.innerHTML=html;
+}
+
 function renderAccostageSLA(selM,byClientAgg,totalAgg,escalesAgg){
   // Reconstruire turnaround par client
   var cliStats={};
