@@ -511,11 +511,12 @@
   @keyframes shimmer{0%{background-position:-200% center}100%{background-position:200% center}}
   .kpi-card:hover .kpi-value{background:linear-gradient(90deg,var(--navy) 0%,var(--gold) 50%,var(--navy) 100%);background-size:200% auto;-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;animation:shimmer .8s linear}
 
-  .panel-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:10px}
-  .panel-head h2{font-size:19px;font-weight:800;display:flex;align-items:center;gap:9px;color:var(--navy);letter-spacing:-.02em}
+  .panel-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;flex-wrap:wrap;gap:10px}
+  .panel-head h2{font-size:19px;font-weight:800;display:flex;align-items:center;gap:9px;color:var(--navy);letter-spacing:-.02em;min-width:0;flex-wrap:wrap}
   .panel-head .sub{font-size:12px;color:var(--text3);font-weight:400;margin-left:4px}
-  .ph-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
-  .ph-search{width:260px;padding:7px 12px;border:1px solid var(--border2);border-radius:7px;font-size:12.5px;background:var(--surface);color:var(--text);font-family:inherit}
+  .ph-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap;flex-shrink:0}
+  .ph-actions > .btn{flex-shrink:0;white-space:nowrap}
+  .ph-search{flex:1 1 180px;min-width:140px;max-width:260px;padding:7px 12px;border:1px solid var(--border2);border-radius:7px;font-size:12.5px;background:var(--surface);color:var(--text);font-family:inherit}
   .ph-search:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 2px rgba(30,58,110,.08)}
   .qs-match{font-size:11px;background:var(--amber);color:#fff;padding:1px 7px;border-radius:9px;margin-left:8px;font-weight:600}
 
@@ -5613,13 +5614,7 @@ function renderStats(p){
   var html=panelHead('📈','Stats logistiques','Activité opérationnelle base · vue directeur','STATS');
   if(!datasets.STATS||!datasets.STATS.length){p.innerHTML=html+'<div class="card"><div style="padding:20px;color:var(--text3)">Aucune statistique chargée.</div></div>';return;}
   var d=datasets.STATS[0].data;
-  var mode=window._statsMode||'synthese';
-  // Toggle vue synthèse / détaillée
-  html+='<div style="display:flex;align-items:center;gap:8px;margin-top:8px;margin-bottom:6px">'+
-    '<button class="btn btn-ghost btn-sm" style="'+(mode==='synthese'?'background:var(--navy);color:#fff;border-color:var(--navy)':'')+'" onclick="_statsToggleMode(\'synthese\')">📊 Synthèse</button>'+
-    '<button class="btn btn-ghost btn-sm" style="'+(mode==='detail'?'background:var(--navy);color:#fff;border-color:var(--navy)':'')+'" onclick="_statsToggleMode(\'detail\')">📋 Détaillé</button>'+
-    '<span style="font-size:11px;color:var(--text3);margin-left:8px">'+(mode==='synthese'?'Vue condensée : 8 KPIs stratégiques + insights + croisement CA':'Vue complète : tous les KPIs par famille (dédupliqués)')+'</span>'+
-    '</div>';
+  var mode='detail'; // toujours afficher le détail replié en bas pour qu'on voie qu'il existe
   // Barre de filtre période (cohérent avec autres onglets)
   html+=periodBar('STATS');
   // Déterminer la sélection — si un mois précis, on isole l'index
@@ -5704,36 +5699,69 @@ function renderStats(p){
   // Mix import/export gauge
   if(A.teusPleinsTot>0){
     var pctImp=Math.round(A.mixTeusImport*100),pctExp=100-pctImp;
+    var srcImp=d.kpis.filter(function(k){return k.cat==='TEUS_IMP'&&k.hasData;});
+    var srcExp=d.kpis.filter(function(k){return k.cat==='TEUS_EXP'&&k.hasData;});
+    var srcSheetsTeus={};[].concat(srcImp,srcExp).forEach(function(k){srcSheetsTeus[k.sheet]=1;});
+    var ttImp='Import = somme TEUS pleins import\n'+srcImp.map(function(c){return '• '+c.label+' = '+fmtInt(c.total)+' ['+c.sheet+']';}).join('\n');
+    var ttExp='Export = somme TEUS pleins export\n'+srcExp.map(function(c){return '• '+c.label+' = '+fmtInt(c.total)+' ['+c.sheet+']';}).join('\n');
     iH+='<div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px">'+
-      '<div style="font-size:11px;color:var(--text3);font-weight:700;text-transform:uppercase;margin-bottom:8px">Mix import / export TEUS</div>'+
+      '<div style="font-size:11px;color:var(--text3);font-weight:700;text-transform:uppercase;margin-bottom:4px">Mix import / export TEUS</div>'+
+      '<div style="font-size:10px;color:var(--text3);margin-bottom:10px;font-style:italic">Comparaison TEUS pleins · survoler les bandes pour les sources</div>'+
       '<div style="display:flex;height:24px;border-radius:6px;overflow:hidden;border:1px solid var(--border)">'+
-      '<div style="flex:'+pctImp+';background:'+COLORS.accent+';display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:700">'+pctImp+'% import</div>'+
-      '<div style="flex:'+pctExp+';background:'+COLORS.emerald+';display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:700">'+pctExp+'% export</div>'+
-      '</div><div style="font-size:11px;color:var(--text3);margin-top:6px">'+fmtInt(A.teusPleinsImport)+' / '+fmtInt(A.teusPleinsExport)+' TEUS · base orientée '+(pctImp>pctExp?'import':'export')+'</div></div>';
+      '<div title="'+esc(ttImp)+'" style="flex:'+pctImp+';background:'+COLORS.accent+';display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:700;cursor:help">'+pctImp+'% import</div>'+
+      '<div title="'+esc(ttExp)+'" style="flex:'+pctExp+';background:'+COLORS.emerald+';display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:700;cursor:help">'+pctExp+'% export</div>'+
+      '</div><div style="font-size:11px;color:var(--text3);margin-top:6px">'+fmtInt(A.teusPleinsImport)+' / '+fmtInt(A.teusPleinsExport)+' TEUS · base orientée '+(pctImp>pctExp?'import':'export')+'</div>'+
+      '<div style="font-size:10px;color:var(--text3);margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">Sources : <b style="color:var(--text2);font-weight:600">'+Object.keys(srcSheetsTeus).map(function(s){return esc(s);}).join(' · ')+'</b></div>'+
+      '</div>';
   }
-  // Top armateurs (Pareto)
+  // Top armateurs (Pareto) — avec source
   if(A.armateurs&&A.armateurs.length){
     var topArm=A.armateurs.slice(0,6);
     var maxArm=topArm[0].total;
     iH+='<div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px">'+
-      '<div style="font-size:11px;color:var(--text3);font-weight:700;text-transform:uppercase;margin-bottom:10px">Top armateurs (lignes régulières)</div>';
+      '<div style="font-size:11px;color:var(--text3);font-weight:700;text-transform:uppercase;margin-bottom:4px">Top armateurs</div>'+
+      '<div style="font-size:10px;color:var(--text3);margin-bottom:10px;font-style:italic">Volume cumulé déclaré par armateur · survoler pour la source</div>';
     topArm.forEach(function(a,i){
       var pct=maxArm>0?Math.round(a.total/maxArm*100):0;
-      iH+='<div style="margin-bottom:6px"><div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px"><span style="color:var(--text);font-weight:600">'+esc(a.nom.slice(0,28))+'</span><span style="color:var(--text2);font-variant-numeric:tabular-nums">'+fmtInt(a.total)+'</span></div><div style="height:6px;background:rgba(0,0,0,.04);border-radius:3px;overflow:hidden"><div style="width:'+pct+'%;height:100%;background:linear-gradient(90deg,'+COLORS.teal+','+COLORS.accent+')"></div></div></div>';
+      // Trouver le KPI source pour le tooltip
+      var srcKpi=d.kpis.find(function(k){return k.label===a.nom;});
+      var tip=a.nom+' = '+fmtInt(a.total)+(srcKpi?'\nFeuille : '+srcKpi.sheet+(srcKpi.section?'\nSection : '+srcKpi.section:''):'');
+      iH+='<div style="margin-bottom:6px;cursor:help" title="'+esc(tip)+'"><div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px"><span style="color:var(--text);font-weight:600">'+esc(a.nom.slice(0,28))+'</span><span style="color:var(--text2);font-variant-numeric:tabular-nums">'+fmtInt(a.total)+'</span></div><div style="height:6px;background:rgba(0,0,0,.04);border-radius:3px;overflow:hidden"><div style="width:'+pct+'%;height:100%;background:linear-gradient(90deg,'+COLORS.teal+','+COLORS.accent+')"></div></div></div>';
     });
     if(A.concentrationTop3!=null)iH+='<div style="font-size:11px;color:var(--text3);margin-top:8px">Top 3 = <b style="color:var(--navy)">'+Math.round(A.concentrationTop3*100)+'%</b> du volume armateurs</div>';
+    // Source
+    var armSheets={};A.armateurs.forEach(function(a){var k=d.kpis.find(function(kk){return kk.label===a.nom;});if(k)armSheets[k.sheet]=1;});
+    var armList=Object.keys(armSheets);
+    if(armList.length)iH+='<div style="font-size:10px;color:var(--text3);margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">Source'+(armList.length>1?'s':'')+' : <b style="color:var(--text2);font-weight:600">'+armList.map(function(s){return esc(s);}).join(' · ')+'</b></div>';
     iH+='</div>';
   }
-  // Tonnages mix doughnut-like
+  // Tonnages mix doughnut-like — avec traçabilité des composants
   if(A.tonnageTotal>0){
-    var bins=[['Hydrocarbures',A.tonnageHydro,COLORS.red],['Agricole',A.tonnageAgri,COLORS.green],['Bois',A.tonnageBois,COLORS.amber],['Conventionnels',A.tonnageConv,COLORS.accent],['Minerais',A.tonnageMine,COLORS.teal],['BTP',A.tonnageBTP,COLORS.purple]].filter(function(b){return b[1]>0;});
-    var tT=bins.reduce(function(a,b){return a+b[1];},0);
+    var binsRaw=[
+      ['Hydrocarbures','TONNAGE_HYDRO',A.tonnageHydro,COLORS.red],
+      ['Agricole','TONNAGE_AGRI',A.tonnageAgri,COLORS.green],
+      ['Bois','TONNAGE_BOIS',A.tonnageBois,COLORS.amber],
+      ['Conventionnels','TONNAGE_CONV',A.tonnageConv,COLORS.accent],
+      ['Minerais','TONNAGE_MINE',A.tonnageMine,COLORS.teal],
+      ['BTP','TONNAGE_BTP',A.tonnageBTP,COLORS.purple]
+    ];
+    var bins=binsRaw.filter(function(b){return b[2]>0;});
+    var tT=bins.reduce(function(a,b){return a+b[2];},0);
     iH+='<div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px">'+
-      '<div style="font-size:11px;color:var(--text3);font-weight:700;text-transform:uppercase;margin-bottom:10px">Tonnages par famille</div>';
+      '<div style="font-size:11px;color:var(--text3);font-weight:700;text-transform:uppercase;margin-bottom:4px">Tonnages par famille</div>'+
+      '<div style="font-size:10px;color:var(--text3);margin-bottom:10px;font-style:italic">Cumul des KPIs catégorisés par famille produit · survoler pour voir les composants</div>';
     bins.forEach(function(b){
-      var pct=tT>0?Math.round(b[1]/tT*100):0;
-      iH+='<div style="margin-bottom:6px"><div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px"><span style="color:var(--text);font-weight:600">'+b[0]+'</span><span style="color:var(--text2);font-variant-numeric:tabular-nums">'+fmtInt(b[1])+' t ('+pct+'%)</span></div><div style="height:6px;background:rgba(0,0,0,.04);border-radius:3px;overflow:hidden"><div style="width:'+pct+'%;height:100%;background:'+b[2]+'"></div></div></div>';
+      var pct=tT>0?Math.round(b[2]/tT*100):0;
+      // Construire le tooltip : composants KPIs de cette catégorie
+      var components=d.kpis.filter(function(k){return k.cat===b[1]&&k.hasData;}).sort(function(x,y){return y.total-x.total;});
+      var tooltip=b[0]+' — '+fmtInt(b[2])+' t cumulés\n\nComposants ('+components.length+' KPIs) :\n'+components.slice(0,12).map(function(c){return '• '+c.label+' = '+fmtInt(c.total)+' t  ['+c.sheet+']';}).join('\n');
+      if(components.length>12)tooltip+='\n• ... +'+(components.length-12)+' autres';
+      iH+='<div style="margin-bottom:6px;cursor:help" title="'+esc(tooltip)+'"><div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px"><span style="color:var(--text);font-weight:600">'+b[0]+' <span style="color:var(--text3);font-weight:400;font-size:10px">('+components.length+' KPIs)</span></span><span style="color:var(--text2);font-variant-numeric:tabular-nums">'+fmtInt(b[2])+' t ('+pct+'%)</span></div><div style="height:6px;background:rgba(0,0,0,.04);border-radius:3px;overflow:hidden"><div style="width:'+pct+'%;height:100%;background:'+b[3]+'"></div></div></div>';
     });
+    // Sources
+    var srcSet={};bins.forEach(function(b){d.kpis.filter(function(k){return k.cat===b[1]&&k.hasData;}).forEach(function(k){srcSet[k.sheet]=1;});});
+    var srcList=Object.keys(srcSet);
+    iH+='<div style="font-size:10px;color:var(--text3);margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">Source'+(srcList.length>1?'s':'')+' : <b style="color:var(--text2);font-weight:600">'+srcList.map(function(s){return esc(s);}).join(' · ')+'</b></div>';
     iH+='</div>';
   }
   if(iH)html+='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin-top:14px">'+iH+'</div>';
