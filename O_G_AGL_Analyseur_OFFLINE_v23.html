@@ -1928,6 +1928,78 @@ function _statsCategorize(label){
   if(/(CMA CGM|MAERSK|SAFMARINE|MSC|MOL|OOCL|PIL|GSL|ZIM|EVERGREEN|COSCO|GRIMALDI|HAPAG|NILEDUTCH|HÖEGH|HOEGH|BOLUDA|NMT|BOCS|CONTI|EUROAFRICA|PORTLINE|NYK|HANJIN|MESSINA|MANDARIN|MARGUISA|OCEAN EXPRESS|DELMAS|K\.LINE|AUTRES ARMATEURS)/i.test(label))return{cat:'ARMATEUR',famille:'ARMATEURS',sub:label.trim()};
   return{cat:'AUTRE',famille:'AUTRES',sub:'—'};
 }
+/* Extraction dédiée du bloc "Gestion Base Logistique" : ce que le user veut voir en focus.
+   Cherche le libellé exact dans toutes les feuilles puis parse ses 3 sous-sections
+   (Heures location / SURFACES / MATERIEL) avec 12 colonnes mensuelles B-M. */
+function _extractGBL(wb){
+  // Trouver TOUS les blocs "Gestion Base Logistique" puis garder le plus riche en données
+  var candidates=[];
+  for(var iS=0;iS<wb.SheetNames.length;iS++){
+    var sn=wb.SheetNames[iS];var g=SHEET(wb,sn);if(!g)continue;
+    for(var r=0;r<g.length;r++){
+      var v=norm((g[r]||[])[0]);
+      if(/^gestion\s+base\s+logistique$/i.test(v)){
+        var parsed=_parseGBLBlock(g,r,sn);
+        if(parsed){
+          var nbKpisData=0;
+          parsed.sections.forEach(function(sec){nbKpisData+=sec.kpis.filter(function(k){return k.hasData;}).length;});
+          parsed._score=nbKpisData;
+          candidates.push(parsed);
+        }
+      }
+    }
+  }
+  if(!candidates.length)return null;
+  // Tri décroissant par score (nb KPIs avec données)
+  candidates.sort(function(a,b){return b._score-a._score;});
+  return candidates[0];
+}
+function _parseGBLBlock(g,startRow,sheetName){
+  // En-tête à startRow ; mois en B-M (idx 1-12) ; cumul en O (idx 14) ; budget Q (idx 16)
+  var headers=g[startRow]||[];
+  var months=[];
+  for(var c=1;c<=12;c++){
+    var v=headers[c];
+    months.push(typeof v==='string'?v:(v instanceof Date?v.toLocaleDateString('fr-FR',{month:'short',year:'2-digit'}):('M'+c)));
+  }
+  var sections=[];
+  var currentSec={name:'Heures location d\'engins',ico:'⏱️',kpis:[]};
+  sections.push(currentSec);
+  var subhead=null;
+  for(var r2=startRow+1;r2<Math.min(g.length,startRow+120);r2++){
+    var row=g[r2]||[];var label=norm(row[0]);
+    if(!label)continue;
+    if(/^surfaces?$/i.test(label)){
+      currentSec={name:'Surfaces',ico:'🏗️',kpis:[]};sections.push(currentSec);subhead=null;continue;
+    }
+    if(/^mat[ée]riel[\s:].*nombre.*unit/i.test(label)){
+      currentSec={name:'Parc matériel (unités)',ico:'🛠️',kpis:[]};sections.push(currentSec);subhead=null;continue;
+    }
+    // Sous-headers internes (Engins de levage, Matériel roulant, etc.) : ligne sans valeurs mois
+    var anyNum=false;for(var cn=1;cn<=12;cn++){if(typeof row[cn]==='number'&&row[cn]!==0){anyNum=true;break;}}
+    if(!anyNum&&/^(engins\s+de\s+levage|mat[ée]riel\s+roulant|autres\s+mat[ée]riels|mat[ée]riel\s+flottant)$/i.test(label)){
+      subhead=label;continue;
+    }
+    // Détecter fin de bloc (sous-section "Entreposage à Valeur Ajoutée => SILOS", "Livraison", "Magasinage")
+    if(/^entreposage|^livraison|^magasinage|^empotage/i.test(label))break;
+    // Lire mois B-M
+    var values=[];var hasData=false;var total=0;
+    for(var c2=1;c2<=12;c2++){
+      var vv=row[c2];
+      if(typeof vv==='number'&&isFinite(vv)){values.push(vv);total+=vv;if(vv!==0)hasData=true;}
+      else values.push(null);
+    }
+    // Cumul col O (idx 14), Budget Q (idx 16), N-1 T (idx 19), Var R-S
+    var cumul=(typeof row[14]==='number'&&isFinite(row[14])?row[14]:null);
+    var budget=(typeof row[16]==='number'&&isFinite(row[16])?row[16]:null);
+    var reelN1=(typeof row[17]==='number'&&isFinite(row[17])?row[17]:null);
+    var ecart=(typeof row[18]==='number'&&isFinite(row[18])?row[18]:null);
+    if(hasData||cumul||budget){
+      currentSec.kpis.push({label:label,subhead:subhead,values:values,total:total,cumul:cumul,budget:budget,reelN1:reelN1,ecart:ecart,hasData:hasData});
+    }
+  }
+  return{sheet:sheetName,startRow:startRow,months:months,sections:sections};
+}
 function parseStats(wb){
   var sheetsOut={},allKpis=[],sections=[],armateurs={},refCount=0,emptyCount=0,validCount=0;
   // Détecter l'année : cherche "Réel YYYY" ou date dans la première feuille
@@ -2047,6 +2119,8 @@ function parseStats(wb){
     var totalMonth=allKpis.reduce(function(a,k){var v=k.values[m];return a+(typeof v==='number'?v:0);},0);
     periods.push({label:_statsMonthLabel(m)+' '+(year+'').slice(-2),ym:ym,monthIdx:m,total:totalMonth,nbKpis:allKpis.filter(function(k){return typeof k.values[m]==='number'&&k.values[m]!==0;}).length});
   }
+  // Extraction dédiée "Gestion Base Logistique" (focus utilisateur)
+  var baseLog=_extractGBL(wb);
   return{
     sheets:sheetsOut,
     sections:sections,
@@ -2054,6 +2128,7 @@ function parseStats(wb){
     armateurs:armateurs,
     aggr:aggr,
     year:year,
+    baseLog:baseLog,
     nbSheets:wb.SheetNames.length,
     nbKpis:allKpis.length,
     nbSections:sections.length,
@@ -5614,9 +5689,56 @@ function renderStats(p){
   var html=panelHead('📈','Stats logistiques','Activité opérationnelle base · vue directeur','STATS');
   if(!datasets.STATS||!datasets.STATS.length){p.innerHTML=html+'<div class="card"><div style="padding:20px;color:var(--text3)">Aucune statistique chargée.</div></div>';return;}
   var d=datasets.STATS[0].data;
-  var mode='detail'; // toujours afficher le détail replié en bas pour qu'on voie qu'il existe
+  var mode='detail';
   // Barre de filtre période (cohérent avec autres onglets)
   html+=periodBar('STATS');
+  // ╭──────────────────── 🎯 FOCUS GESTION BASE LOGISTIQUE ────────────────────╮
+  if(d.baseLog){
+    var bl=d.baseLog;
+    var nbMonthsWithData=0;for(var im=0;im<12;im++){var any=false;bl.sections.forEach(function(s){s.kpis.forEach(function(k){if(typeof k.values[im]==='number'&&k.values[im]!==0)any=true;});});if(any)nbMonthsWithData++;}
+    html+='<div class="card" style="margin-top:14px;border-left:4px solid '+COLORS.gold+'"><div style="padding:18px 22px">'+
+      '<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><span style="font-size:22px">🎯</span>'+
+      '<b style="font-size:15px;color:var(--navy)">Gestion Base Logistique</b>'+
+      '<span style="font-size:11px;color:var(--text3);margin-left:6px">— source : feuille <code>'+esc(bl.sheet)+'</code> · '+nbMonthsWithData+' mois renseignés sur 12</span></div>';
+    bl.sections.forEach(function(sec){
+      if(!sec.kpis.length)return;
+      var totSec=sec.kpis.reduce(function(a,k){return a+(k.cumul||k.total||0);},0);
+      html+='<div style="margin-top:14px"><div style="font-weight:700;font-size:12px;color:var(--navy);margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em">'+sec.ico+' '+esc(sec.name)+
+        ' <span style="font-size:10px;color:var(--text3);text-transform:none;letter-spacing:0;font-weight:500;margin-left:6px">— '+sec.kpis.length+' lignes</span></div>';
+      // En-têtes : Libellé + 12 mois + cumul + budget
+      html+='<table class="cl-table" style="width:100%;font-size:11.5px"><thead><tr>'+
+        '<th style="width:30%">Item</th>';
+      bl.months.forEach(function(m){html+='<th style="text-align:right;font-size:10px;padding:5px 4px">'+esc(m)+'</th>';});
+      html+='<th style="text-align:right;padding:5px 6px;background:var(--surface);color:var(--navy)">Cumul</th>'+
+        '<th style="text-align:right;padding:5px 6px;background:var(--surface);color:var(--navy)">Budget</th>'+
+        '<th style="text-align:right;padding:5px 6px;background:var(--surface);color:var(--navy)">N-1</th>'+
+        '</tr></thead><tbody>';
+      var lastSubhead=null;
+      sec.kpis.forEach(function(k){
+        if(k.subhead&&k.subhead!==lastSubhead){
+          lastSubhead=k.subhead;
+          html+='<tr><td colspan="16" style="background:var(--surface2);font-weight:700;font-size:11px;color:var(--text2);padding:6px 8px;text-transform:uppercase;letter-spacing:.04em">'+esc(k.subhead)+'</td></tr>';
+        }
+        html+='<tr><td style="font-weight:500">'+esc(k.label)+'</td>';
+        k.values.forEach(function(v){
+          var disp=v==null||v===0?'<span style="color:var(--text3)">—</span>':fmtInt(v);
+          html+='<td style="text-align:right;font-variant-numeric:tabular-nums;font-size:11px;padding:4px">'+disp+'</td>';
+        });
+        var cumDisp=k.cumul==null?'—':'<b style="color:var(--navy)">'+fmtInt(k.cumul)+'</b>';
+        var budDisp=k.budget==null?'<span style="color:var(--text3)">—</span>':fmtInt(k.budget);
+        var n1Disp=k.reelN1==null?'<span style="color:var(--text3)">—</span>':fmtInt(k.reelN1);
+        html+='<td style="text-align:right;font-variant-numeric:tabular-nums;background:rgba(0,0,0,.02);padding:4px 6px">'+cumDisp+'</td>'+
+          '<td style="text-align:right;font-variant-numeric:tabular-nums;background:rgba(0,0,0,.02);padding:4px 6px">'+budDisp+'</td>'+
+          '<td style="text-align:right;font-variant-numeric:tabular-nums;background:rgba(0,0,0,.02);padding:4px 6px">'+n1Disp+'</td>';
+        html+='</tr>';
+      });
+      html+='</tbody></table></div>';
+    });
+    html+='</div></div>';
+    // À ce stade on a affiché le focus principal. Le reste va passer en accordion replié en bas.
+  } else {
+    html+='<div class="card" style="margin-top:14px;border-left:4px solid '+COLORS.amber+';background:rgba(245,158,11,.05)"><div style="padding:14px 18px;font-size:12px;color:var(--text2)">⚠ Section <b>« Gestion Base Logistique »</b> introuvable dans le fichier STATS chargé. Vérifie que le libellé exact existe en colonne A d\'un onglet.</div></div>';
+  }
   // Déterminer la sélection — si un mois précis, on isole l'index
   var gs=getGlobalSel();var selIdx=null;
   if(gs.kind==='month'){
@@ -5655,6 +5777,10 @@ function renderStats(p){
   if(!d.hasData){
     html+='<div class="card" style="border-left:4px solid '+COLORS.amber+';background:rgba(245,158,11,.06)"><div style="padding:16px 20px"><div style="display:flex;align-items:center;gap:12px;margin-bottom:6px"><span style="font-size:24px">⚠️</span><b style="font-size:14px">Données externes non résolues</b></div><div style="font-size:12px;color:var(--text2);line-height:1.55">'+d.nbKpis+' KPIs détectés sur '+d.nbSections+' sections — mais '+d.nbRef+' utilisent des formules <code>#REF!</code> vers fichiers externes. Structure lisible, chiffres absents.</div></div></div>';
     p.innerHTML=html;return;
+  }
+  // Si on a affiché le focus Base Logistique en haut, le reste passe dans un accordion replié
+  if(d.baseLog){
+    html+='<details style="margin-top:20px"><summary style="cursor:pointer;padding:11px 16px;font-weight:700;background:var(--surface2);border-radius:8px;font-size:12.5px;color:var(--text2)">📂 Autres données STATS (analyse globale toutes feuilles) <span style="font-size:11px;font-weight:400;color:var(--text3);margin-left:6px">— '+d.nbKpis+' KPIs sur '+d.nbSheets+' feuilles · cliquer pour déployer</span></summary><div style="margin-top:10px">';
   }
   // ╭──────────────────── ① ANALYSE EXPERTE (auto-narrative) ────────────────────╮
   var diag=[];
@@ -5831,6 +5957,7 @@ function renderStats(p){
     (refPct>0?'<span>Liens cassés (#REF!) : <b style="color:'+COLORS.red+'">'+refPct+'%</b></span>':'')+
     '<span style="margin-left:auto">année détectée : <b style="color:var(--text)">'+d.year+'</b></span>'+
     '</div>';
+  if(d.baseLog) html+='</div></details>'; // ferme l'accordion "Autres données"
   p.innerHTML=html;
 }
 
