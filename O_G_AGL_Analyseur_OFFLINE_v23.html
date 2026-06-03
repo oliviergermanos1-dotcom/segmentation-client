@@ -3070,7 +3070,7 @@ function buildDashboard(){
       banner.style.display='block';
     }
   })();
-  var order=['CA','ACCOSTAGE','QHSE','POINTAGE','PLANNING','ACTIONS','CHARGES','GENERIQUE'];
+  var order=['CA','ACCOSTAGE','QHSE','POINTAGE','PLANNING','ACTIONS','CHARGES','STATS','GENERIQUE'];
   // LOYERS est fusionné dans l'onglet CA — on ne crée plus de panel séparé
   var present=order.filter(function(t){return datasets[t]&&datasets[t].length;});
   // Si CAP chargé sans CA, on force l'onglet CA quand même pour l'afficher
