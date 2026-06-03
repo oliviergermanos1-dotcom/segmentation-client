@@ -11,3 +11,4 @@ venv/
 
 # Regles de segmentation locales (specifiques a chaque utilisateur)
 configs/segments_saved.json
+!audit/excel_fixed/*.xlsx
