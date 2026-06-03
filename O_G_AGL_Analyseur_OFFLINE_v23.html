@@ -4073,8 +4073,8 @@ function renderPointage(p){
   html+='<div class="table-wrap">'+(dockerList.length>12?tableSearch('pt-dockers','filtrer par matricule, nom, fonction, chantier…'):'')+'<table id="pt-dockers" class="qhse-tbl"><thead><tr><th>Matricule</th><th>Nom</th><th>Fonction</th><th>Chantier</th><th class="num">Shifts</th><th class="num">Jour</th><th class="num">Nuit</th><th class="num">Sem.</th><th class="num">WE</th></tr></thead><tbody>';
   dockerList.forEach(function(d){html+='<tr><td>'+esc(d.mat)+'</td><td>'+esc(d.nom)+'</td><td>'+esc(d.fonction)+'</td><td>'+esc(d.chantier)+'</td><td class="num qs-tot">'+d.shifts+'</td><td class="num">'+d.jour+'</td><td class="num">'+d.nuit+'</td><td class="num">'+d.sem+'</td><td class="num">'+d.wk+'</td></tr>';});
   html+='</tbody></table></div></details>';
-  html+='<div class="card"><h3>📋 Détail par shift <span class="h-sub">sélection</span></h3>'+(selS.length>12?tableSearch('pt-detail','filtrer par date, shift…'):'')+'<div class="table-wrap table-scroll"><table id="pt-detail"><thead><tr><th>Date</th><th>Shift</th><th>Type</th><th class="num">Effectif</th></tr></thead><tbody>';
   html+=renderAssiduiteDockers(selS);
+  html+='<div class="card"><h3>📋 Détail par shift <span class="h-sub">sélection</span></h3>'+(selS.length>12?tableSearch('pt-detail','filtrer par date, shift…'):'')+'<div class="table-wrap table-scroll"><table id="pt-detail"><thead><tr><th>Date</th><th>Shift</th><th>Type</th><th class="num">Effectif</th></tr></thead><tbody>';
   selS.forEach(function(s){html+='<tr><td>'+esc(s.date)+'</td><td>'+s.shift+'</td><td>'+(s.wk?'<span class="badge-st st-warn">Week-end</span>':'<span class="badge-st st-neut">Semaine</span>')+'</td><td class="num">'+s.count+'</td></tr>';});
   html+='</tbody></table></div></div>';
   html+='<div class="card"><h3>💡 Insights stratégiques</h3>'+
