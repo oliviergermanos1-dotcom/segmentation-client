@@ -5686,278 +5686,168 @@ function _statsCard(title,value,sub,color){
     '</div>';
 }
 function renderStats(p){
-  var html=panelHead('📈','Stats logistiques','Activité opérationnelle base · vue directeur','STATS');
+  var html=panelHead('📈','Stats logistiques','Gestion Base Logistique — activité opérationnelle','STATS');
   if(!datasets.STATS||!datasets.STATS.length){p.innerHTML=html+'<div class="card"><div style="padding:20px;color:var(--text3)">Aucune statistique chargée.</div></div>';return;}
   var d=datasets.STATS[0].data;
-  var mode='detail';
-  // Barre de filtre période (cohérent avec autres onglets)
   html+=periodBar('STATS');
-  // ╭──────────────────── 🎯 FOCUS GESTION BASE LOGISTIQUE ────────────────────╮
-  if(d.baseLog){
-    var bl=d.baseLog;
-    var nbMonthsWithData=0;for(var im=0;im<12;im++){var any=false;bl.sections.forEach(function(s){s.kpis.forEach(function(k){if(typeof k.values[im]==='number'&&k.values[im]!==0)any=true;});});if(any)nbMonthsWithData++;}
-    html+='<div class="card" style="margin-top:14px;border-left:4px solid '+COLORS.gold+'"><div style="padding:18px 22px">'+
-      '<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><span style="font-size:22px">🎯</span>'+
-      '<b style="font-size:15px;color:var(--navy)">Gestion Base Logistique</b>'+
-      '<span style="font-size:11px;color:var(--text3);margin-left:6px">— source : feuille <code>'+esc(bl.sheet)+'</code> · '+nbMonthsWithData+' mois renseignés sur 12</span></div>';
-    bl.sections.forEach(function(sec){
-      if(!sec.kpis.length)return;
-      var totSec=sec.kpis.reduce(function(a,k){return a+(k.cumul||k.total||0);},0);
-      html+='<div style="margin-top:14px"><div style="font-weight:700;font-size:12px;color:var(--navy);margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em">'+sec.ico+' '+esc(sec.name)+
-        ' <span style="font-size:10px;color:var(--text3);text-transform:none;letter-spacing:0;font-weight:500;margin-left:6px">— '+sec.kpis.length+' lignes</span></div>';
-      // En-têtes : Libellé + 12 mois + cumul + budget
-      html+='<table class="cl-table" style="width:100%;font-size:11.5px"><thead><tr>'+
-        '<th style="width:30%">Item</th>';
-      bl.months.forEach(function(m){html+='<th style="text-align:right;font-size:10px;padding:5px 4px">'+esc(m)+'</th>';});
-      html+='<th style="text-align:right;padding:5px 6px;background:var(--surface);color:var(--navy)">Cumul</th>'+
-        '<th style="text-align:right;padding:5px 6px;background:var(--surface);color:var(--navy)">Budget</th>'+
-        '<th style="text-align:right;padding:5px 6px;background:var(--surface);color:var(--navy)">N-1</th>'+
-        '</tr></thead><tbody>';
-      var lastSubhead=null;
-      sec.kpis.forEach(function(k){
-        if(k.subhead&&k.subhead!==lastSubhead){
-          lastSubhead=k.subhead;
-          html+='<tr><td colspan="16" style="background:var(--surface2);font-weight:700;font-size:11px;color:var(--text2);padding:6px 8px;text-transform:uppercase;letter-spacing:.04em">'+esc(k.subhead)+'</td></tr>';
-        }
-        html+='<tr><td style="font-weight:500">'+esc(k.label)+'</td>';
-        k.values.forEach(function(v){
-          var disp=v==null||v===0?'<span style="color:var(--text3)">—</span>':fmtInt(v);
-          html+='<td style="text-align:right;font-variant-numeric:tabular-nums;font-size:11px;padding:4px">'+disp+'</td>';
-        });
-        var cumDisp=k.cumul==null?'—':'<b style="color:var(--navy)">'+fmtInt(k.cumul)+'</b>';
-        var budDisp=k.budget==null?'<span style="color:var(--text3)">—</span>':fmtInt(k.budget);
-        var n1Disp=k.reelN1==null?'<span style="color:var(--text3)">—</span>':fmtInt(k.reelN1);
-        html+='<td style="text-align:right;font-variant-numeric:tabular-nums;background:rgba(0,0,0,.02);padding:4px 6px">'+cumDisp+'</td>'+
-          '<td style="text-align:right;font-variant-numeric:tabular-nums;background:rgba(0,0,0,.02);padding:4px 6px">'+budDisp+'</td>'+
-          '<td style="text-align:right;font-variant-numeric:tabular-nums;background:rgba(0,0,0,.02);padding:4px 6px">'+n1Disp+'</td>';
-        html+='</tr>';
-      });
-      html+='</tbody></table></div>';
-    });
-    html+='</div></div>';
-    // À ce stade on a affiché le focus principal. Le reste va passer en accordion replié en bas.
-  } else {
-    html+='<div class="card" style="margin-top:14px;border-left:4px solid '+COLORS.amber+';background:rgba(245,158,11,.05)"><div style="padding:14px 18px;font-size:12px;color:var(--text2)">⚠ Section <b>« Gestion Base Logistique »</b> introuvable dans le fichier STATS chargé. Vérifie que le libellé exact existe en colonne A d\'un onglet.</div></div>';
-  }
-  // Déterminer la sélection — si un mois précis, on isole l'index
-  var gs=getGlobalSel();var selIdx=null;
-  if(gs.kind==='month'){
-    var matchYM=d.periods.findIndex(function(pp){return pp.ym===gs.value;});
-    if(matchYM>=0)selIdx=d.periods[matchYM].monthIdx;
-  }
-  // Recalcul des agrégats si filtre mois actif
-  function valOf(k){return selIdx==null?k.total:(typeof k.values[selIdx]==='number'?k.values[selIdx]:0);}
-  function sumByCat(c){return d.kpis.filter(function(k){return k.cat===c&&k.hasData;}).reduce(function(a,k){return a+valOf(k);},0);}
-  var A=selIdx==null?d.aggr:{
-    escalesReg:sumByCat('ESC_REG'),escalesSlot:sumByCat('ESC_SLOT'),
-    escalesTramps:sumByCat('ESC_TRAMPS_TOT')||sumByCat('ESC_TRAMPS_DET'),
-    teusPleinsImport:sumByCat('TEUS_IMP'),teusPleinsExport:sumByCat('TEUS_EXP'),
-    teusVidesIn:sumByCat('TEUS_VIDE_IN'),teusVidesOut:sumByCat('TEUS_VIDE_OUT'),
-    blEchanges:sumByCat('BL'),
-    materielLev:sumByCat('MATERIEL_LEV'),materielRoul:sumByCat('MATERIEL_ROUL'),
-    vehicTraites:sumByCat('VEHIC'),
-    tonnageHydro:sumByCat('TONNAGE_HYDRO'),tonnageAgri:sumByCat('TONNAGE_AGRI'),
-    tonnageBois:sumByCat('TONNAGE_BOIS'),tonnageConv:sumByCat('TONNAGE_CONV'),
-    tonnageMine:sumByCat('TONNAGE_MINE'),tonnageBTP:sumByCat('TONNAGE_BTP'),
-    productivite:sumByCat('PRODUCTIVITE'),voyages:sumByCat('VOYAGES'),dossiers:sumByCat('DOSSIERS'),berthing:sumByCat('BERTHING'),
-    armateurs:d.aggr.armateurs,armateurTop:d.aggr.armateurTop,concentrationTop3:d.aggr.concentrationTop3
-  };
-  if(selIdx!=null){
-    A.escalesTotal=A.escalesReg+A.escalesSlot+A.escalesTramps;
-    A.teusPleinsTot=A.teusPleinsImport+A.teusPleinsExport;
-    A.teusVidesTot=A.teusVidesIn+A.teusVidesOut;
-    A.tonnageTotal=A.tonnageHydro+A.tonnageAgri+A.tonnageBois+A.tonnageConv+A.tonnageMine+A.tonnageBTP;
-    A.materielTotal=A.materielLev+A.materielRoul;
-    A.mixTeusImport=A.teusPleinsTot>0?A.teusPleinsImport/A.teusPleinsTot:null;
-    A.mixTeusExport=A.teusPleinsTot>0?A.teusPleinsExport/A.teusPleinsTot:null;
-    A.soldeVides=A.teusVidesOut-A.teusVidesIn;
-  }
-  var libPeriode=selIdx==null?'cumul année '+d.year:(d.periods[selIdx].label+' '+d.year);
-  // Alerte si pas de data
-  if(!d.hasData){
-    html+='<div class="card" style="border-left:4px solid '+COLORS.amber+';background:rgba(245,158,11,.06)"><div style="padding:16px 20px"><div style="display:flex;align-items:center;gap:12px;margin-bottom:6px"><span style="font-size:24px">⚠️</span><b style="font-size:14px">Données externes non résolues</b></div><div style="font-size:12px;color:var(--text2);line-height:1.55">'+d.nbKpis+' KPIs détectés sur '+d.nbSections+' sections — mais '+d.nbRef+' utilisent des formules <code>#REF!</code> vers fichiers externes. Structure lisible, chiffres absents.</div></div></div>';
+  if(!d.baseLog){
+    html+='<div class="card" style="margin-top:14px;border-left:4px solid '+COLORS.red+';background:rgba(239,68,68,.06)"><div style="padding:18px 22px"><div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><span style="font-size:22px">⚠️</span><b style="font-size:14px;color:var(--navy)">Bloc « Gestion Base Logistique » introuvable</b></div><div style="font-size:12px;color:var(--text2);line-height:1.55">Le libellé exact <code>Gestion Base Logistique</code> n\'a pas été trouvé en colonne A d\'aucune feuille du fichier STATS chargé. Vérifie que cette section existe dans le fichier.</div></div></div>';
     p.innerHTML=html;return;
   }
-  // Si on a affiché le focus Base Logistique en haut, le reste passe dans un accordion replié
-  if(d.baseLog){
-    html+='<details style="margin-top:20px"><summary style="cursor:pointer;padding:11px 16px;font-weight:700;background:var(--surface2);border-radius:8px;font-size:12.5px;color:var(--text2)">📂 Autres données STATS (analyse globale toutes feuilles) <span style="font-size:11px;font-weight:400;color:var(--text3);margin-left:6px">— '+d.nbKpis+' KPIs sur '+d.nbSheets+' feuilles · cliquer pour déployer</span></summary><div style="margin-top:10px">';
+  var bl=d.baseLog;
+  // Filtre période : si un mois est sélectionné, on isole l'index correspondant
+  var gs=getGlobalSel();var selIdx=null;
+  if(gs.kind==='month'){
+    var ym=gs.value; // 'YYYY-MM'
+    var mm=parseInt(ym.split('-')[1],10);
+    if(mm>=1&&mm<=12)selIdx=mm-1;
   }
-  // ╭──────────────────── ① ANALYSE EXPERTE (auto-narrative) ────────────────────╮
+  // Helpers
+  function vOf(k){if(selIdx==null)return k.cumul!=null?k.cumul:k.total;return typeof k.values[selIdx]==='number'?k.values[selIdx]:0;}
+  function bOf(k){return k.budget!=null?k.budget:null;}
+  function findKpi(secName,rx){
+    var sec=bl.sections.find(function(s){return s.name===secName;});
+    if(!sec)return null;
+    return sec.kpis.find(function(k){return rx.test(k.label);});
+  }
+  function fmtPct(n){if(n==null||!isFinite(n))return '—';return Math.round(n*100)+'%';}
+  function fmtMoney(n,suffix){if(n==null||!isFinite(n))return '—';return fmtInt(Math.round(n))+(suffix||'');}
+  function deltaBudget(actual,budget){if(budget==null||budget===0||actual==null)return null;return(actual-budget)/budget;}
+
+  // ── Compteurs stratégiques ─────────────────────────────────────────────
+  var kHeures=findKpi('Heures location d\'engins',/^nombre\s*heures\s*location\s*d.engins/i);
+  var kSurfTP=findKpi('Surfaces',/^surface\s*terre.pleins/i);
+  var kSurfMag=findKpi('Surfaces',/^surface\s*magasins/i);
+  var kSurfBur=findKpi('Surfaces',/^surface\s*bureaux/i);
+  var kSurfOccTP=findKpi('Surfaces',/^surface\s*occup[ée]e?\s*terre.pleins/i);
+  var kSurfOccMag=findKpi('Surfaces',/^surface\s*occup[ée]e?\s*magasins/i);
+  var kTauxTP=findKpi('Surfaces',/^taux\s*d.occupation\s*terre.pleins/i);
+  var kTauxMag=findKpi('Surfaces',/^taux\s*d.occupation\s*magasins/i);
+  // Parc matériel : somme de toutes les unités (sauf headers)
+  var secMat=bl.sections.find(function(s){return s.name==='Parc matériel (unités)';});
+  var nbUnitesMat=secMat?secMat.kpis.reduce(function(a,k){var v=vOf(k);return a+(typeof v==='number'?v:0);},0):0;
+  var nbBudgetMat=secMat?secMat.kpis.reduce(function(a,k){var b=bOf(k);return a+(typeof b==='number'?b:0);},0):0;
+
+  var libPeriode=selIdx==null?'Cumul année '+d.year:_STATS_MOIS_LBL[selIdx]+' '+d.year;
+
+  // ── Diagnostic auto (narrative) ────────────────────────────────────────
   var diag=[];
-  if(A.escalesTotal>0){
-    var mixReg=A.escalesReg/A.escalesTotal,mixTr=A.escalesTramps/A.escalesTotal;
-    diag.push('Activité portuaire : <b>'+fmtInt(A.escalesTotal)+' escales</b> dont '+fmtInt(A.escalesReg)+' lignes régulières ('+Math.round(mixReg*100)+'%), '+fmtInt(A.escalesTramps)+' tramps ('+Math.round(mixTr*100)+'%)'+(A.escalesSlot?', '+fmtInt(A.escalesSlot)+' slot':'')+'.');
+  if(kHeures){
+    var vH=vOf(kHeures);var bH=bOf(kHeures);
+    var phrase='Heures location d\'engins : <b>'+fmtMoney(vH,' h')+'</b>';
+    if(bH){var d_pct=deltaBudget(vH,bH);phrase+=' · objectif <b>'+fmtInt(bH)+' h</b> ('+(d_pct>=0?'+':'')+Math.round(d_pct*100)+'% vs budget)';}
+    diag.push(phrase+'.');
   }
-  if(A.teusPleinsTot>0){
-    var sens=A.teusPleinsImport>A.teusPleinsExport?'import':'export';
-    diag.push('Flux conteneurs : <b>'+fmtInt(A.teusPleinsTot)+' TEUS pleins</b> traités, mix <b>'+Math.round(A.mixTeusImport*100)+'%/'+Math.round(A.mixTeusExport*100)+'%</b> import/export (orientation '+sens+').');
+  if(kTauxTP&&kTauxMag){
+    var occTP=vOf(kTauxTP),occMag=vOf(kTauxMag);
+    diag.push('Taux d\'occupation : terre-pleins <b>'+fmtPct(occTP)+'</b>, magasins <b>'+fmtPct(occMag)+'</b>'+
+      (occTP>0.9||occMag>0.9?' — proche de la saturation.':'.'));
   }
-  if(A.teusVidesTot>0){
-    var soldeAbs=Math.abs(A.soldeVides);var sensV=A.soldeVides>0?'sortie nette':'entrée nette';
-    diag.push('Vides : <b>'+fmtInt(A.teusVidesTot)+' TEUS vides</b> manipulés (entrés '+fmtInt(A.teusVidesIn)+', sortis '+fmtInt(A.teusVidesOut)+'), solde de '+fmtInt(soldeAbs)+' en '+sensV+'.');
+  if(kSurfTP&&kSurfOccTP){
+    var sT=vOf(kSurfTP),oT=vOf(kSurfOccTP);
+    diag.push('Capacité terre-pleins : <b>'+fmtInt(sT)+' m²</b> disponibles, <b>'+fmtInt(oT)+' m²</b> occupés (libre : '+fmtInt(sT-oT)+' m²).');
   }
-  if(A.tonnageTotal>0){
-    diag.push('Tonnages : <b>'+fmtInt(A.tonnageTotal)+' t</b> manipulées toutes catégories ('+(A.tonnageHydro?fmtInt(A.tonnageHydro)+' t hydrocarbures, ':'')+(A.tonnageAgri?fmtInt(A.tonnageAgri)+' t agricole, ':'')+(A.tonnageBois?fmtInt(A.tonnageBois)+' t bois, ':'')+'…).');
-  }
-  if(A.armateurTop&&A.concentrationTop3!=null){
-    diag.push('Concentration armateurs : top 3 représente <b>'+Math.round(A.concentrationTop3*100)+'%</b> du volume (armateur leader : <b>'+esc(A.armateurTop.nom)+'</b>).');
-  }
-  if(A.materielTotal>0){
-    diag.push('Capacité matérielle : <b>'+fmtInt(A.materielTotal)+'</b> unités d\'équipement déclarées ('+fmtInt(A.materielLev)+' levage, '+fmtInt(A.materielRoul)+' roulant).');
-  }
+  if(nbUnitesMat>0)diag.push('Parc matériel : <b>'+fmtInt(nbUnitesMat)+'</b> unités déclarées'+(nbBudgetMat>0?' (objectif : '+fmtInt(nbBudgetMat)+')':'')+'.');
+
   if(diag.length){
-    html+='<div class="card" style="border-left:4px solid '+COLORS.teal+'"><div style="padding:16px 20px"><div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span style="font-size:18px">🎓</span><b style="font-size:14px;color:var(--navy)">Analyse experte — Stats logistiques</b><span style="font-size:11px;color:var(--text3);margin-left:8px">'+libPeriode+'</span></div>';
-    html+='<ul style="margin:6px 0 0;padding-left:20px;font-size:12.5px;line-height:1.7;color:var(--text2)"><li>'+diag.join('</li><li>')+'</li></ul></div></div>';
+    html+='<div class="card" style="margin-top:14px;border-left:4px solid '+COLORS.teal+'"><div style="padding:16px 20px"><div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span style="font-size:18px">🎓</span><b style="font-size:14px;color:var(--navy)">Analyse experte — Gestion Base Logistique</b><span style="font-size:11px;color:var(--text3);margin-left:8px">'+libPeriode+'</span></div><ul style="margin:6px 0 0;padding-left:20px;font-size:12.5px;line-height:1.7;color:var(--text2)"><li>'+diag.join('</li><li>')+'</li></ul></div></div>';
   }
-  // ╭──────────────────── ② KPI CARDS STRATÉGIQUES ────────────────────╮
-  var sCards='';
-  if(A.escalesTotal>0)sCards+=_statsCard('🚢 Escales totales',_statsFmt(A.escalesTotal),'régulières + tramps + slot',COLORS.accent);
-  if(A.teusPleinsTot>0)sCards+=_statsCard('📦 TEUS pleins traités',_statsFmt(A.teusPleinsTot),'import '+fmtInt(A.teusPleinsImport)+' · export '+fmtInt(A.teusPleinsExport),COLORS.emerald);
-  if(A.teusVidesTot>0)sCards+=_statsCard('🔄 TEUS vides',_statsFmt(A.teusVidesTot),'entrés '+fmtInt(A.teusVidesIn)+' · sortis '+fmtInt(A.teusVidesOut),COLORS.sky);
-  if(A.blEchanges>0)sCards+=_statsCard('📄 BL échangés',_statsFmt(A.blEchanges),'transactions documentaires',COLORS.purple);
-  if(A.tonnageTotal>0)sCards+=_statsCard('⚓ Tonnages cumulés',_statsFmt(A.tonnageTotal,'t'),'toutes catégories produits',COLORS.amber);
-  if(A.materielTotal>0)sCards+=_statsCard('🛠️ Parc matériel',_statsFmt(A.materielTotal),'levage + roulant',COLORS.pink);
-  if(A.productivite>0)sCards+=_statsCard('⏱️ Heures location',_statsFmt(A.productivite,'h'),'engins + camions + MO',COLORS.green);
-  if(A.berthing>0)sCards+=_statsCard('⚓ Berthing facturé',_statsFmt(A.berthing,'jours'),'occupation quai',COLORS.red);
-  if(sCards)html+='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-top:14px">'+sCards+'</div>';
-  // ╭──────────────────── ③ INSIGHTS METIER ────────────────────╮
-  var iH='';
-  // Mix import/export gauge
-  if(A.teusPleinsTot>0){
-    var pctImp=Math.round(A.mixTeusImport*100),pctExp=100-pctImp;
-    var srcImp=d.kpis.filter(function(k){return k.cat==='TEUS_IMP'&&k.hasData;});
-    var srcExp=d.kpis.filter(function(k){return k.cat==='TEUS_EXP'&&k.hasData;});
-    var srcSheetsTeus={};[].concat(srcImp,srcExp).forEach(function(k){srcSheetsTeus[k.sheet]=1;});
-    var ttImp='Import = somme TEUS pleins import\n'+srcImp.map(function(c){return '• '+c.label+' = '+fmtInt(c.total)+' ['+c.sheet+']';}).join('\n');
-    var ttExp='Export = somme TEUS pleins export\n'+srcExp.map(function(c){return '• '+c.label+' = '+fmtInt(c.total)+' ['+c.sheet+']';}).join('\n');
-    iH+='<div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px">'+
-      '<div style="font-size:11px;color:var(--text3);font-weight:700;text-transform:uppercase;margin-bottom:4px">Mix import / export TEUS</div>'+
-      '<div style="font-size:10px;color:var(--text3);margin-bottom:10px;font-style:italic">Comparaison TEUS pleins · survoler les bandes pour les sources</div>'+
-      '<div style="display:flex;height:24px;border-radius:6px;overflow:hidden;border:1px solid var(--border)">'+
-      '<div title="'+esc(ttImp)+'" style="flex:'+pctImp+';background:'+COLORS.accent+';display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:700;cursor:help">'+pctImp+'% import</div>'+
-      '<div title="'+esc(ttExp)+'" style="flex:'+pctExp+';background:'+COLORS.emerald+';display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:700;cursor:help">'+pctExp+'% export</div>'+
-      '</div><div style="font-size:11px;color:var(--text3);margin-top:6px">'+fmtInt(A.teusPleinsImport)+' / '+fmtInt(A.teusPleinsExport)+' TEUS · base orientée '+(pctImp>pctExp?'import':'export')+'</div>'+
-      '<div style="font-size:10px;color:var(--text3);margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">Sources : <b style="color:var(--text2);font-weight:600">'+Object.keys(srcSheetsTeus).map(function(s){return esc(s);}).join(' · ')+'</b></div>'+
+
+  // ── KPI cards stratégiques ─────────────────────────────────────────────
+  function statCard(title,value,sub,color,trend){
+    var trendHtml='';
+    if(trend!=null){var arrow=trend>=0?'▲':'▼';var col=trend>=0?COLORS.green:COLORS.red;trendHtml='<span style="font-size:11px;font-weight:700;color:'+col+';margin-left:6px">'+arrow+' '+Math.abs(Math.round(trend*100))+'%</span>';}
+    return'<div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px;border-left:3px solid '+(color||COLORS.teal)+'">'+
+      '<div style="font-size:10px;color:var(--text3);text-transform:uppercase;font-weight:700;letter-spacing:.05em;line-height:1.3;min-height:24px">'+title+'</div>'+
+      '<div style="font-size:22px;font-weight:800;color:var(--navy);margin-top:4px;font-variant-numeric:tabular-nums">'+value+trendHtml+'</div>'+
+      (sub?'<div style="font-size:11px;color:var(--text3);margin-top:4px;line-height:1.35">'+sub+'</div>':'')+
       '</div>';
   }
-  // Top armateurs (Pareto) — avec source
-  if(A.armateurs&&A.armateurs.length){
-    var topArm=A.armateurs.slice(0,6);
-    var maxArm=topArm[0].total;
-    iH+='<div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px">'+
-      '<div style="font-size:11px;color:var(--text3);font-weight:700;text-transform:uppercase;margin-bottom:4px">Top armateurs</div>'+
-      '<div style="font-size:10px;color:var(--text3);margin-bottom:10px;font-style:italic">Volume cumulé déclaré par armateur · survoler pour la source</div>';
-    topArm.forEach(function(a,i){
-      var pct=maxArm>0?Math.round(a.total/maxArm*100):0;
-      // Trouver le KPI source pour le tooltip
-      var srcKpi=d.kpis.find(function(k){return k.label===a.nom;});
-      var tip=a.nom+' = '+fmtInt(a.total)+(srcKpi?'\nFeuille : '+srcKpi.sheet+(srcKpi.section?'\nSection : '+srcKpi.section:''):'');
-      iH+='<div style="margin-bottom:6px;cursor:help" title="'+esc(tip)+'"><div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px"><span style="color:var(--text);font-weight:600">'+esc(a.nom.slice(0,28))+'</span><span style="color:var(--text2);font-variant-numeric:tabular-nums">'+fmtInt(a.total)+'</span></div><div style="height:6px;background:rgba(0,0,0,.04);border-radius:3px;overflow:hidden"><div style="width:'+pct+'%;height:100%;background:linear-gradient(90deg,'+COLORS.teal+','+COLORS.accent+')"></div></div></div>';
+  var sCards='';
+  if(kHeures){
+    var dH=deltaBudget(vOf(kHeures),bOf(kHeures));
+    sCards+=statCard('⏱️ Heures location engins',fmtMoney(vOf(kHeures),' h'),bOf(kHeures)?'budget '+fmtInt(bOf(kHeures))+' h':'',COLORS.accent,dH);
+  }
+  if(kSurfTP)sCards+=statCard('🏗️ Surface terre-pleins',fmtMoney(vOf(kSurfTP),' m²'),(kSurfOccTP?'occupée '+fmtInt(vOf(kSurfOccTP))+' m²':''),COLORS.green);
+  if(kSurfMag)sCards+=statCard('🏬 Surface magasins',fmtMoney(vOf(kSurfMag),' m²'),(kSurfOccMag?'occupée '+fmtInt(vOf(kSurfOccMag))+' m²':''),COLORS.amber);
+  if(kSurfBur)sCards+=statCard('🏢 Surface bureaux',fmtMoney(vOf(kSurfBur),' m²'),'',COLORS.purple);
+  if(kTauxTP)sCards+=statCard('📊 Taux occupation terre-pleins',fmtPct(vOf(kTauxTP)),(vOf(kTauxTP)>0.9?'⚠ saturation proche':'capacité disponible'),vOf(kTauxTP)>0.9?COLORS.red:COLORS.teal);
+  if(kTauxMag)sCards+=statCard('📊 Taux occupation magasins',fmtPct(vOf(kTauxMag)),(vOf(kTauxMag)>0.9?'⚠ saturation proche':'capacité disponible'),vOf(kTauxMag)>0.9?COLORS.red:COLORS.teal);
+  if(nbUnitesMat>0)sCards+=statCard('🛠️ Parc matériel',fmtInt(nbUnitesMat),'unités déclarées',COLORS.pink);
+  if(sCards)html+='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-top:14px">'+sCards+'</div>';
+
+  // ── Tableau détaillé par section ───────────────────────────────────────
+  bl.sections.forEach(function(sec){
+    if(!sec.kpis.length)return;
+    html+='<div class="card" style="margin-top:16px"><div style="padding:14px 18px"><div style="font-weight:700;font-size:13px;color:var(--navy);margin-bottom:10px;text-transform:uppercase;letter-spacing:.05em">'+sec.ico+' '+esc(sec.name)+' <span style="font-size:10px;color:var(--text3);text-transform:none;letter-spacing:0;font-weight:500;margin-left:6px">— '+sec.kpis.length+' lignes</span></div>';
+    html+='<div style="overflow-x:auto"><table style="width:100%;font-size:11.5px;border-collapse:collapse">'+
+      '<thead><tr style="background:var(--surface2)">'+
+      '<th style="text-align:left;padding:8px 10px;font-weight:700;color:var(--text2);font-size:11px;border-bottom:2px solid var(--border)">Item</th>';
+    bl.months.forEach(function(m){
+      var isHighlighted=(selIdx!=null&&bl.months.indexOf(m)===selIdx);
+      html+='<th style="text-align:right;padding:6px 5px;font-size:10px;color:var(--text2);font-weight:600;border-bottom:2px solid var(--border)'+(isHighlighted?';background:rgba(20,184,166,.15);color:var(--navy)':'')+'">'+esc(m)+'</th>';
     });
-    if(A.concentrationTop3!=null)iH+='<div style="font-size:11px;color:var(--text3);margin-top:8px">Top 3 = <b style="color:var(--navy)">'+Math.round(A.concentrationTop3*100)+'%</b> du volume armateurs</div>';
-    // Source
-    var armSheets={};A.armateurs.forEach(function(a){var k=d.kpis.find(function(kk){return kk.label===a.nom;});if(k)armSheets[k.sheet]=1;});
-    var armList=Object.keys(armSheets);
-    if(armList.length)iH+='<div style="font-size:10px;color:var(--text3);margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">Source'+(armList.length>1?'s':'')+' : <b style="color:var(--text2);font-weight:600">'+armList.map(function(s){return esc(s);}).join(' · ')+'</b></div>';
-    iH+='</div>';
-  }
-  // Tonnages mix doughnut-like — avec traçabilité des composants
-  if(A.tonnageTotal>0){
-    var binsRaw=[
-      ['Hydrocarbures','TONNAGE_HYDRO',A.tonnageHydro,COLORS.red],
-      ['Agricole','TONNAGE_AGRI',A.tonnageAgri,COLORS.green],
-      ['Bois','TONNAGE_BOIS',A.tonnageBois,COLORS.amber],
-      ['Conventionnels','TONNAGE_CONV',A.tonnageConv,COLORS.accent],
-      ['Minerais','TONNAGE_MINE',A.tonnageMine,COLORS.teal],
-      ['BTP','TONNAGE_BTP',A.tonnageBTP,COLORS.purple]
-    ];
-    var bins=binsRaw.filter(function(b){return b[2]>0;});
-    var tT=bins.reduce(function(a,b){return a+b[2];},0);
-    iH+='<div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px">'+
-      '<div style="font-size:11px;color:var(--text3);font-weight:700;text-transform:uppercase;margin-bottom:4px">Tonnages par famille</div>'+
-      '<div style="font-size:10px;color:var(--text3);margin-bottom:10px;font-style:italic">Cumul des KPIs catégorisés par famille produit · survoler pour voir les composants</div>';
-    bins.forEach(function(b){
-      var pct=tT>0?Math.round(b[2]/tT*100):0;
-      // Construire le tooltip : composants KPIs de cette catégorie
-      var components=d.kpis.filter(function(k){return k.cat===b[1]&&k.hasData;}).sort(function(x,y){return y.total-x.total;});
-      var tooltip=b[0]+' — '+fmtInt(b[2])+' t cumulés\n\nComposants ('+components.length+' KPIs) :\n'+components.slice(0,12).map(function(c){return '• '+c.label+' = '+fmtInt(c.total)+' t  ['+c.sheet+']';}).join('\n');
-      if(components.length>12)tooltip+='\n• ... +'+(components.length-12)+' autres';
-      iH+='<div style="margin-bottom:6px;cursor:help" title="'+esc(tooltip)+'"><div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px"><span style="color:var(--text);font-weight:600">'+b[0]+' <span style="color:var(--text3);font-weight:400;font-size:10px">('+components.length+' KPIs)</span></span><span style="color:var(--text2);font-variant-numeric:tabular-nums">'+fmtInt(b[2])+' t ('+pct+'%)</span></div><div style="height:6px;background:rgba(0,0,0,.04);border-radius:3px;overflow:hidden"><div style="width:'+pct+'%;height:100%;background:'+b[3]+'"></div></div></div>';
-    });
-    // Sources
-    var srcSet={};bins.forEach(function(b){d.kpis.filter(function(k){return k.cat===b[1]&&k.hasData;}).forEach(function(k){srcSet[k.sheet]=1;});});
-    var srcList=Object.keys(srcSet);
-    iH+='<div style="font-size:10px;color:var(--text3);margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">Source'+(srcList.length>1?'s':'')+' : <b style="color:var(--text2);font-weight:600">'+srcList.map(function(s){return esc(s);}).join(' · ')+'</b></div>';
-    iH+='</div>';
-  }
-  if(iH)html+='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin-top:14px">'+iH+'</div>';
-  // ╭──────────────────── ④ CROISEMENT CA × STATS ────────────────────╮
-  if(datasets.CA&&datasets.CA.length&&A.escalesTotal>0){
-    var caT=datasets.CA[0].data.totalCA||0;
-    if(caT>0){
-      var caCards='';
-      if(A.escalesTotal>0)caCards+=_statsCard('💰 CA par escale',fmtXOF(caT/A.escalesTotal),'revenu moyen / escale',COLORS.emerald);
-      if(A.teusPleinsTot>0)caCards+=_statsCard('💎 CA par TEU plein',fmtXOF(caT/A.teusPleinsTot),'rentabilité unitaire',COLORS.emerald);
-      if(A.tonnageTotal>0)caCards+=_statsCard('🏷️ CA par tonne',fmtXOF(caT/A.tonnageTotal),'yield tonnage',COLORS.emerald);
-      if(A.berthing>0)caCards+=_statsCard('⚓ CA par jour de berth',fmtXOF(caT/A.berthing),'productivité quai',COLORS.emerald);
-      if(caCards)html+='<div class="card" style="margin-top:16px;border-left:4px solid '+COLORS.emerald+'"><div style="padding:16px 20px"><div style="font-weight:700;color:var(--navy);margin-bottom:10px;display:flex;align-items:center;gap:8px">🔗 Croisement CA × STATS <span style="font-size:11px;font-weight:500;color:var(--text3)">— ratios de rentabilité opérationnelle</span></div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px">'+caCards+'</div></div></div>';
-    }
-  }
-  // ╭──────────────────── ⑤ SECTIONS THÉMATIQUES — affiché uniquement en mode DÉTAILLÉ ────────────────────╮
-  if(mode==='detail'){
-    var FAMILLES=[
-      {key:'ESCALES',ico:'🚢',title:'Activité portuaire — Escales'},
-      {key:'CONTENEURS',ico:'📦',title:'Flux conteneurs (TEUS & BL)'},
-      {key:'TONNAGES',ico:'⚓',title:'Tonnages par catégorie produit'},
-      {key:'ARMATEURS',ico:'🏢',title:'Armateurs (lignes régulières)'},
-      {key:'CAPACITE',ico:'🏗️',title:'Capacité & infrastructures'},
-      {key:'MATERIEL',ico:'🛠️',title:'Parc matériel'},
-      {key:'PRODUCTIVITE',ico:'⏱️',title:'Productivité & dossiers'},
-      {key:'TOTAUX',ico:'📊',title:'CAP & totalisations'},
-      {key:'AUTRES',ico:'📁',title:'Autres KPIs'}
-    ];
-    html+='<div style="margin-top:18px"><div style="font-weight:700;font-size:14px;color:var(--navy);margin-bottom:10px;display:flex;align-items:center;gap:8px">📋 Détail par famille métier <span style="font-size:11px;font-weight:500;color:var(--text3)">— items dédupliqués entre feuilles · cliquer pour déployer</span></div>';
-    FAMILLES.forEach(function(f){
-      var kpisFam=d.kpis.filter(function(k){return k.famille===f.key&&k.hasData;});
-      if(!kpisFam.length)return;
-      // Déduplication : 1 ligne par label normalisé, total cumulé, sources distinctes
-      var dedupKpis=_statsDedupKpis(kpisFam);
-      // Pour le filtre période : recalculer valeur si selIdx
-      function valDedupOf(dk){
-        if(selIdx==null)return dk.total;
-        return typeof dk.values[selIdx]==='number'?dk.values[selIdx]:0;
+    html+='<th style="text-align:right;padding:6px 8px;font-size:10px;color:var(--navy);font-weight:700;background:rgba(59,130,246,.08);border-bottom:2px solid var(--border)">Cumul</th>'+
+      '<th style="text-align:right;padding:6px 8px;font-size:10px;color:var(--navy);font-weight:700;background:rgba(59,130,246,.08);border-bottom:2px solid var(--border)">Budget</th>'+
+      '<th style="text-align:right;padding:6px 8px;font-size:10px;color:var(--navy);font-weight:700;background:rgba(59,130,246,.08);border-bottom:2px solid var(--border)">Écart %</th>'+
+      '<th style="text-align:right;padding:6px 8px;font-size:10px;color:var(--text3);font-weight:700;background:rgba(0,0,0,.03);border-bottom:2px solid var(--border)">N-1</th>'+
+      '</tr></thead><tbody>';
+    var lastSubhead=null;
+    sec.kpis.forEach(function(k,idx){
+      if(k.subhead&&k.subhead!==lastSubhead){
+        lastSubhead=k.subhead;
+        html+='<tr><td colspan="17" style="background:var(--surface2);font-weight:700;font-size:10.5px;color:var(--text2);padding:5px 10px;text-transform:uppercase;letter-spacing:.04em;border-top:1px solid var(--border)">'+esc(k.subhead)+'</td></tr>';
       }
-      var totFam=dedupKpis.reduce(function(a,dk){return a+valDedupOf(dk);},0);
-      var nbUniq=dedupKpis.length,nbBrut=kpisFam.length;
-      var savedNote=nbBrut>nbUniq?' <span style="color:var(--green);font-size:10px;font-weight:500">('+nbUniq+' uniques / '+nbBrut+' bruts)</span>':'';
-      html+='<details class="qhse-sec" style="margin-top:8px">'+
-        '<summary style="cursor:pointer;padding:10px 14px;font-weight:700;background:var(--surface2);border-radius:8px;font-size:13px"><span style="font-size:14px;margin-right:6px">'+f.ico+'</span>'+esc(f.title)+
-        ' <span style="color:var(--text3);font-size:11px;font-weight:400;margin-left:8px">'+nbUniq+' item'+(nbUniq>1?'s':'')+(totFam>0?' · total '+_statsFmt(totFam):'')+'</span>'+savedNote+'</summary>';
-      // Tri par valeur décroissante
-      dedupKpis.sort(function(a,b){return valDedupOf(b)-valDedupOf(a);});
-      html+='<div style="padding:6px 0"><table class="cl-table" style="width:100%;font-size:12px"><thead><tr><th style="width:38%">Item</th><th>Sous-catégorie</th><th style="text-align:right">Valeur '+(selIdx==null?'cumul':'mois')+'</th><th style="text-align:right;width:90px">Mois</th><th>Sources</th></tr></thead><tbody>';
-      dedupKpis.forEach(function(dk){
-        var nbVal=dk.values.filter(function(v){return typeof v==='number'&&v!==0;}).length;
-        var v=valDedupOf(dk);
-        var srcsBadges=dk.sources.map(function(s){return '<span style="display:inline-block;background:var(--surface2);color:var(--text2);font-size:10px;padding:1px 6px;border-radius:8px;margin-right:3px">'+esc(s.slice(0,12))+'</span>';}).join('');
-        var dupBadge=dk.count>1?'<span style="display:inline-block;background:'+COLORS.teal+';color:#fff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:7px;margin-left:4px" title="'+dk.count+' occurrences fusionnées">×'+dk.count+'</span>':'';
-        html+='<tr><td style="font-weight:500;color:var(--text)">'+esc(dk.label)+dupBadge+'</td><td style="color:var(--text2);font-size:11px">'+esc(dk.sub||'—')+'</td><td style="text-align:right;font-variant-numeric:tabular-nums;font-weight:700;color:var(--navy)">'+(v===0?'<span style="color:var(--text3);font-weight:400">0</span>':_statsFmt(v))+'</td><td style="text-align:right;color:var(--text2);font-variant-numeric:tabular-nums">'+nbVal+'/12</td><td style="line-height:1.6">'+srcsBadges+'</td></tr>';
+      var isTaux=/taux/i.test(k.label);
+      html+='<tr style="border-bottom:1px solid var(--border)">'+
+        '<td style="padding:6px 10px;font-weight:500;color:var(--text)">'+esc(k.label)+'</td>';
+      k.values.forEach(function(v,im){
+        var isHighlighted=(selIdx===im);
+        var disp;
+        if(v==null||v===0)disp='<span style="color:var(--text3)">—</span>';
+        else if(isTaux)disp=Math.round(v*100)+'%';
+        else disp=fmtInt(v);
+        html+='<td style="text-align:right;padding:5px;font-variant-numeric:tabular-nums;font-size:11px'+(isHighlighted?';background:rgba(20,184,166,.10);font-weight:600':'')+'">'+disp+'</td>';
       });
-      html+='</tbody></table></div></details>';
+      // Cumul
+      var cumDisp;
+      if(k.cumul==null)cumDisp='<span style="color:var(--text3)">—</span>';
+      else if(isTaux)cumDisp='<b style="color:var(--navy)">'+Math.round(k.cumul*100)+'%</b>';
+      else cumDisp='<b style="color:var(--navy)">'+fmtInt(k.cumul)+'</b>';
+      html+='<td style="text-align:right;padding:5px 8px;font-variant-numeric:tabular-nums;background:rgba(59,130,246,.05)">'+cumDisp+'</td>';
+      // Budget
+      var budDisp;
+      if(k.budget==null)budDisp='<span style="color:var(--text3)">—</span>';
+      else if(isTaux)budDisp=Math.round(k.budget*100)+'%';
+      else budDisp=fmtInt(k.budget);
+      html+='<td style="text-align:right;padding:5px 8px;font-variant-numeric:tabular-nums;background:rgba(59,130,246,.05)">'+budDisp+'</td>';
+      // Écart %
+      var ecartDisp='<span style="color:var(--text3)">—</span>';
+      if(k.cumul!=null&&k.budget!=null&&k.budget!==0){
+        var pct=(k.cumul-k.budget)/k.budget;
+        var col=Math.abs(pct)<0.1?COLORS.text2:(pct>=0?COLORS.green:COLORS.red);
+        ecartDisp='<b style="color:'+col+'">'+(pct>=0?'+':'')+Math.round(pct*100)+'%</b>';
+      }
+      html+='<td style="text-align:right;padding:5px 8px;font-variant-numeric:tabular-nums;background:rgba(59,130,246,.05)">'+ecartDisp+'</td>';
+      // N-1
+      var n1Disp;
+      if(k.reelN1==null)n1Disp='<span style="color:var(--text3)">—</span>';
+      else if(isTaux)n1Disp=Math.round(k.reelN1*100)+'%';
+      else n1Disp=fmtInt(k.reelN1);
+      html+='<td style="text-align:right;padding:5px 8px;font-variant-numeric:tabular-nums;color:var(--text2);background:rgba(0,0,0,.02)">'+n1Disp+'</td>';
+      html+='</tr>';
     });
-    html+='</div>';
-  }
-  // ── Footer : qualité des données ──
-  var refPct=d.nbKpis?Math.round(d.nbRef/d.nbKpis*100):0;
-  var dataPct=d.nbKpis?Math.round(d.nbWithData/d.nbKpis*100):0;
-  html+='<div style="margin-top:18px;padding:10px 14px;background:var(--surface2);border-radius:8px;font-size:11px;color:var(--text3);display:flex;gap:18px;flex-wrap:wrap">'+
-    '<span><b style="color:var(--text)">'+d.nbKpis+'</b> KPIs lus</span>'+
-    '<span><b style="color:var(--text)">'+d.nbSections+'</b> sections</span>'+
-    '<span>Couverture données : <b style="color:'+(dataPct>30?COLORS.green:COLORS.amber)+'">'+dataPct+'%</b></span>'+
-    (refPct>0?'<span>Liens cassés (#REF!) : <b style="color:'+COLORS.red+'">'+refPct+'%</b></span>':'')+
-    '<span style="margin-left:auto">année détectée : <b style="color:var(--text)">'+d.year+'</b></span>'+
+    html+='</tbody></table></div></div></div>';
+  });
+
+  // ── Footer source ──────────────────────────────────────────────────────
+  var nbMonthsWithData=0;for(var im=0;im<12;im++){var any=false;bl.sections.forEach(function(s){s.kpis.forEach(function(k){if(typeof k.values[im]==='number'&&k.values[im]!==0)any=true;});});if(any)nbMonthsWithData++;}
+  html+='<div style="margin-top:16px;padding:10px 14px;background:var(--surface2);border-radius:8px;font-size:11px;color:var(--text3);display:flex;gap:18px;flex-wrap:wrap">'+
+    '<span>Source : feuille <code style="color:var(--text2)">'+esc(bl.sheet)+'</code></span>'+
+    '<span>Bloc démarre ligne <b style="color:var(--text2)">'+(bl.startRow+1)+'</b></span>'+
+    '<span><b style="color:var(--text2)">'+nbMonthsWithData+'</b>/12 mois renseignés</span>'+
+    '<span style="margin-left:auto">année : <b style="color:var(--text2)">'+d.year+'</b></span>'+
     '</div>';
-  if(d.baseLog) html+='</div></details>'; // ferme l'accordion "Autres données"
   p.innerHTML=html;
 }
 
