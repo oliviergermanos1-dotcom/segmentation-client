@@ -1502,7 +1502,7 @@ function detectType(wb){
   if((flat.indexOf('client')>-1&&flat.indexOf('positif')>-1&&flat.indexOf('nega')>-1))return'PLANNING';
   if(flat.indexOf('demande de personnel')>-1||(flat.indexOf('matricule')>-1&&flat.indexOf('shift')>-1))return'POINTAGE';
   if(flat.indexOf('prevision de factura')>-1||flat.indexOf('prévision de factura')>-1||flat.indexOf('loyers')>-1)return'LOYERS';
-  if(flat.indexOf('charges fixes')>-1||flat.indexOf('charges opera')>-1||(flat.indexOf('libellé')>-1&&flat.indexOf('affectation')>-1&&flat.indexOf('montant')>-1))return'CHARGES';
+  if(flat.indexOf('charges fixes')>-1||flat.indexOf('charges opera')>-1||flat.indexOf('charges opéra')>-1||(flat.indexOf('libellé')>-1&&flat.indexOf('affectation')>-1&&flat.indexOf('montant')>-1))return'CHARGES';
   if(flat.indexOf('matricule')>-1&&flat.indexOf('fonction')>-1)return'POINTAGE';
   // CA / CAP — Flash CA base O&G : présence d'une feuille "Récap Global" ou "Cumul annuel", ou en-têtes départements
   var sheetsLow=wb.SheetNames.map(function(s){return String(s).toLowerCase();});
@@ -1586,7 +1586,7 @@ function parsePlanning(wb){
     var h=g[hr].map(norm);
     var iCli=h.findIndex(function(x){return /client/i.test(x);}),iSec=h.findIndex(function(x){return /section/i.test(x);}),
         iNat=h.findIndex(function(x){return /nature/i.test(x);}),iPos=h.findIndex(function(x){return /positif/i.test(x);}),
-        iNeg=h.findIndex(function(x){return /nega/i.test(x);});
+        iNeg=h.findIndex(function(x){return /n[ée]ga/i.test(x);});
     var ops=[],pos=0,neg=0,lastClient='';
     for(var i=hr+1;i<g.length;i++){
       var r=g[i];var cli=iCli>=0?norm(r[iCli]):'';
