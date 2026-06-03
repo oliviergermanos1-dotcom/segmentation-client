@@ -4118,19 +4118,22 @@ function renderCA(p){
   if(!D.byClient)D.byClient={};
   if(!D.periods)D.periods=[];
   if(!D.totalCA)D.totalCA=0;
-  var html=panelHead('💰','CA / CAP — Base O&G','· '+esc(ds.fileName),'CA');
+  var html=panelHead('💰','CA / CAP — Base O&G','· '+esc(ds.fileName)+(datasets.CA.length>1?' (+'+(datasets.CA.length-1)+' fichier'+(datasets.CA.length>2?'s':'')+' fusionné'+(datasets.CA.length>2?'s':'')+')':''),'CA');
   html+=periodBar('CA');
-  var sel=selectedIndices('CA');var selM=sel.map(function(i){return D.periods[i];});
+  // Multi-fichiers : utiliser la fusion getPeriods('CA') comme source de vérité
+  // (sinon les indices selectedIndices peuvent dépasser D.periods et provoquer un undefined.total)
+  var allP=getPeriods('CA');
+  var sel=selectedIndices('CA');var selM=sel.map(function(i){return allP[i];}).filter(Boolean);
   var s=getGlobalSel();
   // CA de la sélection (matrice) ; en cumul = total annuel
-  var caSel=selM.reduce(function(a,m){return a+(m.total||0);},0);
+  var caSel=selM.reduce(function(a,m){return a+(m&&m.total||0);},0);
   var caRef=(s.kind==='all')?D.totalCA:caSel;
   // expert
   html+=expertCA(D,selM);
   // KPIs
   html+='<div class="kpi-grid">';
   html+=kpiCard('CA '+(s.kind==='all'?'cumulé':'sélection'),fmtXOF(caRef),selLabel('CA'),null,true);
-  var curM=selM[selM.length-1];var prevM=prevPeriodOf(D.periods,curM);
+  var curM=selM[selM.length-1];var prevM=prevPeriodOf(allP,curM);
   if(selM.length===1&&prevM)html+=kpiCard('vs mois précédent',fmtXOF(curM.total),esc(prevM.label)+' → '+esc(curM.label),deltaTrend(curM.total,prevM.total,true),true);
   else html+=kpiCard('CA total annuel',fmtXOF(D.totalCA),D.monthsCA.length+' mois renseignés',null,true);
   html+=kpiCard('Départements actifs',fmtInt(D.deps.length),'lignes de revenus');
@@ -4229,21 +4232,6 @@ function renderCA(p){
     var topC2=D.clients.slice(0,12);
     mkChart('ca-cli',{type:'bar',data:{labels:topC2.map(function(c){return c.client.length>22?c.client.slice(0,22)+'…':c.client;}),datasets:[{data:topC2.map(function(c){return c.total;}),backgroundColor:COLORS.emerald+'cc',borderColor:COLORS.emerald,borderWidth:1}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:function(c){return fmtXOF(c.parsed.x);}}}},scales:{x:{ticks:{color:'#586172',font:{size:10},callback:function(v){return(v/1e6)+'M';}},grid:DARK_GRID,beginAtZero:true},y:{ticks:{color:'#586172',font:{size:10}},grid:{display:false}}}}});
   }
-  if(al){
-    var moisDef=al.series.filter(function(s){return s.charges>s.loyers;});
-    if(moisDef.length&&!(al.totalCharges>al.totalLoyers)){
-      var ml=moisDef.map(function(s){return ymLabel(s.ym);}).join(', ');
-      add('med','📉','<b>'+moisDef.length+' mois</b> où les charges dépassent les revenus ('+ml+').',moisDef.length+' mois ou les charges depassent les revenus ('+ml+').');
-    }
-  }
-  if(datasets.QHSE){var qp=getPeriods('QHSE');var qi=synIndicesFor('QHSE');if(qi.length){var curQ=qp[qi[qi.length-1]];var prevQ=prevPeriodOf(qp,curQ);if(prevQ&&curQ.totalEff<prevQ.totalEff*0.9){var pc=Math.round((1-curQ.totalEff/prevQ.totalEff)*100);add('med','👥','<b>Baisse d\'effectif</b> de '+pc+'% sur '+esc(curQ.label)+' ('+prevQ.totalEff+'→'+curQ.totalEff+').','Baisse d\'effectif de '+pc+'% sur '+curQ.label+' ('+prevQ.totalEff+' vers '+curQ.totalEff+').');}}}
-  if(datasets.QHSE){var qp2=getPeriods('QHSE');var qi2=synIndicesFor('QHSE');var totAcc=0;qi2.forEach(function(i){var w=qp2[i];['C:Décès','C:Accident avec arrêt','C:Accidents sans arrêt'].forEach(function(k){if(w.kpi&&w.kpi[k])totAcc+=w.kpi[k];});});if(totAcc>0){add('high','🚨','<b>'+totAcc+' accident(s) déclaré(s)</b> sur la période sélectionnée — vérifier les rapports QHSE.',totAcc+' accident(s) declare(s) sur la periode selectionnee - verifier les rapports QHSE.');}}
-  if(datasets.PLANNING){var gp=getPeriods('PLANNING');var gi=synIndicesFor('PLANNING');var tp=0,tn=0;gi.forEach(function(i){tp+=gp[i].pos;tn+=gp[i].neg;});var tot=tp+tn;if(tot>0){var taux=tp/tot*100;if(taux<80&&tn>0){add('med','📋','<b>Taux de réalisation planning de '+taux.toFixed(0)+'%</b> ('+tn+' opérations non réalisées) — sous le seuil de 80%.','Taux de realisation planning de '+taux.toFixed(0)+'% ('+tn+' operations non realisees) - sous le seuil de 80%.');}}}
-  var nbMiss=0,nbOld=0;if(typeof EXPECTED_SOURCES!=='undefined'){var now=Date.now();EXPECTED_SOURCES.forEach(function(src){var found=allFiles.filter(function(f){return(f._type||classifyByName(f.name))===src.type;});if(!found.length){nbMiss++;}else{var fresh=found.some(function(f){return f.lastModified&&(now-f.lastModified)/86400000<=src.freshDays;});if(!fresh&&found[0].lastModified)nbOld++;}});}
-  if(nbMiss>0)add('info','📭','<b>'+nbMiss+' source(s) attendue(s) manquante(s)</b> — l\'analyse est partielle.',nbMiss+' source(s) attendue(s) manquante(s) - l\'analyse est partielle.');
-  if(nbOld>0)add('info','🕐','<b>'+nbOld+' source(s) périmée(s)</b> — données potentiellement obsolètes.',nbOld+' source(s) perimee(s) - donnees potentiellement obsoletes.');
-  var order={high:0,med:1,info:2};alerts.sort(function(a,b){return order[a.sev]-order[b.sev];});
-  return alerts;
 }
 /* Alertes automatiques : rendu HTML pour la Synthèse. */
 function synAlerts(){
