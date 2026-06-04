@@ -117,16 +117,26 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     # Si un seul argument et c'est un dossier → on glob STATCOM*.xlsx dedans.
+    # Dédoublonnage : Windows est case-insensitive, donc STATCOM* et Statcom*
+    # matchent les mêmes fichiers. On dédoublonne sur le nom absolu en minuscules.
     files = []
+    seen = set()
+    def _add(p):
+        key = str(p.resolve()).lower()
+        if key in seen: return
+        seen.add(key); files.append(p)
+
     for inp in args.inputs:
         p = Path(inp)
         if p.is_dir():
-            files.extend(sorted(p.glob("STATCOM*.xlsx")))
-            files.extend(sorted(p.glob("Statcom*.xlsx")))   # tolérance casse fichier
+            for pattern in ("STATCOM*.xlsx", "Statcom*.xlsx", "statcom*.xlsx"):
+                for f in p.glob(pattern):
+                    _add(f)
         elif p.is_file():
-            files.append(p)
+            _add(p)
         else:
             sys.exit(f"ERREUR : introuvable : {p}")
+    files = sorted(files)
     if not files:
         sys.exit("ERREUR : aucun fichier STATCOM*.xlsx à traiter.")
 

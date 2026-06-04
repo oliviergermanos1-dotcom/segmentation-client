@@ -57,8 +57,16 @@ def main(argv=None) -> int:
     iris    = _find(data, "IRIS*.xlsx")
     rubriks = _find(data, "RUBRIKS*.xlsx")
 
-    # STATCOM : détection auto mono- ou multi-fichiers.
-    statcom_files = sorted(list(data.glob("STATCOM*.xlsx")) + list(data.glob("Statcom*.xlsx")))
+    # STATCOM : détection auto mono- ou multi-fichiers (case-insensitive sans doublons).
+    seen = set()
+    statcom_files = []
+    for pattern in ("STATCOM*.xlsx", "Statcom*.xlsx", "statcom*.xlsx"):
+        for f in data.glob(pattern):
+            key = str(f).lower()
+            if key not in seen:
+                seen.add(key)
+                statcom_files.append(f)
+    statcom_files = sorted(statcom_files)
     if not statcom_files:
         sys.exit(f"ERREUR : aucun STATCOM*.xlsx trouvé dans {data}")
     if len(statcom_files) > 1:
