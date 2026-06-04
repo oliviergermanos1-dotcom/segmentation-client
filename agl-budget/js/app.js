@@ -264,12 +264,11 @@
     Promise.all([pipe.marketTotalsByMetier(year), pipe.marketByMetierYear()]).then(([byM, all]) => {
       const sorted = byM.sort((a, b) => b.value - a.value);
       global.AGL.charts.bar($("#m02-chart-mix"), sorted, { title: "Marché total STATCOM " + year + " — volume principal par métier" });
-      // Table — toutes années pour donner la vision 3 ans.
+      const allSorted = all.slice().sort((a, b) => (a.METIER || "").localeCompare(b.METIER || "") || (+a.ANNEE) - (+b.ANNEE));
       const tbl = el("table");
       tbl.innerHTML = "<thead><tr><th>Métier</th><th>Année</th><th>Vol. TEU</th><th>Vol. Kg</th><th>Nb clients</th><th>Nb ops</th></tr></thead>";
       const tb = el("tbody");
-      all.sort((a, b) => (a.METIER || "").localeCompare(b.METIER || "") || (+a.ANNEE) - (+b.ANNEE))
-         .forEach((r) => {
+      allSorted.forEach((r) => {
         const tr = el("tr");
         tr.innerHTML = "<td>" + (r.METIER || "") + "</td><td>" + r.ANNEE + "</td>" +
           "<td>" + U.formatNumber(r.VOLUME_TEU) + "</td>" +
@@ -280,6 +279,18 @@
       });
       tbl.appendChild(tb);
       const host = $("#m02-table"); host.innerHTML = ""; host.appendChild(tbl);
+
+      renderToolbar("02", "Marché STATCOM " + year, "Marche_STATCOM_" + year,
+        () => global.AGL.prompts.market(sorted, year),
+        () => [
+          _tableSection("Marché total " + year + " — mix par métier",
+            ["Métier", "Volume principal"],
+            sorted.map((s) => [s.label, U.formatNumber(s.value)])),
+          _tableSection("Marché total 3 ans (détail)",
+            ["Métier", "Année", "Vol. TEU", "Vol. Kg", "Nb clients", "Nb ops"],
+            allSorted.map((r) => [r.METIER, r.ANNEE, U.formatNumber(r.VOLUME_TEU),
+              U.formatNumber(r.VOLUME_KG), U.formatNumber(r.NB_CLIENTS), U.formatNumber(r.NB_OPERATIONS)]))
+        ]);
     });
   }
 
@@ -301,12 +312,13 @@
   }
   function drawPosition(year) {
     global.AGL.pipeline.pdmByMetier(year).then((rows) => {
-      const data = rows.sort((a, b) => b.pdm - a.pdm).map((r) => ({ label: r.metier, value: r.pdm * 100 }));
-      global.AGL.charts.bar($("#m03-chart-pdm"), data, { title: "PDM AGL " + year + " (%)" });
+      const sorted = rows.slice().sort((a, b) => b.pdm - a.pdm);
+      global.AGL.charts.bar($("#m03-chart-pdm"), sorted.map((r) => ({ label: r.metier, value: r.pdm * 100 })),
+        { title: "PDM AGL " + year + " (%)" });
       const tbl = el("table");
       tbl.innerHTML = "<thead><tr><th>Métier</th><th>Vol. AGL</th><th>Vol. Marché</th><th>PDM</th><th>CAGR AGL</th><th>CAGR Marché</th></tr></thead>";
       const tb = el("tbody");
-      rows.forEach((r) => {
+      sorted.forEach((r) => {
         const tr = el("tr");
         tr.innerHTML = "<td>" + r.metier + "</td>" +
           "<td>" + U.formatNumber(r.volume_agl) + "</td>" +
@@ -318,6 +330,17 @@
       });
       tbl.appendChild(tb);
       const host = $("#m03-table"); host.innerHTML = ""; host.appendChild(tbl);
+
+      renderToolbar("03", "Position AGL " + year, "Position_AGL_" + year,
+        () => global.AGL.prompts.position(sorted, year),
+        () => [
+          _tableSection("PDM AGL " + year + " par métier",
+            ["Métier", "Vol. AGL", "Vol. Marché", "PDM", "CAGR AGL", "CAGR Marché"],
+            sorted.map((r) => [r.metier, U.formatNumber(r.volume_agl), U.formatNumber(r.volume_marche),
+              (r.pdm * 100).toFixed(1) + " %",
+              r.cagr_agl != null ? (r.cagr_agl * 100).toFixed(1) + " %" : "—",
+              r.cagr_marche != null ? (r.cagr_marche * 100).toFixed(1) + " %" : "—"]))
+        ]);
     });
   }
 
@@ -363,6 +386,15 @@
       });
       tbl.appendChild(tb);
       const host = $("#m07-table"); host.innerHTML = ""; host.appendChild(tbl);
+
+      renderToolbar("07", "White Spaces", "White_Spaces",
+        () => global.AGL.prompts.whitespaces(sorted),
+        () => [
+          _tableSection("Top 50 white spaces",
+            ["Client", "Métier", "Statut", "Volume", "Nb ops"],
+            sorted.slice(0, 50).map((r) => [r.NOM_BASE, r.METIER, r.STATUT,
+              U.formatNumber(r.VOLUME_PRINCIPAL), U.formatNumber(r.NB_OPERATIONS)]))
+        ]);
     });
   }
 
@@ -422,6 +454,17 @@
     });
     tbl.appendChild(tb);
     const host = $("#m10-table"); host.innerHTML = ""; host.appendChild(tbl);
+
+    renderToolbar("10", "Projections " + metier, "Projections_" + _slug(metier),
+      () => global.AGL.prompts.projections(sub, metier),
+      () => [
+        _tableSection(metier + " — projections 3 scénarios",
+          ["Scénario", "Probabilité", "Année", "Volume", "CAGR appliqué"],
+          sub.map((r) => [r.SCENARIO,
+            (U.toNumber(r.PROBABILITE) * 100).toFixed(0) + " %",
+            r.ANNEE, U.formatNumber(U.toNumber(r.VOLUME)),
+            r.CAGR_APPLIQUE !== "" && r.CAGR_APPLIQUE != null ? (U.toNumber(r.CAGR_APPLIQUE) * 100).toFixed(1) + " %" : "—"]))
+      ]);
   }
 
   /* ====================================================================== */
@@ -442,15 +485,28 @@
   function drawConcurrentielle(rows, year) {
     const sub = rows.filter((r) => +r.ANNEE === year);
     const points = sub.map((r) => ({
-      x: U.toNumber(r.PDM) * 100,                  // % PDM
+      x: U.toNumber(r.PDM) * 100,
       y: r.CAGR_MARCHE != null && r.CAGR_MARCHE !== "" ? U.toNumber(r.CAGR_MARCHE) * 100 : 0,
-      r: U.toNumber(r.VOLUME_MARCHE),              // taille = volume marché
+      r: U.toNumber(r.VOLUME_MARCHE),
       label: r.METIER
     }));
-    global.AGL.charts.bubble($("#m13-chart"), points, {
-      xLabel: "PDM AGL (%)",
-      yLabel: "CAGR marché (%)"
-    });
+    global.AGL.charts.bubble($("#m13-chart"), points, { xLabel: "PDM AGL (%)", yLabel: "CAGR marché (%)" });
+
+    const pdmShape = sub.map((r) => ({
+      metier: r.METIER, pdm: U.toNumber(r.PDM),
+      volume_agl: U.toNumber(r.VOLUME_AGL), volume_marche: U.toNumber(r.VOLUME_MARCHE),
+      cagr_agl: r.CAGR_AGL != null && r.CAGR_AGL !== "" ? U.toNumber(r.CAGR_AGL) : null,
+      cagr_marche: r.CAGR_MARCHE != null && r.CAGR_MARCHE !== "" ? U.toNumber(r.CAGR_MARCHE) : null
+    }));
+    renderToolbar("13", "Analyse Concurrentielle " + year, "Concurrentielle_" + year,
+      () => global.AGL.prompts.position(pdmShape, year),
+      () => [
+        _tableSection("Positionnement AGL " + year + " — par métier",
+          ["Métier", "Vol. AGL", "Vol. Marché", "PDM", "CAGR Marché"],
+          pdmShape.map((r) => [r.metier, U.formatNumber(r.volume_agl), U.formatNumber(r.volume_marche),
+            (r.pdm * 100).toFixed(1) + " %",
+            r.cagr_marche != null ? (r.cagr_marche * 100).toFixed(1) + " %" : "—"]))
+      ]);
   }
 
   /* ====================================================================== */
@@ -529,14 +585,9 @@
       "</div>" +
       "<div class='section' style='margin-top:12px;background:#f8fafc;border-color:var(--primary)'>" +
       "<strong>Recommandation :</strong> " + c.recommandation + "</div>";
-    // Brancher les boutons d'export.
-    const sections = _ficheSections(c);
-    const title = "Fiche client · " + (c.nom || "");
-    _bindAct("m11-claude", () => global.AGL.prompts.copyToClipboard(global.AGL.prompts.clientFiche(c))
-      .then(() => alert("Prompt Claude copié")));
-    _bindAct("m11-word",   () => global.AGL.exports.exportWord("Fiche_" + _slug(c.nom) + ".docx", title, sections));
-    _bindAct("m11-ppt",    () => global.AGL.exports.exportPPT("Fiche_" + _slug(c.nom) + ".pptx", title, sections));
-    _bindAct("m11-html",   () => global.AGL.exports.exportHTML("Fiche_" + _slug(c.nom) + ".html", title, sections));
+    renderToolbar("11", "Fiche client · " + (c.nom || ""), "Fiche_" + _slug(c.nom),
+      () => global.AGL.prompts.clientFiche(c),
+      () => _ficheSections(c));
   }
   function _ficheCard(label, value) {
     return "<div style='border:1px solid var(--border);border-radius:6px;padding:8px'>" +
@@ -567,6 +618,45 @@
   function _slug(s) { return (s || "client").normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^A-Za-z0-9]+/g, "_").slice(0, 40); }
   function _bindAct(id, fn) {
     U.$$('[data-act="' + id + '"]').forEach((b) => b.onclick = (e) => { e.preventDefault(); fn(); });
+  }
+
+  /* ----- Toolbar standard (Claude prompt / Word / PPT / HTML) -----
+   * Place 4 boutons dans <div class="toolbar" data-toolbar="XX">.
+   * promptFn() → string ; sectionsFn() → [{heading,text/bullets/table}].
+   * --------------------------------------------------------------------- */
+  function renderToolbar(panelId, title, fileBase, promptFn, sectionsFn) {
+    const host = U.$('[data-toolbar="' + panelId + '"]');
+    if (!host) return;
+    host.innerHTML = "";
+    const mk = (txt, fn) => { const b = el("button", { text: txt }); b.onclick = (e) => { e.preventDefault(); fn(); }; return b; };
+    if (promptFn) host.appendChild(mk("📋 Copier prompt Claude", () => {
+      Promise.resolve(promptFn()).then((txt) =>
+        global.AGL.prompts.copyToClipboard(txt).then(() => _toast("Prompt Claude copié")));
+    }));
+    host.appendChild(el("span", { class: "sep" }));
+    host.appendChild(mk("📄 Word", () => {
+      Promise.resolve(sectionsFn()).then((s) => global.AGL.exports.exportWord(fileBase + ".docx", title, s));
+    }));
+    host.appendChild(mk("📊 PPT", () => {
+      Promise.resolve(sectionsFn()).then((s) => global.AGL.exports.exportPPT(fileBase + ".pptx", title, s));
+    }));
+    host.appendChild(mk("🖨️ HTML", () => {
+      Promise.resolve(sectionsFn()).then((s) => global.AGL.exports.exportHTML(fileBase + ".html", title, s));
+    }));
+  }
+  function _toast(msg) {
+    const t = el("div", { text: msg, style:
+      "position:fixed;bottom:20px;right:20px;background:#16a34a;color:#fff;padding:10px 16px;border-radius:6px;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,.15)" });
+    document.body.appendChild(t);
+    setTimeout(() => t.remove(), 2200);
+  }
+
+  /* ----- Builders de sections génériques (tables) ----- */
+  function _tableSection(heading, headers, rows, text) {
+    const sec = { heading: heading };
+    if (text) sec.text = text;
+    sec.table = { headers: headers, rows: rows };
+    return sec;
   }
 
   /* ====================================================================== */
@@ -610,13 +700,9 @@
       }
       host.innerHTML = html;
 
-      const sections = global.AGL.exports.buildExecutiveSections(snap);
-      const title = "Note COMEX — Synthèse Executive AGL CIV " + (snap.derniere_annee || "");
-      _bindAct("m12-claude", () => global.AGL.prompts.copyToClipboard(global.AGL.prompts.executive(snap))
-        .then(() => alert("Prompt Claude copié")));
-      _bindAct("m12-word",   () => global.AGL.exports.exportWord("Note_COMEX.docx", title, sections));
-      _bindAct("m12-ppt",    () => global.AGL.exports.exportPPT("Note_COMEX.pptx", title, sections));
-      _bindAct("m12-html",   () => global.AGL.exports.exportHTML("Note_COMEX.html", title, sections));
+      renderToolbar("12", "Note COMEX — Synthèse Executive AGL CIV " + (snap.derniere_annee || ""), "Note_COMEX",
+        () => global.AGL.prompts.executive(snap),
+        () => global.AGL.exports.buildExecutiveSections(snap));
     });
   }
 
@@ -674,6 +760,21 @@
       });
       tbl3.appendChild(tb3);
       $("#m14-ltv").innerHTML = ""; $("#m14-ltv").appendChild(tbl3);
+
+      const retSections = [
+        _tableSection("Rétention par cohorte",
+          ["Cohorte", "Taille"].concat(years.map(String)),
+          res.retention.map((r) => [r.cohorte, r.taille_initiale]
+            .concat(years.map((y) => r["r" + y] == null ? "" : (r["r" + y] * 100).toFixed(0) + " %")))),
+        _tableSection("Churn année par année",
+          ["Année", "Base N-1", "Base N", "Perdus", "Gagnés", "Churn"],
+          res.churn.map((r) => [r.annee, r.base_n1, r.base_n, r.perdus, r.gagnes, (r.churn * 100).toFixed(1) + " %"])),
+        _tableSection("Top 20 LTV (volume cumulé)",
+          ["#", "Client", "LTV volume", "Années actives"],
+          res.ltv.slice(0, 20).map((r, i) => [i + 1, r.client, U.formatNumber(r.ltv_volume), r.annees_actives]))
+      ];
+      renderToolbar("14", "Cohortes & Rétention", "Cohortes_Retention",
+        null, () => retSections);
     });
   }
 
