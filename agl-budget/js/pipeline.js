@@ -22,6 +22,7 @@
     MATCH_CRM_STAT:{ match: /match_crm_stat\.csv$/i,       label: "Flux 2 — matches CRM × STATCOM" },
     PROJECTIONS:   { match: /projections\.csv$/i,          label: "Projections 2026-2030" },
     WHITESPACES:   { match: /whitespaces\.csv$/i,          label: "White spaces" },
+    PIPELINE_CRM:  { match: /opportunites.*\.(xlsx|csv)$/i, label: "Pipeline CRM — opportunités" },
   };
 
   // Cache mémoire des tables désérialisées.
