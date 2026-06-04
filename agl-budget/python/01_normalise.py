@@ -119,6 +119,41 @@ def normalise(name: str):
     return cleaned, base
 
 
+# --- Aliases manuels (cf. aliases.json) -------------------------------------
+import json as _json
+_ALIASES_CACHE = None
+
+def load_aliases(path=None):
+    """Charge aliases.json (singleton). Format : {source: {alias: canonical}}."""
+    global _ALIASES_CACHE
+    if _ALIASES_CACHE is not None:
+        return _ALIASES_CACHE
+    p = Path(path) if path else Path(__file__).parent / "aliases.json"
+    if not p.exists():
+        _ALIASES_CACHE = {}
+        return _ALIASES_CACHE
+    with open(p, encoding="utf-8") as f:
+        data = _json.load(f)
+    # On garde seulement les sources (clés sans underscore au début).
+    _ALIASES_CACHE = {k: v for k, v in data.items() if not k.startswith("_") and isinstance(v, dict)}
+    return _ALIASES_CACHE
+
+
+def apply_alias(name, source):
+    """Si name appartient à la table d'alias pour `source` (CRM/IRIS/STATCOM/RUBRIKS),
+    retourne le nom canonique. Sinon retourne name inchangé.
+    Comparaison sur la version trimmed + uppercased (insensible à la casse).
+    """
+    if not name: return name
+    table = load_aliases().get(source, {})
+    if not table: return name
+    key = str(name).strip().upper()
+    for alias, canonical in table.items():
+        if alias.strip().upper() == key:
+            return canonical
+    return name
+
+
 def load_table(path: Path) -> "pd.DataFrame":
     if path.suffix.lower() in (".xlsx", ".xls"):
         return pd.read_excel(path, dtype=str)

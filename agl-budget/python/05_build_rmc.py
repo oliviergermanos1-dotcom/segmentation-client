@@ -103,13 +103,19 @@ def main(argv=None) -> int:
 
     # 5. RUBRIKS (enrichissement secteur, priorité 2 §3 — uniquement si CRM absent).
     if args.rubriks:
+        # Import paresseux de la normalisation pour appliquer les aliases manuels.
+        import importlib.util as _iu
+        _spec = _iu.spec_from_file_location("norm", Path(__file__).parent / "01_normalise.py")
+        norm = _iu.module_from_spec(_spec); _spec.loader.exec_module(norm)
+
         ru = _load(args.rubriks)
         ru_nom = config.resolve_column(ru.columns, config.RUBRIKS["nom"])
         ru_sec = config.resolve_column(ru.columns, config.RUBRIKS["secteur"])
         if ru_nom and ru_sec:
-            # Match simple par nom canonique upper-stripped (approximation rapide).
+            # Aliases RUBRIKS → puis upper/strip pour la clé.
+            ru_aliased = ru[ru_nom].fillna("").map(lambda n: norm.apply_alias(n, "RUBRIKS"))
             key = rmc["NOM_CANONIQUE"].fillna("").str.upper().str.strip()
-            ru_key = ru[ru_nom].fillna("").str.upper().str.strip()
+            ru_key = ru_aliased.str.upper().str.strip()
             ru_lookup = dict(zip(ru_key, ru[ru_sec].fillna("")))
             for i, k in key.items():
                 if rmc.at[i, "LOCKED"]:

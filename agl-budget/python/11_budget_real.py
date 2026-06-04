@@ -91,7 +91,10 @@ def main(argv=None) -> int:
     if not ru_nom or not ru_cap:
         sys.exit("ERREUR : colonnes nom/cap_pfa RUBRIKS manquantes.")
 
-    res = ru[ru_nom].fillna("").map(norm.normalise)
+    # Applique les aliases manuels RUBRIKS (cf. aliases.json) AVANT normalisation,
+    # pour rattraper les acronymes (ex: "SIR" → "Société Ivoirienne de Raffinage").
+    ru_nom_aliased = ru[ru_nom].fillna("").map(lambda n: norm.apply_alias(n, "RUBRIKS"))
+    res = ru_nom_aliased.map(norm.normalise)
     ru["NOM_BASE"]      = [r[1] for r in res]
     ru["_cap_pfa"]      = _num(ru[ru_cap])
     ru["_secteur"]      = ru[ru_sec] if ru_sec else ""

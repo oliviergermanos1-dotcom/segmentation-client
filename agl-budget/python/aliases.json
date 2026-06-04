@@ -1,0 +1,9 @@
+{
+  "_doc": "Aliases manuels pour corriger les cas où le matching automatique échoue (acronymes, raisons sociales très divergentes, etc.). Édité à la main par la Direction Stratégie. Format : alias source → nom canonique tel que reconnu par le RMC. Le matching cherchera ce nom canonique normalisé via Cleanco/OHADA.",
+  "_exemples": "Ajouter une ligne quand un client n'est pas reconnu dans le RMC (ex: 'SIR' côté RUBRIKS mais 'Société Ivoirienne de Raffinage' côté CRM).",
+  "RUBRIKS": {
+    "SIR": "Société Ivoirienne de Raffinage"
+  },
+  "STATCOM": {},
+  "IRIS": {}
+}
