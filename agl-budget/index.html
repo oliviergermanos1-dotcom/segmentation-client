@@ -184,6 +184,74 @@
     </div>
   </section>
 
+  <!-- 06 — Segmentation BCG -->
+  <section class="panel" data-panel="06">
+    <div class="section">
+      <h2>06 · Segmentation BCG — matrice 9 cases</h2>
+      <p class="muted">x = PDM client dans son métier · y = CAGR volume client 3 ans · taille = volume dernier exercice. Seuils PDM 5 %/15 %, CAGR 0 %/10 %.</p>
+      <div id="m06-placeholder" class="placeholder">Charger volume_client.csv et marche_total.csv dans l'onglet 01.</div>
+      <div id="m06-content" style="display:none">
+        <canvas id="m06-chart" style="height:380px"></canvas>
+        <h3>Top 30 clients par volume</h3>
+        <div id="m06-table"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 11 — Préconisations Client -->
+  <section class="panel" data-panel="11">
+    <div class="section">
+      <h2>11 · Préconisations Client — fiches stratégiques</h2>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+        <input id="m11-search" placeholder="Rechercher un client…" style="flex:1;padding:6px;border:1px solid var(--border);border-radius:4px">
+        <select id="m11-client" style="flex:2"></select>
+      </div>
+      <div id="m11-placeholder" class="placeholder">Charger RMC.xlsx et volume_client.csv dans l'onglet 01.</div>
+      <div id="m11-content" style="display:none">
+        <div id="m11-fiche"></div>
+        <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+          <button data-act="m11-claude">📋 Copier prompt Claude</button>
+          <button data-act="m11-word">📄 Export Word</button>
+          <button data-act="m11-ppt">📊 Export PPT</button>
+          <button data-act="m11-html">🖨️ Export HTML (PDF)</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 12 — Synthèse Executive -->
+  <section class="panel" data-panel="12">
+    <div class="section">
+      <h2>12 · Synthèse Executive — note COMEX (format SCR)</h2>
+      <div id="m12-placeholder" class="placeholder">Charger les sorties pipeline (RMC, pdm, projections, whitespaces) dans l'onglet 01.</div>
+      <div id="m12-content" style="display:none">
+        <div id="m12-snap"></div>
+        <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+          <button data-act="m12-claude">📋 Copier prompt Claude (note COMEX)</button>
+          <button data-act="m12-word">📄 Export Word</button>
+          <button data-act="m12-ppt">📊 Export PPT</button>
+          <button data-act="m12-html">🖨️ Export HTML (PDF)</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 14 ★ Cohortes & Rétention -->
+  <section class="panel" data-panel="14">
+    <div class="section">
+      <h2>14 ★ Cohortes & Rétention — clients 3 ans · LTV · churn</h2>
+      <div id="m14-placeholder" class="placeholder">Charger volume_client.csv dans l'onglet 01.</div>
+      <div id="m14-content" style="display:none">
+        <h3>Rétention par cohorte</h3>
+        <div id="m14-retention"></div>
+        <h3>Churn année par année</h3>
+        <div id="m14-churn"></div>
+        <h3>Top 20 clients par LTV (volume cumulé)</h3>
+        <div id="m14-ltv"></div>
+      </div>
+    </div>
+  </section>
+
   <!-- 04 — Budget PFA vs Réel -->
   <section class="panel" data-panel="04">
     <div class="section">
@@ -219,6 +287,9 @@
 <script src="js/charts.js"></script>
 <script src="js/loader.js"></script>
 <script src="js/pipeline.js"></script>
+<script src="js/analyses.js"></script>
+<script src="js/prompt.js"></script>
+<script src="js/exports.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>
