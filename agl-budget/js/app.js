@@ -10,12 +10,8 @@
   const U = global.AGL.utils, loader = global.AGL.loader, store = global.AGL.store;
   const { $, el } = U;
 
-  // Messages explicites par onglet non encore fonctionnel — précise le blocage.
-  const STUB_MSG = {
-    "05": "<strong>05 · Pipeline CRM</strong> — bloqué : nécessite la colonne 'pipeline' / opportunités du CRM (à confirmer côté utilisateur). Une fois le tableau spécifique fourni, l'onglet sera branché.",
-    "08": "<strong>08 · Carte PND 2026-2030</strong> — bloqué : nécessite l'extraction PND_2026_2030.pdf (projets + coordonnées GPS). Script Python d'extraction à livrer une fois le PDF disponible.",
-    "09": "<strong>09 · Top 20 Projets PND</strong> — bloqué : même blocage que 08 (PND PDF). Sera fonctionnel dès que les projets seront extraits."
-  };
+  // Messages restants pour onglets non branchés (aucun pour l'instant).
+  const STUB_MSG = {};
 
   // Définition des 14 onglets (§1) + onglet Macro transverse.
   const TABS = [
@@ -64,8 +60,11 @@
     if (id === "02") renderMarketTab();
     else if (id === "03") renderPositionTab();
     else if (id === "04") renderBudgetTab();
+    else if (id === "05") renderPipelineCRMTab();
     else if (id === "06") renderBCGTab();
     else if (id === "07") renderWhiteSpacesTab();
+    else if (id === "08") renderPNDMapTab();
+    else if (id === "09") renderPNDTopTab();
     else if (id === "10") renderProjectionsTab();
     else if (id === "11") renderPreconisationsTab();
     else if (id === "12") renderExecutiveTab();
@@ -776,6 +775,231 @@
       renderToolbar("14", "Cohortes & Rétention", "Cohortes_Retention",
         null, () => retSections);
     });
+  }
+
+  /* ====================================================================== */
+  /*  Onglet 05 — Pipeline CRM (opportunites.xlsx)                            */
+  /* ====================================================================== */
+  function renderPipelineCRMTab() {
+    global.AGL.pipeline.get("PIPELINE_CRM").then((rows) => {
+      if (!rows || !rows.length) { $("#m05-placeholder").style.display = ""; $("#m05-content").style.display = "none"; return; }
+      $("#m05-placeholder").style.display = "none";
+      $("#m05-content").style.display = "";
+      const C = {
+        cap:   "CAP Potentiel Global (€)",
+        proba: "Probabilité de succès",
+        stat:  "Statut",
+        sst:   "Sous-statut",
+        type:  "Type",
+        vert:  "Verticale (Compte) (Compte)",
+        compte:"Compte",
+        nom:   "Nom de l'opportunité",
+        proprio: "Propriétaire",
+      };
+      const num = (v) => U.toNumber(v);
+      const pct = (v) => {
+        if (v == null) return 0;
+        const s = String(v).replace("%", "").replace(",", ".").trim();
+        const n = parseFloat(s);
+        return isNaN(n) ? 0 : (n > 1 ? n / 100 : n);
+      };
+      const capTotal = rows.reduce((a, r) => a + num(r[C.cap]), 0);
+      const capPond  = rows.reduce((a, r) => a + num(r[C.cap]) * pct(r[C.proba]), 0);
+      const nbOuvert = rows.filter((r) => /ouvert/i.test(r[C.stat] || "")).length;
+      const nbGagne  = rows.filter((r) => /gagn/i.test(r[C.sst] || "")).length;
+      const nbPerdu  = rows.filter((r) => /perdu|annul/i.test((r[C.sst] || "") + (r[C.stat] || ""))).length;
+      const winRate  = (nbGagne + nbPerdu) ? nbGagne / (nbGagne + nbPerdu) : 0;
+
+      const kpi = (l, v) => "<div style='border:1px solid var(--border);border-radius:6px;padding:10px'>" +
+        "<div class='muted' style='font-size:11px;text-transform:uppercase'>" + l + "</div>" +
+        "<div style='font-size:18px'><strong>" + v + "</strong></div></div>";
+      $("#m05-kpis").innerHTML =
+        kpi("Opportunités", U.formatNumber(rows.length)) +
+        kpi("CAP potentiel total", new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 0 }).format(capTotal) + " €") +
+        kpi("CAP pondéré (× proba)", new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 0 }).format(capPond) + " €") +
+        kpi("Ouvertes", U.formatNumber(nbOuvert)) +
+        kpi("Win rate (clôturées)", (winRate * 100).toFixed(1) + " %");
+
+      // Funnel par sous-statut
+      const funnel = {};
+      rows.forEach((r) => { const k = r[C.sst] || "?"; funnel[k] = (funnel[k] || 0) + 1; });
+      const funnelData = Object.keys(funnel).map((k) => ({ label: k, value: funnel[k] }))
+                          .sort((a, b) => b.value - a.value);
+      global.AGL.charts.bar($("#m05-funnel"), funnelData, { title: "Nb opportunités par sous-statut" });
+
+      // Verticale
+      const byVert = {};
+      rows.forEach((r) => { const k = r[C.vert] || "?"; byVert[k] = (byVert[k] || 0) + num(r[C.cap]); });
+      const vertData = Object.keys(byVert).map((k) => ({ label: k.slice(0, 14), value: byVert[k] }))
+                        .sort((a, b) => b.value - a.value).slice(0, 8);
+      global.AGL.charts.bar($("#m05-vert"), vertData, { title: "CAP potentiel par verticale (top 8) — €" });
+
+      // Top 20 opportunités
+      const top = rows.slice().sort((a, b) => num(b[C.cap]) - num(a[C.cap])).slice(0, 20);
+      const tbl = el("table");
+      tbl.innerHTML = "<thead><tr><th>Compte</th><th>Verticale</th><th>Opportunité</th>" +
+        "<th>CAP €</th><th>Proba</th><th>Sous-statut</th><th>Type</th><th>Propriétaire</th></tr></thead>";
+      const tb = el("tbody");
+      top.forEach((r) => {
+        const tr = el("tr");
+        tr.innerHTML = "<td>" + (r[C.compte] || "") + "</td><td>" + (r[C.vert] || "") + "</td>" +
+          "<td>" + (r[C.nom] || "") + "</td>" +
+          "<td>" + U.formatNumber(num(r[C.cap])) + "</td>" +
+          "<td>" + (pct(r[C.proba]) * 100).toFixed(0) + " %</td>" +
+          "<td><span class='badge'>" + (r[C.sst] || "") + "</span></td>" +
+          "<td>" + (r[C.type] || "") + "</td>" +
+          "<td>" + (r[C.proprio] || "") + "</td>";
+        tb.appendChild(tr);
+      });
+      tbl.appendChild(tb);
+      $("#m05-top").innerHTML = ""; $("#m05-top").appendChild(tbl);
+
+      renderToolbar("05", "Pipeline CRM — analyse", "Pipeline_CRM", null, () => [
+        _tableSection("KPIs pipeline",
+          ["Indicateur", "Valeur"],
+          [["Opportunités", U.formatNumber(rows.length)],
+           ["CAP potentiel total (€)", U.formatNumber(capTotal)],
+           ["CAP pondéré (× proba) (€)", U.formatNumber(capPond)],
+           ["Win rate (clôturées)", (winRate * 100).toFixed(1) + " %"]]),
+        _tableSection("Funnel par sous-statut",
+          ["Sous-statut", "Nb"], funnelData.map((f) => [f.label, f.value])),
+        _tableSection("Mix par verticale — CAP €",
+          ["Verticale", "CAP €"], vertData.map((v) => [v.label, U.formatNumber(v.value)])),
+        _tableSection("Top 20 opportunités",
+          ["Compte", "Verticale", "Opportunité", "CAP €", "Proba", "Sous-statut"],
+          top.map((r) => [r[C.compte], r[C.vert], r[C.nom], U.formatNumber(num(r[C.cap])),
+            (pct(r[C.proba]) * 100).toFixed(0) + " %", r[C.sst]]))
+      ]);
+    });
+  }
+
+  /* ====================================================================== */
+  /*  Onglet 08 — PND vue par axe & sectoriel (faute de GPS, treemap/donut)   */
+  /* ====================================================================== */
+  function renderPNDMapTab() {
+    Promise.all([global.AGL.pipeline.get("PND_AXES"), global.AGL.pipeline.get("PND_SECTORIELS")])
+      .then(([axes, sect]) => {
+      if (!axes) { $("#m08-placeholder").style.display = ""; $("#m08-content").style.display = "none"; return; }
+      $("#m08-placeholder").style.display = "none";
+      $("#m08-content").style.display = "";
+
+      const data = axes.map((r) => ({ label: "Axe " + r.axe, value: U.toNumber(r.cout_total) }));
+      global.AGL.charts.donut($("#m08-donut"), data, { center: "PND" });
+
+      const tblA = el("table");
+      tblA.innerHTML = "<thead><tr><th>Axe</th><th>Libellé</th><th>Nb actions</th><th>Coût 5 ans (M FCFA)</th><th>% total</th><th>Actions taggées AGL</th></tr></thead>";
+      const total = axes.reduce((a, r) => a + U.toNumber(r.cout_total), 0) || 1;
+      const tbA = el("tbody");
+      axes.sort((a, b) => U.toNumber(b.cout_total) - U.toNumber(a.cout_total)).forEach((r) => {
+        const tr = el("tr");
+        tr.innerHTML = "<td><strong>" + r.axe + "</strong></td><td>" + r.axe_libelle + "</td>" +
+          "<td>" + U.formatNumber(r.nb_actions) + "</td>" +
+          "<td>" + U.formatNumber(U.toNumber(r.cout_total)) + "</td>" +
+          "<td>" + ((U.toNumber(r.cout_total) / total) * 100).toFixed(1) + " %</td>" +
+          "<td>" + U.formatNumber(r.nb_agl) + "</td>";
+        tbA.appendChild(tr);
+      });
+      tblA.appendChild(tbA);
+      $("#m08-axes").innerHTML = ""; $("#m08-axes").appendChild(tblA);
+
+      if (sect && sect.length) {
+        const tblS = el("table");
+        tblS.innerHTML = "<thead><tr><th>Axe</th><th>Résultat sectoriel</th><th>Nb actions</th><th>Coût 5 ans</th><th>AGL</th></tr></thead>";
+        const tbS = el("tbody");
+        sect.slice().sort((a, b) => U.toNumber(b.cout_total) - U.toNumber(a.cout_total)).slice(0, 30).forEach((r) => {
+          const tr = el("tr");
+          tr.innerHTML = "<td>" + r.axe + "</td><td>" + r.code_sectoriel + "</td>" +
+            "<td>" + U.formatNumber(r.nb_actions) + "</td>" +
+            "<td>" + U.formatNumber(U.toNumber(r.cout_total)) + "</td>" +
+            "<td>" + U.formatNumber(r.nb_agl) + "</td>";
+          tbS.appendChild(tr);
+        });
+        tblS.appendChild(tbS);
+        $("#m08-sect").innerHTML = ""; $("#m08-sect").appendChild(tblS);
+      }
+
+      renderToolbar("08", "PND 2026-2030 — vue d'ensemble", "PND_Vue_Ensemble", null, () => [
+        _tableSection("Coût PND par axe (M FCFA, 5 ans)",
+          ["Axe", "Libellé", "Nb actions", "Coût 5 ans", "% total", "AGL"],
+          axes.map((r) => [r.axe, r.axe_libelle, U.formatNumber(r.nb_actions),
+            U.formatNumber(U.toNumber(r.cout_total)),
+            ((U.toNumber(r.cout_total) / total) * 100).toFixed(1) + " %",
+            U.formatNumber(r.nb_agl)]))
+      ]);
+    });
+  }
+
+  /* ====================================================================== */
+  /*  Onglet 09 — Top Projets PND (filtres axe + AGL + recherche)             */
+  /* ====================================================================== */
+  let _pndRowsCache = null;
+  function renderPNDTopTab() {
+    global.AGL.pipeline.get("PND_PROJETS").then((rows) => {
+      if (!rows || !rows.length) { $("#m09-placeholder").style.display = ""; $("#m09-content").style.display = "none"; return; }
+      $("#m09-placeholder").style.display = "none";
+      $("#m09-content").style.display = "";
+      _pndRowsCache = rows.filter((r) => r.niveau === "Action");
+      const axes = Array.from(new Set(_pndRowsCache.map((r) => +r.axe))).sort();
+      const sel = $("#m09-axe");
+      sel.innerHTML = "<option value=''>Tous</option>";
+      axes.forEach((a) => sel.appendChild(el("option", { value: a, text: "Axe " + a })));
+      ["#m09-axe", "#m09-agl", "#m09-search", "#m09-top"].forEach((id) => {
+        const e = $(id);
+        const evt = e.tagName === "INPUT" && e.type === "text" ? "input" : "change";
+        e.oninput = e.onchange = U.debounce(drawPND, 120);
+      });
+      drawPND();
+    });
+  }
+  function drawPND() {
+    if (!_pndRowsCache) return;
+    const axe = $("#m09-axe").value;
+    const aglOnly = $("#m09-agl").checked;
+    const q = ($("#m09-search").value || "").toUpperCase();
+    const topN = parseInt($("#m09-top").value, 10) || 50;
+    let rows = _pndRowsCache.slice();
+    if (axe) rows = rows.filter((r) => +r.axe === +axe);
+    if (aglOnly) rows = rows.filter((r) => +r.pertinence_agl === 1);
+    if (q) rows = rows.filter((r) => (r.intitule || "").toUpperCase().indexOf(q) > -1);
+    rows.sort((a, b) => U.toNumber(b.cout_total) - U.toNumber(a.cout_total));
+    rows = rows.slice(0, topN);
+
+    const data = rows.slice(0, 15).map((r) => ({
+      label: (r.intitule || r.code || "?").slice(0, 22),
+      value: U.toNumber(r.cout_total)
+    }));
+    global.AGL.charts.bar($("#m09-chart"), data, { title: "Top 15 actions PND (coût 5 ans, M FCFA)" });
+
+    const tbl = el("table");
+    tbl.innerHTML = "<thead><tr><th>Axe</th><th>Code</th><th>Intitulé</th><th>Structure</th>" +
+      "<th>2026</th><th>2027</th><th>2028</th><th>2029</th><th>2030</th><th>Total</th><th>AGL</th></tr></thead>";
+    const tb = el("tbody");
+    rows.forEach((r) => {
+      const tr = el("tr");
+      tr.innerHTML = "<td>" + r.axe + "</td><td>" + r.code + "</td>" +
+        "<td>" + (r.intitule || "").slice(0, 80) + "</td>" +
+        "<td>" + (r.structure_responsable || "") + "</td>" +
+        "<td>" + U.formatNumber(U.toNumber(r.cout_2026)) + "</td>" +
+        "<td>" + U.formatNumber(U.toNumber(r.cout_2027)) + "</td>" +
+        "<td>" + U.formatNumber(U.toNumber(r.cout_2028)) + "</td>" +
+        "<td>" + U.formatNumber(U.toNumber(r.cout_2029)) + "</td>" +
+        "<td>" + U.formatNumber(U.toNumber(r.cout_2030)) + "</td>" +
+        "<td><strong>" + U.formatNumber(U.toNumber(r.cout_total)) + "</strong></td>" +
+        "<td>" + (+r.pertinence_agl ? "✓" : "") + "</td>";
+      tb.appendChild(tr);
+    });
+    tbl.appendChild(tb);
+    $("#m09-table").innerHTML = ""; $("#m09-table").appendChild(tbl);
+
+    renderToolbar("09", "Top Projets PND" + (axe ? " — Axe " + axe : "") + (aglOnly ? " — pertinence AGL" : ""),
+      "PND_Top_Projets",
+      null,
+      () => [
+        _tableSection("Top " + rows.length + " actions PND" + (axe ? " — Axe " + axe : ""),
+          ["Axe", "Code", "Intitulé", "Structure", "Coût total 5 ans (M FCFA)"],
+          rows.map((r) => [r.axe, r.code, r.intitule, r.structure_responsable,
+            U.formatNumber(U.toNumber(r.cout_total))]))
+      ]);
   }
 
   function init() {

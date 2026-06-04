@@ -193,6 +193,66 @@
     </div>
   </section>
 
+  <!-- 05 — Pipeline CRM -->
+  <section class="panel" data-panel="05">
+    <div class="section">
+      <h2>05 · Pipeline CRM — analyse des opportunités</h2>
+      <p class="muted">Charger <code>opportunites.xlsx</code> dans la zone "Charger les résultats du pipeline Python" de l'onglet 01.</p>
+      <div id="m05-placeholder" class="placeholder">En attente de opportunites.xlsx.</div>
+      <div id="m05-content" style="display:none">
+        <div id="m05-kpis" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-bottom:12px"></div>
+        <h3>Funnel par sous-statut</h3>
+        <canvas id="m05-funnel"></canvas>
+        <h3>Mix par verticale (secteur)</h3>
+        <canvas id="m05-vert"></canvas>
+        <h3>Top 20 opportunités par CAP potentiel</h3>
+        <div id="m05-top"></div>
+        <div class="toolbar" data-toolbar="05"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 08 — Cartographie PND (vue par axe & secteur faute de GPS) -->
+  <section class="panel" data-panel="08">
+    <div class="section">
+      <h2>08 · Cartographie PND 2026-2030 — vue par axe & résultat sectoriel</h2>
+      <p class="muted">Le PND Tome 3 ne donne pas de coordonnées GPS. On présente une vue treemap par axe et un détail par résultat sectoriel. Charger <code>axes_pnd.csv</code> + <code>sectoriels_pnd.csv</code> dans l'onglet 01.</p>
+      <div id="m08-placeholder" class="placeholder">En attente des sorties 10_extract_pnd.py.</div>
+      <div id="m08-content" style="display:none">
+        <h3>Mix budget PND par axe (% du total 2026-2030)</h3>
+        <canvas id="m08-donut" style="height:340px"></canvas>
+        <h3>Coût par axe</h3>
+        <div id="m08-axes"></div>
+        <h3>Top résultats sectoriels (X.YY)</h3>
+        <div id="m08-sect"></div>
+        <div class="toolbar" data-toolbar="08"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 09 — Top Projets PND -->
+  <section class="panel" data-panel="09">
+    <div class="section">
+      <h2>09 · Top Projets PND 2026-2030 — fiches détaillées</h2>
+      <p class="muted">1 480 actions du Tome 3. Filtres : axe + pertinence AGL (mots-clés logistique). Charger <code>projets_pnd.csv</code> dans l'onglet 01.</p>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
+        <label>Axe</label>
+        <select id="m09-axe"><option value="">Tous</option></select>
+        <label><input type="checkbox" id="m09-agl"> Pertinence AGL uniquement</label>
+        <input id="m09-search" placeholder="Mot-clé dans l'intitulé…" style="flex:1;min-width:200px;padding:6px;border:1px solid var(--border);border-radius:4px">
+        <label>Top N</label>
+        <select id="m09-top"><option>20</option><option selected>50</option><option>100</option><option>500</option></select>
+      </div>
+      <div id="m09-placeholder" class="placeholder">En attente de projets_pnd.csv.</div>
+      <div id="m09-content" style="display:none">
+        <canvas id="m09-chart"></canvas>
+        <h3>Détail</h3>
+        <div id="m09-table"></div>
+        <div class="toolbar" data-toolbar="09"></div>
+      </div>
+    </div>
+  </section>
+
   <!-- 06 — Segmentation BCG -->
   <section class="panel" data-panel="06">
     <div class="section">

@@ -23,6 +23,9 @@
     PROJECTIONS:   { match: /projections\.csv$/i,          label: "Projections 2026-2030" },
     WHITESPACES:   { match: /whitespaces\.csv$/i,          label: "White spaces" },
     PIPELINE_CRM:  { match: /opportunites.*\.(xlsx|csv)$/i, label: "Pipeline CRM — opportunités" },
+    PND_PROJETS:   { match: /projets_pnd\.csv$/i,           label: "PND — projets (Actions/Produits/Effets)" },
+    PND_AXES:      { match: /axes_pnd\.csv$/i,              label: "PND — agrégat par axe" },
+    PND_SECTORIELS:{ match: /sectoriels_pnd\.csv$/i,        label: "PND — agrégat par résultat sectoriel" },
   };
 
   // Cache mémoire des tables désérialisées.
