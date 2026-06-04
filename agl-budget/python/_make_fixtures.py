@@ -30,19 +30,35 @@ IRIS = pd.DataFrame([
     {"id": "I106", "client": "ORANGE CI",                     "cap": "780000000"},
 ])
 
-# STATCOM : 6 clients × variantes, plusieurs lignes par client, métiers variés.
+# STATCOM : 3 années (2023, 2024, 2025), 6 clients × variantes, métiers variés.
 STATCOM = pd.DataFrame([
-    # Imports → colonne destinataires renseignée
-    {"metier": "Import Maritime", "annee": 2024, "destinataires": "NESTLE COTE D'IVOIRE",     "chargeurs": "",                       "marchandise": "Cacao", "volume_teu": "120"},
-    {"metier": "Import Maritime", "annee": 2024, "destinataires": "CARGILL COTE IVOIRE",      "chargeurs": "",                       "marchandise": "Soja",  "volume_teu": "180"},
-    {"metier": "Import Aérien",   "annee": 2024, "destinataires": "ORANGE COTE D'IVOIRE SA",  "chargeurs": "",                       "marchandise": "Equipement réseau", "volume_kg": "4200"},
-    {"metier": "Hinterland Import","annee": 2025,"destinataires": "ETS KOUASSI FRERES",       "chargeurs": "",                       "marchandise": "Matériaux BTP",     "volume_teu": "45"},
-    # Exports → colonne chargeurs renseignée
-    {"metier": "Export Maritime", "annee": 2024, "destinataires": "",                         "chargeurs": "SIFCA SA",               "marchandise": "Cacao", "volume_teu": "950"},
-    {"metier": "Export Maritime", "annee": 2025, "destinataires": "",                         "chargeurs": "CIE FRUITIERE OUEST CI", "marchandise": "Banane","volume_teu": "780"},
-    {"metier": "Export Aérien",   "annee": 2024, "destinataires": "",                         "chargeurs": "SIFCA",                  "marchandise": "Anacarde","volume_kg": "12000"},
-    # Client inconnu du CRM (white space attendu)
-    {"metier": "Import Maritime", "annee": 2024, "destinataires": "OLAM IVOIRE",              "chargeurs": "",                       "marchandise": "Riz",   "volume_teu": "300"},
+    # === 2023 ===
+    {"metier": "Import Maritime",  "annee": 2023, "destinataires": "NESTLE COTE D IVOIRE",     "chargeurs": "",                       "marchandise": "Cacao",             "volume_teu": "100", "volume_bulk": "0",  "volume_kg": "0"},
+    {"metier": "Import Maritime",  "annee": 2023, "destinataires": "CARGILL CI",               "chargeurs": "",                       "marchandise": "Soja",              "volume_teu": "150", "volume_bulk": "0",  "volume_kg": "0"},
+    {"metier": "Import Aérien",    "annee": 2023, "destinataires": "ORANGE COTE D'IVOIRE SA",  "chargeurs": "",                       "marchandise": "Equipement réseau", "volume_teu": "0",   "volume_bulk": "0",  "volume_kg": "3500"},
+    {"metier": "Hinterland Import","annee": 2023, "destinataires": "ETS KOUASSI FRERES",       "chargeurs": "",                       "marchandise": "Matériaux BTP",     "volume_teu": "30",  "volume_bulk": "0",  "volume_kg": "0"},
+    {"metier": "Export Maritime",  "annee": 2023, "destinataires": "",                         "chargeurs": "SIFCA SA",               "marchandise": "Cacao",             "volume_teu": "800", "volume_bulk": "0",  "volume_kg": "0"},
+    {"metier": "Export Maritime",  "annee": 2023, "destinataires": "",                         "chargeurs": "CIE FRUITIERE OUEST CI", "marchandise": "Banane",            "volume_teu": "650", "volume_bulk": "0",  "volume_kg": "0"},
+    {"metier": "Export Aérien",    "annee": 2023, "destinataires": "",                         "chargeurs": "SIFCA",                  "marchandise": "Anacarde",          "volume_teu": "0",   "volume_bulk": "0",  "volume_kg": "10000"},
+    {"metier": "Import Maritime",  "annee": 2023, "destinataires": "OLAM IVOIRE",              "chargeurs": "",                       "marchandise": "Riz",               "volume_teu": "250", "volume_bulk": "0",  "volume_kg": "0"},
+    # === 2024 ===
+    {"metier": "Import Maritime",  "annee": 2024, "destinataires": "NESTLE COTE D'IVOIRE",     "chargeurs": "",                       "marchandise": "Cacao",             "volume_teu": "120", "volume_bulk": "0",  "volume_kg": "0"},
+    {"metier": "Import Maritime",  "annee": 2024, "destinataires": "CARGILL COTE IVOIRE",      "chargeurs": "",                       "marchandise": "Soja",              "volume_teu": "180", "volume_bulk": "0",  "volume_kg": "0"},
+    {"metier": "Import Aérien",    "annee": 2024, "destinataires": "ORANGE COTE D'IVOIRE SA",  "chargeurs": "",                       "marchandise": "Equipement réseau", "volume_teu": "0",   "volume_bulk": "0",  "volume_kg": "4200"},
+    {"metier": "Hinterland Import","annee": 2024, "destinataires": "ETS KOUASSI FRERES",       "chargeurs": "",                       "marchandise": "Matériaux BTP",     "volume_teu": "40",  "volume_bulk": "0",  "volume_kg": "0"},
+    {"metier": "Export Maritime",  "annee": 2024, "destinataires": "",                         "chargeurs": "SIFCA SA",               "marchandise": "Cacao",             "volume_teu": "950", "volume_bulk": "0",  "volume_kg": "0"},
+    {"metier": "Export Maritime",  "annee": 2024, "destinataires": "",                         "chargeurs": "CIE FRUITIERE OUEST CI", "marchandise": "Banane",            "volume_teu": "700", "volume_bulk": "0",  "volume_kg": "0"},
+    {"metier": "Export Aérien",    "annee": 2024, "destinataires": "",                         "chargeurs": "SIFCA",                  "marchandise": "Anacarde",          "volume_teu": "0",   "volume_bulk": "0",  "volume_kg": "12000"},
+    {"metier": "Import Maritime",  "annee": 2024, "destinataires": "OLAM IVOIRE",              "chargeurs": "",                       "marchandise": "Riz",               "volume_teu": "300", "volume_bulk": "0",  "volume_kg": "0"},
+    # === 2025 ===
+    {"metier": "Import Maritime",  "annee": 2025, "destinataires": "NESTLE COTE D'IVOIRE",     "chargeurs": "",                       "marchandise": "Cacao",             "volume_teu": "135", "volume_bulk": "0",  "volume_kg": "0"},
+    {"metier": "Import Maritime",  "annee": 2025, "destinataires": "CARGILL COTE IVOIRE",      "chargeurs": "",                       "marchandise": "Soja",              "volume_teu": "220", "volume_bulk": "0",  "volume_kg": "0"},
+    {"metier": "Import Aérien",    "annee": 2025, "destinataires": "ORANGE COTE D'IVOIRE SA",  "chargeurs": "",                       "marchandise": "Equipement réseau", "volume_teu": "0",   "volume_bulk": "0",  "volume_kg": "5200"},
+    {"metier": "Hinterland Import","annee": 2025, "destinataires": "ETS KOUASSI FRERES",       "chargeurs": "",                       "marchandise": "Matériaux BTP",     "volume_teu": "45",  "volume_bulk": "0",  "volume_kg": "0"},
+    {"metier": "Export Maritime",  "annee": 2025, "destinataires": "",                         "chargeurs": "SIFCA SA",               "marchandise": "Cacao",             "volume_teu": "1100","volume_bulk": "0",  "volume_kg": "0"},
+    {"metier": "Export Maritime",  "annee": 2025, "destinataires": "",                         "chargeurs": "CIE FRUITIERE OUEST CI", "marchandise": "Banane",            "volume_teu": "780", "volume_bulk": "0",  "volume_kg": "0"},
+    {"metier": "Export Aérien",    "annee": 2025, "destinataires": "",                         "chargeurs": "SIFCA",                  "marchandise": "Anacarde",          "volume_teu": "0",   "volume_bulk": "0",  "volume_kg": "13500"},
+    {"metier": "Import Maritime",  "annee": 2025, "destinataires": "OLAM IVOIRE",              "chargeurs": "",                       "marchandise": "Riz",               "volume_teu": "320", "volume_bulk": "0",  "volume_kg": "0"},
 ])
 
 # RUBRIKS : enrichit le secteur de TOTAL (manquant côté CRM).

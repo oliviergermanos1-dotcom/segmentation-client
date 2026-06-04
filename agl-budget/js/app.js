@@ -51,6 +51,10 @@
   function activate(id) {
     U.$$(".tab").forEach((b) => b.classList.toggle("active", b.getAttribute("data-tab") === id));
     U.$$(".panel").forEach((p) => p.classList.toggle("active", p.getAttribute("data-panel") === id));
+    // Rendu paresseux des onglets analytiques (chaque activation rafraîchit).
+    if (id === "02") renderMarketTab();
+    else if (id === "03") renderPositionTab();
+    else if (id === "04") renderBudgetTab();
   }
 
   /* ----- Cartes d'upload des 6 bases ----- */
@@ -177,10 +181,151 @@
     });
   }
 
+  /* ====================================================================== */
+  /*  Import des artefacts du pipeline Python                                */
+  /* ====================================================================== */
+  function bindPipelineLoader() {
+    const input = $("#pipeline-input");
+    if (!input) return;
+    const pipe = global.AGL.pipeline;
+    input.addEventListener("change", () => {
+      const files = input.files;
+      if (!files || !files.length) return;
+      const status = $("#pipeline-status");
+      status.textContent = "Lecture…";
+      pipe.loadFiles(files, (frac, name, st) => {
+        status.textContent = "(" + Math.round(frac * 100) + " %) " + name + " → " + st;
+      }).then((res) => {
+        const ok = res.filter((r) => r.status === "ok").length;
+        const ign = res.filter((r) => r.status === "ignored").length;
+        const err = res.filter((r) => r.status === "error").length;
+        status.innerHTML = "<span class='ok'>" + ok + " chargé(s)</span>" +
+          (ign ? " · <span class='muted'>" + ign + " ignoré(s)</span>" : "") +
+          (err ? " · <span class='err'>" + err + " erreur(s)</span>" : "");
+        refreshPipelineLoaded();
+      });
+    });
+    refreshPipelineLoaded();
+  }
+  function refreshPipelineLoaded() {
+    const pipe = global.AGL.pipeline;
+    pipe.listLoaded().then((items) => {
+      const host = $("#pipeline-loaded");
+      if (!items.length) { host.innerHTML = ""; return; }
+      host.innerHTML = items.map((it) =>
+        "<span class='badge'>" + it.key + "</span> " + (it.value.name || "") +
+        " · " + U.formatNumber(it.value.rows.length) + " lignes"
+      ).join(" · ");
+    });
+  }
+
+  /* ====================================================================== */
+  /*  Onglet 02 — Marché Global STATCOM                                      */
+  /* ====================================================================== */
+  function fillYearSelect(selectId, years, defaultYear) {
+    const sel = $(selectId);
+    if (!sel) return;
+    const current = sel.value;
+    sel.innerHTML = "";
+    years.forEach((y) => sel.appendChild(el("option", { value: y, text: y })));
+    sel.value = current && years.indexOf(+current) > -1 ? current : (defaultYear || years[years.length - 1]);
+  }
+
+  function renderMarketTab() {
+    const pipe = global.AGL.pipeline;
+    pipe.availableYears().then((years) => {
+      if (!years.length) { $("#m02-placeholder").style.display = ""; $("#m02-content").style.display = "none"; return; }
+      $("#m02-placeholder").style.display = "none";
+      $("#m02-content").style.display = "";
+      fillYearSelect("#m02-year", years);
+      const sel = $("#m02-year");
+      sel.onchange = () => drawMarket(+sel.value);
+      drawMarket(+sel.value);
+    });
+  }
+  function drawMarket(year) {
+    const pipe = global.AGL.pipeline;
+    Promise.all([pipe.marketTotalsByMetier(year), pipe.marketByMetierYear()]).then(([byM, all]) => {
+      const sorted = byM.sort((a, b) => b.value - a.value);
+      global.AGL.charts.bar($("#m02-chart-mix"), sorted, { title: "Marché total STATCOM " + year + " — volume principal par métier" });
+      // Table — toutes années pour donner la vision 3 ans.
+      const tbl = el("table");
+      tbl.innerHTML = "<thead><tr><th>Métier</th><th>Année</th><th>Vol. TEU</th><th>Vol. Kg</th><th>Nb clients</th><th>Nb ops</th></tr></thead>";
+      const tb = el("tbody");
+      all.sort((a, b) => (a.METIER || "").localeCompare(b.METIER || "") || (+a.ANNEE) - (+b.ANNEE))
+         .forEach((r) => {
+        const tr = el("tr");
+        tr.innerHTML = "<td>" + (r.METIER || "") + "</td><td>" + r.ANNEE + "</td>" +
+          "<td>" + U.formatNumber(r.VOLUME_TEU) + "</td>" +
+          "<td>" + U.formatNumber(r.VOLUME_KG) + "</td>" +
+          "<td>" + U.formatNumber(r.NB_CLIENTS) + "</td>" +
+          "<td>" + U.formatNumber(r.NB_OPERATIONS) + "</td>";
+        tb.appendChild(tr);
+      });
+      tbl.appendChild(tb);
+      const host = $("#m02-table"); host.innerHTML = ""; host.appendChild(tbl);
+    });
+  }
+
+  /* ====================================================================== */
+  /*  Onglet 03 — Position AGL                                                */
+  /* ====================================================================== */
+  function renderPositionTab() {
+    const pipe = global.AGL.pipeline;
+    pipe.get("PDM").then((rows) => {
+      if (!rows || !rows.length) { $("#m03-placeholder").style.display = ""; $("#m03-content").style.display = "none"; return; }
+      $("#m03-placeholder").style.display = "none";
+      $("#m03-content").style.display = "";
+      const years = Array.from(new Set(rows.map((r) => +r.ANNEE))).sort();
+      fillYearSelect("#m03-year", years);
+      const sel = $("#m03-year");
+      sel.onchange = () => drawPosition(+sel.value);
+      drawPosition(+sel.value);
+    });
+  }
+  function drawPosition(year) {
+    global.AGL.pipeline.pdmByMetier(year).then((rows) => {
+      const data = rows.sort((a, b) => b.pdm - a.pdm).map((r) => ({ label: r.metier, value: r.pdm * 100 }));
+      global.AGL.charts.bar($("#m03-chart-pdm"), data, { title: "PDM AGL " + year + " (%)" });
+      const tbl = el("table");
+      tbl.innerHTML = "<thead><tr><th>Métier</th><th>Vol. AGL</th><th>Vol. Marché</th><th>PDM</th><th>CAGR AGL</th><th>CAGR Marché</th></tr></thead>";
+      const tb = el("tbody");
+      rows.forEach((r) => {
+        const tr = el("tr");
+        tr.innerHTML = "<td>" + r.metier + "</td>" +
+          "<td>" + U.formatNumber(r.volume_agl) + "</td>" +
+          "<td>" + U.formatNumber(r.volume_marche) + "</td>" +
+          "<td><strong>" + (r.pdm * 100).toFixed(1) + " %</strong></td>" +
+          "<td>" + (r.cagr_agl != null ? (r.cagr_agl * 100).toFixed(1) + " %" : "—") + "</td>" +
+          "<td>" + (r.cagr_marche != null ? (r.cagr_marche * 100).toFixed(1) + " %" : "—") + "</td>";
+        tb.appendChild(tr);
+      });
+      tbl.appendChild(tb);
+      const host = $("#m03-table"); host.innerHTML = ""; host.appendChild(tbl);
+    });
+  }
+
+  /* ====================================================================== */
+  /*  Onglet 04 — Budget PFA vs Réel                                          */
+  /* ====================================================================== */
+  function renderBudgetTab() {
+    Promise.all([store.get("sources", "RUBRIKS"), store.get("sources", "IRIS")]).then(([ru, ir]) => {
+      if (!ru || !ir) { $("#m04-placeholder").style.display = ""; $("#m04-content").style.display = "none"; return; }
+      // Sprint 1 ne persiste que les snapshots légers (sample). Pour le calcul complet,
+      // il faut re-charger les bases — message clair en attendant le pipeline 04.
+      $("#m04-placeholder").style.display = "";
+      $("#m04-content").style.display = "none";
+      $("#m04-placeholder").innerHTML =
+        "Onglet 04 — fonctionnel à brancher au Sprint 4 (jointure RUBRIKS × IRIS via RMC). " +
+        "RUBRIKS chargé (" + U.formatNumber(ru.rows) + " lignes), IRIS chargé (" + U.formatNumber(ir.rows) + " lignes).";
+    });
+  }
+
   function init() {
     buildTabs();
     buildSourceCards();
     buildMacro();
+    bindPipelineLoader();
     activate("01");
     const w = loader.memoryWarning();
     if (w) $("#mem-warn").textContent = "⚠️ " + w;

@@ -89,6 +89,63 @@
       <h3>État des sources (snapshots persistés)</h3>
       <div id="loaded-list" class="placeholder">—</div>
     </div>
+
+    <div class="section">
+      <h3>Charger les résultats du pipeline Python</h3>
+      <p class="muted">Sortie des scripts 05/06/07 (RMC.xlsx, marche_total.csv, volume_client.csv, metiers_3ans.csv, pdm.csv, pdm_clients.csv, match_*.csv). Glissez les fichiers — la détection est automatique d'après le nom.</p>
+      <input type="file" id="pipeline-input" multiple accept=".csv,.xlsx,.xls">
+      <div id="pipeline-status" class="muted" style="font-size:12px;margin-top:6px"></div>
+      <div id="pipeline-loaded" class="meta-bar"></div>
+    </div>
+  </section>
+
+  <!-- 02 — Marché Global STATCOM -->
+  <section class="panel" data-panel="02">
+    <div class="section">
+      <h2>02 · Marché Global STATCOM — Vision marché total CIV (3 ans)</h2>
+      <p class="muted">Données issues de l'agrégation Python (06_agreg_statcom.py). Choisir l'année pour rafraîchir.</p>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+        <label for="m02-year">Année</label>
+        <select id="m02-year"></select>
+      </div>
+      <div id="m02-placeholder" class="placeholder">Charger les sorties pipeline (RMC, marche_total.csv) dans l'onglet 01.</div>
+      <div id="m02-content" style="display:none">
+        <canvas id="m02-chart-mix"></canvas>
+        <h3>Marché total par métier × année</h3>
+        <div id="m02-table"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 03 — Position AGL -->
+  <section class="panel" data-panel="03">
+    <div class="section">
+      <h2>03 · Position AGL — PDM par métier (7 métiers STATCOM)</h2>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+        <label for="m03-year">Année</label>
+        <select id="m03-year"></select>
+      </div>
+      <div id="m03-placeholder" class="placeholder">Charger les sorties pipeline (pdm.csv) dans l'onglet 01.</div>
+      <div id="m03-content" style="display:none">
+        <canvas id="m03-chart-pdm"></canvas>
+        <h3>PDM AGL — détail par métier</h3>
+        <div id="m03-table"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 04 — Budget PFA vs Réel -->
+  <section class="panel" data-panel="04">
+    <div class="section">
+      <h2>04 · Budget PFA vs Réel — RUBRIKS vs IRIS</h2>
+      <p class="muted">Comparaison cap budgétée (RUBRIKS) vs cap réel (IRIS) par secteur. Requiert RUBRIKS et IRIS chargés en onglet 01.</p>
+      <div id="m04-placeholder" class="placeholder">Charger RUBRIKS et IRIS dans l'onglet 01.</div>
+      <div id="m04-content" style="display:none">
+        <canvas id="m04-chart"></canvas>
+        <h3>Détail par secteur</h3>
+        <div id="m04-table"></div>
+      </div>
+    </div>
   </section>
 
   <!-- Onglet macro (transverse, alimente Couche 2 / scénarios) -->
@@ -111,6 +168,7 @@
 <script src="js/store.js"></script>
 <script src="js/charts.js"></script>
 <script src="js/loader.js"></script>
+<script src="js/pipeline.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>
