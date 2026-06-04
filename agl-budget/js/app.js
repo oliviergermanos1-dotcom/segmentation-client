@@ -790,6 +790,100 @@
       renderToolbar("12", "Note COMEX — Synthèse Executive AGL CIV " + (snap.derniere_annee || ""), "Note_COMEX",
         () => global.AGL.prompts.executive(snap),
         () => global.AGL.exports.buildExecutiveSections(snap));
+
+      // Section comparaison N vs N-1 (présente si comparison_summary.json est chargé).
+      drawComparisonSection();
+    });
+  }
+
+  function drawComparisonSection() {
+    const host = $("#m12-compare"); host.innerHTML = "";
+    Promise.all([
+      global.AGL.pipeline.get("COMP_SUMMARY"),
+      global.AGL.pipeline.get("COMP_PDM"),
+      global.AGL.pipeline.get("COMP_WS"),
+      global.AGL.pipeline.get("COMP_RMC"),
+    ]).then(([summaryRows, pdmRows, wsRows, rmcRows]) => {
+      const summary = summaryRows && summaryRows.length ? summaryRows[0] : null;
+      if (!summary && !pdmRows && !wsRows && !rmcRows) return;  // aucune comparaison chargée
+      const block = el("div", { class: "section", style: "background:#f8fafc;border:1px solid var(--primary)" });
+      block.appendChild(el("h2", { text: "📅 Évolution N vs N-1" }));
+      if (summary) {
+        const meta = el("div", { class: "muted", style: "font-size:12px;margin-bottom:8px",
+          text: "N = " + (summary.snapshot_n || "?") + "  |  N-1 = " + (summary.snapshot_n1 || "?") });
+        block.appendChild(meta);
+        // KPIs synthèse
+        const grid = el("div", { style: "display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-bottom:12px" });
+        const card = (l, v, color) => el("div", { style: "border:1px solid var(--border);border-radius:6px;padding:10px" +
+          (color ? ";border-left:3px solid " + color : ""), html:
+          "<div class='muted' style='font-size:11px;text-transform:uppercase'>" + l + "</div>" +
+          "<div style='font-size:18px'><strong>" + v + "</strong></div>"
+        });
+        if (summary.rmc) {
+          grid.appendChild(card("Clients communs", U.formatNumber(summary.rmc.clients_communs)));
+          grid.appendChild(card("Nouveaux clients", U.formatNumber(summary.rmc.nouveaux_clients), "var(--success)"));
+          grid.appendChild(card("Clients disparus", U.formatNumber(summary.rmc.clients_disparus), "var(--danger)"));
+          grid.appendChild(card("IRIS rattachés N", "+" + (summary.rmc.iris_rattaches_nouveau || 0) + " / −" + (summary.rmc.iris_rattaches_perdus || 0)));
+        }
+        if (summary.whitespaces) {
+          grid.appendChild(card("White spaces apparus", U.formatNumber(summary.whitespaces.nouveaux_white_spaces), "var(--warning)"));
+          grid.appendChild(card("White spaces comblés", U.formatNumber(summary.whitespaces.white_spaces_combles), "var(--success)"));
+        }
+        block.appendChild(grid);
+      }
+      // Tableau PDM ΔPDM par métier
+      if (pdmRows && pdmRows.length) {
+        block.appendChild(el("h3", { text: "ΔPDM par métier — année " + (pdmRows[0].ANNEE || "?") }));
+        const tbl = el("table");
+        tbl.innerHTML = "<thead><tr><th>Métier</th><th>PDM N-1</th><th>PDM N</th><th>Δ PDM</th><th>Δ Vol. AGL</th></tr></thead>";
+        const tb = el("tbody");
+        pdmRows.slice().sort((a, b) => U.toNumber(b.DELTA_PDM) - U.toNumber(a.DELTA_PDM)).forEach((r) => {
+          const dp = U.toNumber(r.DELTA_PDM);
+          const tr = el("tr");
+          tr.innerHTML = "<td>" + (r.METIER || "") + "</td>" +
+            "<td>" + (U.toNumber(r.PDM_N1) * 100).toFixed(1) + " %</td>" +
+            "<td>" + (U.toNumber(r.PDM_N) * 100).toFixed(1) + " %</td>" +
+            "<td style='color:" + (dp >= 0 ? "var(--success)" : "var(--danger)") + "'><strong>" +
+              (dp >= 0 ? "+" : "") + (dp * 100).toFixed(1) + " pts</strong></td>" +
+            "<td>" + U.formatNumber(U.toNumber(r.DELTA_VOL_AGL)) + "</td>";
+          tb.appendChild(tr);
+        });
+        tbl.appendChild(tb); block.appendChild(tbl);
+      }
+      // White spaces apparus/comblés
+      if (wsRows && wsRows.length) {
+        const apparus = wsRows.filter((r) => r.STATUT_CHANGE === "APPARU");
+        const combles = wsRows.filter((r) => r.STATUT_CHANGE === "COMBLE");
+        if (apparus.length) {
+          block.appendChild(el("h3", { text: "White spaces apparus (" + apparus.length + ")" }));
+          const ul = el("ul", { class: "muted" });
+          apparus.slice(0, 10).forEach((r) => ul.appendChild(el("li", { text: r.NOM_BASE })));
+          block.appendChild(ul);
+        }
+        if (combles.length) {
+          block.appendChild(el("h3", { text: "White spaces comblés (" + combles.length + ")" }));
+          const ul = el("ul", { class: "muted" });
+          combles.slice(0, 10).forEach((r) => ul.appendChild(el("li", { text: r.NOM_BASE })));
+          block.appendChild(ul);
+        }
+      }
+      // Changements RMC notables
+      if (rmcRows && rmcRows.length) {
+        block.appendChild(el("h3", { text: "Changements de rattachement / secteur (" + rmcRows.length + ")" }));
+        const tbl = el("table");
+        tbl.innerHTML = "<thead><tr><th>ID CRM</th><th>Client</th><th>IRIS N-1→N</th><th>STATCOM N-1→N</th><th>Secteur N-1→N</th></tr></thead>";
+        const tb = el("tbody");
+        rmcRows.slice(0, 30).forEach((r) => {
+          const tr = el("tr");
+          tr.innerHTML = "<td>" + r.ID_CRM + "</td><td>" + (r.NOM_CANONIQUE || "") + "</td>" +
+            "<td>" + r.IRIS_N1 + " → " + r.IRIS_N + "</td>" +
+            "<td>" + r.STATCOM_N1 + " → " + r.STATCOM_N + "</td>" +
+            "<td>" + (r.SECTEUR_N1 || "") + " → " + (r.SECTEUR_N || "") + "</td>";
+          tb.appendChild(tr);
+        });
+        tbl.appendChild(tb); block.appendChild(tbl);
+      }
+      host.appendChild(block);
     });
   }
 

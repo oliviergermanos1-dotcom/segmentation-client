@@ -28,6 +28,10 @@
     PND_SECTORIELS:{ match: /sectoriels_pnd\.csv$/i,        label: "PND — agrégat par résultat sectoriel" },
     BUDGET_REAL:   { match: /budget_vs_real\.csv$/i,        label: "Budget PFA vs Réel (par client)" },
     BUDGET_SECTEUR:{ match: /budget_secteur\.csv$/i,        label: "Budget PFA vs Réel (par secteur)" },
+    COMP_PDM:      { match: /comparison_pdm\.csv$/i,        label: "Comparaison PDM N vs N-1" },
+    COMP_WS:       { match: /comparison_whitespaces\.csv$/i,label: "Comparaison white spaces N vs N-1" },
+    COMP_RMC:      { match: /comparison_rmc\.csv$/i,        label: "Comparaison RMC N vs N-1" },
+    COMP_SUMMARY:  { match: /comparison_summary\.json$/i,   label: "Synthèse comparaison N vs N-1" },
   };
 
   // Cache mémoire des tables désérialisées.
@@ -39,6 +43,14 @@
   }
 
   function parseFile(file) {
+    // JSON support: pour comparison_summary.json (et tout fichier .json) on
+    // renvoie un objet `summary` plutôt qu'une liste de lignes tabulaires.
+    if (/\.json$/i.test(file.name)) {
+      return file.text().then((txt) => {
+        const obj = JSON.parse(txt);
+        return { rows: [obj], columns: Object.keys(obj || {}) };
+      });
+    }
     return file.arrayBuffer().then((buf) => {
       const wb = XLSX.read(new Uint8Array(buf), { type: "array" });
       const sheet = wb.Sheets[wb.SheetNames[0]];
