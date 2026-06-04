@@ -134,6 +134,56 @@
     </div>
   </section>
 
+  <!-- 07 — White Spaces -->
+  <section class="panel" data-panel="07">
+    <div class="section">
+      <h2>07 · White Spaces — marché non capturé</h2>
+      <p class="muted">Clients STATCOM absents du CRM (ou rattachés en zone ambiguë). Importer <code>whitespaces.csv</code> dans l'onglet 01.</p>
+      <div id="m07-placeholder" class="placeholder">Charger whitespaces.csv dans l'onglet 01.</div>
+      <div id="m07-content" style="display:none">
+        <canvas id="m07-chart"></canvas>
+        <h3>Détail (top 50)</h3>
+        <div id="m07-table"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 10 — Projections 2026-2030 -->
+  <section class="panel" data-panel="10">
+    <div class="section">
+      <h2>10 · Projections 2026-2030 — forecasting hybride (3 scénarios)</h2>
+      <p class="muted">Couche 1 STATCOM réel × Couche 2 macro métier × Couche 3 scénarios (cf. §6).</p>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+        <label for="m10-metier">Métier</label>
+        <select id="m10-metier"></select>
+      </div>
+      <div id="m10-placeholder" class="placeholder">Charger projections.csv dans l'onglet 01.</div>
+      <div id="m10-content" style="display:none">
+        <canvas id="m10-chart"></canvas>
+        <h3>Détail</h3>
+        <div id="m10-table"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 13 ★ Analyse Concurrentielle -->
+  <section class="panel" data-panel="13">
+    <div class="section">
+      <h2>13 ★ Analyse Concurrentielle — positionnement AGL par métier</h2>
+      <p class="muted">Bubble chart : x = PDM AGL, y = CAGR marché, taille = volume marché. Année courante.</p>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+        <label for="m13-year">Année</label>
+        <select id="m13-year"></select>
+      </div>
+      <div id="m13-placeholder" class="placeholder">Charger pdm.csv dans l'onglet 01.</div>
+      <div id="m13-content" style="display:none">
+        <canvas id="m13-chart" style="height:380px"></canvas>
+        <h3>Lecture</h3>
+        <p class="muted">Quadrant haut-droit (PDM élevé, marché qui croît) = position dominante à protéger. Bas-droit (PDM faible, marché qui croît) = opportunités prioritaires de gain.</p>
+      </div>
+    </div>
+  </section>
+
   <!-- 04 — Budget PFA vs Réel -->
   <section class="panel" data-panel="04">
     <div class="section">

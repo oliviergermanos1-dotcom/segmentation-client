@@ -20,6 +20,8 @@
     PDM_CLIENTS:   { match: /pdm_clients\.csv$/i,          label: "Volumes clients AGL" },
     MATCH_CRM_IRIS:{ match: /match_crm_iris\.csv$/i,       label: "Flux 1 — matches CRM × IRIS" },
     MATCH_CRM_STAT:{ match: /match_crm_stat\.csv$/i,       label: "Flux 2 — matches CRM × STATCOM" },
+    PROJECTIONS:   { match: /projections\.csv$/i,          label: "Projections 2026-2030" },
+    WHITESPACES:   { match: /whitespaces\.csv$/i,          label: "White spaces" },
   };
 
   // Cache mémoire des tables désérialisées.

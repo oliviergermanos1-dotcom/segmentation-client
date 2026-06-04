@@ -55,6 +55,9 @@
     if (id === "02") renderMarketTab();
     else if (id === "03") renderPositionTab();
     else if (id === "04") renderBudgetTab();
+    else if (id === "07") renderWhiteSpacesTab();
+    else if (id === "10") renderProjectionsTab();
+    else if (id === "13") renderConcurrentielleTab();
   }
 
   /* ----- Cartes d'upload des 6 bases ----- */
@@ -318,6 +321,122 @@
       $("#m04-placeholder").innerHTML =
         "Onglet 04 — fonctionnel à brancher au Sprint 4 (jointure RUBRIKS × IRIS via RMC). " +
         "RUBRIKS chargé (" + U.formatNumber(ru.rows) + " lignes), IRIS chargé (" + U.formatNumber(ir.rows) + " lignes).";
+    });
+  }
+
+  /* ====================================================================== */
+  /*  Onglet 07 — White Spaces                                                */
+  /* ====================================================================== */
+  function renderWhiteSpacesTab() {
+    global.AGL.pipeline.get("WHITESPACES").then((rows) => {
+      if (!rows || !rows.length) { $("#m07-placeholder").style.display = ""; $("#m07-content").style.display = "none"; return; }
+      $("#m07-placeholder").style.display = "none";
+      $("#m07-content").style.display = "";
+      const sorted = rows.slice().sort((a, b) => U.toNumber(b.VOLUME_PRINCIPAL) - U.toNumber(a.VOLUME_PRINCIPAL));
+      const top10 = sorted.slice(0, 10).map((r) => ({ label: (r.NOM_BASE || "?").slice(0, 18), value: U.toNumber(r.VOLUME_PRINCIPAL) }));
+      global.AGL.charts.bar($("#m07-chart"), top10, { title: "Top 10 white spaces — volume non capturé" });
+      const tbl = el("table");
+      tbl.innerHTML = "<thead><tr><th>Client</th><th>Métier</th><th>Statut</th><th>Volume</th><th>Nb ops</th><th>Années</th></tr></thead>";
+      const tb = el("tbody");
+      sorted.slice(0, 50).forEach((r) => {
+        const tr = el("tr");
+        const cls = r.STATUT === "MATCH_AMBIGU" ? "warning" : "";
+        tr.innerHTML = "<td>" + (r.NOM_BASE || "") + "</td><td>" + (r.METIER || "") +
+          "</td><td><span class='badge'>" + (r.STATUT || "") + "</span></td>" +
+          "<td>" + U.formatNumber(r.VOLUME_PRINCIPAL) + "</td>" +
+          "<td>" + U.formatNumber(r.NB_OPERATIONS) + "</td>" +
+          "<td>" + U.formatNumber(r.ANNEES_PRESENT) + "</td>";
+        tb.appendChild(tr);
+      });
+      tbl.appendChild(tb);
+      const host = $("#m07-table"); host.innerHTML = ""; host.appendChild(tbl);
+    });
+  }
+
+  /* ====================================================================== */
+  /*  Onglet 10 — Projections 2026-2030                                       */
+  /* ====================================================================== */
+  function renderProjectionsTab() {
+    global.AGL.pipeline.get("PROJECTIONS").then((rows) => {
+      if (!rows || !rows.length) { $("#m10-placeholder").style.display = ""; $("#m10-content").style.display = "none"; return; }
+      $("#m10-placeholder").style.display = "none";
+      $("#m10-content").style.display = "";
+      const metiers = Array.from(new Set(rows.map((r) => r.METIER))).sort();
+      const sel = $("#m10-metier");
+      const current = sel.value;
+      sel.innerHTML = "";
+      metiers.forEach((m) => sel.appendChild(el("option", { value: m, text: m })));
+      sel.value = current && metiers.indexOf(current) > -1 ? current : metiers[0];
+      sel.onchange = () => drawProjections(rows, sel.value);
+      drawProjections(rows, sel.value);
+    });
+  }
+  function drawProjections(rows, metier) {
+    const sub = rows.filter((r) => r.METIER === metier);
+    const scenarios = ["REEL", "PESSIMISTE", "BASE", "OPTIMISTE"];
+    const series = scenarios.map((s) => ({
+      label: s,
+      points: sub.filter((r) => r.SCENARIO === s)
+                 .map((r) => ({ x: +r.ANNEE, y: U.toNumber(r.VOLUME) }))
+                 .sort((a, b) => a.x - b.x)
+    })).filter((s) => s.points.length);
+    // Pour relier le réel à chaque scénario : on injecte le dernier point réel
+    // au début de chaque trajectoire scénario.
+    const reel = series.find((s) => s.label === "REEL");
+    if (reel && reel.points.length) {
+      const anchor = reel.points[reel.points.length - 1];
+      ["PESSIMISTE", "BASE", "OPTIMISTE"].forEach((sc) => {
+        const s = series.find((x) => x.label === sc);
+        if (s) s.points.unshift(anchor);
+      });
+    }
+    global.AGL.charts.line($("#m10-chart"), series, { title: metier + " — projections 3 scénarios" });
+    // Table
+    const tbl = el("table");
+    tbl.innerHTML = "<thead><tr><th>Scénario</th><th>Probabilité</th><th>Année</th><th>Volume</th><th>CAGR appliqué</th></tr></thead>";
+    const tb = el("tbody");
+    sub.sort((a, b) => (a.SCENARIO || "").localeCompare(b.SCENARIO || "") || (+a.ANNEE) - (+b.ANNEE))
+       .forEach((r) => {
+      const tr = el("tr");
+      const prob = U.toNumber(r.PROBABILITE);
+      const cagr = r.CAGR_APPLIQUE !== "" && r.CAGR_APPLIQUE != null ? U.toNumber(r.CAGR_APPLIQUE) : null;
+      tr.innerHTML = "<td><strong>" + r.SCENARIO + "</strong></td>" +
+        "<td>" + (prob * 100).toFixed(0) + " %</td>" +
+        "<td>" + r.ANNEE + "</td>" +
+        "<td>" + U.formatNumber(U.toNumber(r.VOLUME)) + "</td>" +
+        "<td>" + (cagr != null ? (cagr * 100).toFixed(1) + " %" : "—") + "</td>";
+      tb.appendChild(tr);
+    });
+    tbl.appendChild(tb);
+    const host = $("#m10-table"); host.innerHTML = ""; host.appendChild(tbl);
+  }
+
+  /* ====================================================================== */
+  /*  Onglet 13 ★ Analyse Concurrentielle (bubble chart)                      */
+  /* ====================================================================== */
+  function renderConcurrentielleTab() {
+    global.AGL.pipeline.get("PDM").then((rows) => {
+      if (!rows || !rows.length) { $("#m13-placeholder").style.display = ""; $("#m13-content").style.display = "none"; return; }
+      $("#m13-placeholder").style.display = "none";
+      $("#m13-content").style.display = "";
+      const years = Array.from(new Set(rows.map((r) => +r.ANNEE))).sort();
+      fillYearSelect("#m13-year", years);
+      const sel = $("#m13-year");
+      sel.onchange = () => drawConcurrentielle(rows, +sel.value);
+      drawConcurrentielle(rows, +sel.value);
+    });
+  }
+  function drawConcurrentielle(rows, year) {
+    const sub = rows.filter((r) => +r.ANNEE === year);
+    const points = sub.map((r) => ({
+      x: U.toNumber(r.PDM) * 100,                  // % PDM
+      y: r.CAGR_MARCHE != null && r.CAGR_MARCHE !== "" ? U.toNumber(r.CAGR_MARCHE) * 100 : 0,
+      r: U.toNumber(r.VOLUME_MARCHE),              // taille = volume marché
+      label: r.METIER
+    }));
+    global.AGL.charts.bubble($("#m13-chart"), points, {
+      xLabel: "PDM AGL (%)",
+      yLabel: "CAGR marché (%)"
     });
   }
 
