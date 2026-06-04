@@ -21,3 +21,4 @@ Thumbs.db
 *.swp
 .idea/
 .vscode/
+agl-budget/python/fixtures/
