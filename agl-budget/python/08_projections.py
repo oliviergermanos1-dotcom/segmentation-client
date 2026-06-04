@@ -110,7 +110,7 @@ def main(argv=None) -> int:
 
     out = pd.DataFrame(rows).sort_values(["METIER", "SCENARIO", "ANNEE"])
     outdir = Path(args.outdir); outdir.mkdir(parents=True, exist_ok=True)
-    out.to_csv(outdir / "projections.csv", index=False)
+    out.to_csv(outdir / "projections.csv", index=False, encoding="utf-8")
     # On exporte aussi la table des multiplicateurs pour traçabilité.
     with open(outdir / "macro_multipliers.json", "w", encoding="utf-8") as f:
         json.dump({"horizon": args.horizon, "w_real": args.w_real, "w_macro": args.w_macro,

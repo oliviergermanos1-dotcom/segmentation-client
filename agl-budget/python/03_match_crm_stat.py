@@ -46,32 +46,44 @@ def resolve_statcom_client(df: pd.DataFrame) -> pd.DataFrame:
     """
     Reconstruit une colonne unique CLIENT_RESOLU à partir de la règle métier :
       Import* → destinataires | Export* → chargeurs.
-    Garde aussi la colonne d'origine utilisée pour traçabilité.
-    """
-    col_metier = config.resolve_column(df.columns, config.STATCOM["metier"], ["metier_statcom"])
-    col_dest   = config.resolve_column(df.columns, "destinataires", ["destinataire"])
-    col_charg  = config.resolve_column(df.columns, "chargeurs",     ["chargeur", "expediteurs", "expediteur"])
 
+    Mode 1 (priorité) : si la colonne `client` existe déjà (sortie de
+    _statcom_consolide.py), on la réutilise telle quelle.
+    Mode 2 (fallback) : on applique la règle destinataires/chargeurs sur le
+    fichier source brut.
+    """
+    df = df.copy()
+
+    # Mode 1 : colonne client déjà résolue par la consolidation amont.
+    c_client = config.resolve_column(df.columns, "client", ["CLIENT_RESOLU"])
+    col_metier = config.resolve_column(df.columns, config.STATCOM["metier"], ["metier_statcom"])
     if col_metier is None:
         sys.exit("ERREUR : colonne métier introuvable dans STATCOM (config.STATCOM['metier']).")
+
+    if c_client is not None:
+        df["CLIENT_RESOLU"] = df[c_client]
+        df["CLIENT_COL_SOURCE"] = "client (consolidé)"
+        return df
+
+    # Mode 2 : fallback historique sur destinataires/chargeurs.
+    col_dest  = config.resolve_column(df.columns, "destinataires", ["destinataire"])
+    col_charg = config.resolve_column(df.columns, "chargeurs",     ["chargeur", "expediteurs", "expediteur"])
     if col_dest is None and col_charg is None:
-        sys.exit("ERREUR : ni 'destinataires' ni 'chargeurs' présents dans STATCOM.")
+        sys.exit("ERREUR : aucune colonne client (`client`, `destinataires` ou `chargeurs`) trouvée.")
 
     metier_to_col = {m: meta["client_col"] for m, meta in config.STATCOM_METIERS.items()}
 
     def pick(row):
         m = (row[col_metier] or "").strip()
-        # Tolérance casse/ordre : on tente match exact, sinon par mot-clé sens.
         col = metier_to_col.get(m)
         if not col:
             up = m.upper()
             if "EXPORT" in up:  col = "chargeurs"
             elif "IMPORT" in up or "HINTERLAND" in up: col = "destinataires"
-            else: col = "destinataires"  # défaut prudent
+            else: col = "destinataires"
         real = col_charg if col == "chargeurs" else col_dest
         return row[real] if real else None
 
-    df = df.copy()
     df["CLIENT_RESOLU"] = df.apply(pick, axis=1)
     df["CLIENT_COL_SOURCE"] = df[col_metier].map(metier_to_col).fillna("auto")
     return df
@@ -139,14 +151,14 @@ def main(argv=None) -> int:
     out = res.rename(columns={"id_L": "id_crm", "id_R": "id_statcom",
                               "nom_L": "nom_crm", "nom_R": "nom_statcom"})
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    out.to_csv(args.out, index=False)
+    out.to_csv(args.out, index=False, encoding="utf-8")
     print(f"[ok] écrit : {args.out}")
 
     if args.stat_norm_out:
         # Rattache l'ID_STATCOM aux lignes brutes via NOM_BASE pour les étapes suivantes.
         stat = stat.merge(stat_clients[["NOM_BASE", "ID_STATCOM"]], on="NOM_BASE", how="left")
         if args.stat_norm_out.endswith(".csv"):
-            stat.to_csv(args.stat_norm_out, index=False)
+            stat.to_csv(args.stat_norm_out, index=False, encoding="utf-8")
         else:
             stat.to_excel(args.stat_norm_out, index=False)
         print(f"[ok] STATCOM enrichi écrit : {args.stat_norm_out}")

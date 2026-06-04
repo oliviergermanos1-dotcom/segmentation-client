@@ -143,7 +143,7 @@ def main(argv=None) -> int:
     out.loc[out["NOM_CLIENT"] == "", "NOM_CLIENT"] = fallback_name.loc[out["NOM_CLIENT"] == ""]
 
     outdir = Path(args.outdir); outdir.mkdir(parents=True, exist_ok=True)
-    out.to_csv(outdir / "budget_vs_real.csv", index=False)
+    out.to_csv(outdir / "budget_vs_real.csv", index=False, encoding="utf-8")
 
     # Agrégat par secteur × année.
     sec = (out.groupby(["SECTEUR", "ANNEE"], dropna=False)
@@ -153,7 +153,7 @@ def main(argv=None) -> int:
            .reset_index())
     sec["ECART"] = sec["CAP_REEL"] - sec["CAP_PFA"]
     sec["ECART_PCT"] = sec.apply(lambda r: r["ECART"] / r["CAP_PFA"] if r["CAP_PFA"] > 0 else 0.0, axis=1)
-    sec.to_csv(outdir / "budget_secteur.csv", index=False)
+    sec.to_csv(outdir / "budget_secteur.csv", index=False, encoding="utf-8")
 
     print(f"[in]  RUBRIKS : {len(ru):>5} lignes | IRIS : {len(iris):>5} lignes | RMC : {len(rmc):>5} clients")
     print(f"[ok] {len(out):>5} lignes RUBRIKS rapprochées "

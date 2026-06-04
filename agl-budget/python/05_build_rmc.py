@@ -133,7 +133,7 @@ def main(argv=None) -> int:
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     if out.suffix.lower() == ".csv":
-        rmc.to_csv(out, index=False)
+        rmc.to_csv(out, index=False, encoding="utf-8")
     else:
         rmc.to_excel(out, index=False)
         rmc.to_csv(out.with_suffix(".csv"), index=False)

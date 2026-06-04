@@ -52,7 +52,9 @@
       });
     }
     return file.arrayBuffer().then((buf) => {
-      const wb = XLSX.read(new Uint8Array(buf), { type: "array" });
+      // codepage:65001 = UTF-8, force SheetJS à interpréter les CSV en UTF-8
+      // (sans ça, défaut cp1252 sur Windows → "Aérien" devient "AÃ©rien").
+      const wb = XLSX.read(new Uint8Array(buf), { type: "array", codepage: 65001 });
       const sheet = wb.Sheets[wb.SheetNames[0]];
       const rows = XLSX.utils.sheet_to_json(sheet, { defval: null });
       const columns = rows.length ? Object.keys(rows[0]) : [];

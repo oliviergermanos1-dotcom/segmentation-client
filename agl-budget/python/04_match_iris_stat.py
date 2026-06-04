@@ -68,7 +68,7 @@ def main(argv=None) -> int:
     out = res.rename(columns={"id_L": "id_iris", "id_R": "id_statcom",
                               "nom_L": "nom_iris", "nom_R": "nom_statcom"})
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    out.to_csv(args.out, index=False)
+    out.to_csv(args.out, index=False, encoding="utf-8")
     print(f"[ok] écrit : {args.out}")
     return 0
 

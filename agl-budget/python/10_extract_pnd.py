@@ -234,7 +234,7 @@ def main(argv=None) -> int:
           f"({actions['cout_total'].sum()/1e6:,.1f} Mds FCFA)")
 
     outdir = Path(args.outdir); outdir.mkdir(parents=True, exist_ok=True)
-    df.to_csv(outdir / "projets_pnd.csv", index=False)
+    df.to_csv(outdir / "projets_pnd.csv", index=False, encoding="utf-8")
 
     # Agrégat par axe.
     axes = (actions
@@ -248,7 +248,7 @@ def main(argv=None) -> int:
                  cout_total=("cout_total", "sum"),
                  nb_agl=("pertinence_agl", "sum"))
             .sort_values("cout_total", ascending=False))
-    axes.to_csv(outdir / "axes_pnd.csv", index=False)
+    axes.to_csv(outdir / "axes_pnd.csv", index=False, encoding="utf-8")
 
     # Agrégat par résultat sectoriel (X.YY).
     sectoriels = (actions
@@ -257,7 +257,7 @@ def main(argv=None) -> int:
                        cout_total=("cout_total", "sum"),
                        nb_agl=("pertinence_agl", "sum"))
                   .sort_values("cout_total", ascending=False))
-    sectoriels.to_csv(outdir / "sectoriels_pnd.csv", index=False)
+    sectoriels.to_csv(outdir / "sectoriels_pnd.csv", index=False, encoding="utf-8")
 
     print("[3/3] Récap par axe (somme 5 ans Actions, M FCFA) :")
     for _, r in axes.iterrows():

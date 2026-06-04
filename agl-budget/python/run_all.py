@@ -55,9 +55,25 @@ def main(argv=None) -> int:
 
     crm     = _find(data, "CRM*.xlsx")
     iris    = _find(data, "IRIS*.xlsx")
-    statcom = _find(data, "STATCOM*.xlsx")
     rubriks = _find(data, "RUBRIKS*.xlsx")
-    for name, p in [("CRM", crm), ("IRIS", iris), ("STATCOM", statcom)]:
+
+    # STATCOM : détection auto mono- ou multi-fichiers.
+    statcom_files = sorted(list(data.glob("STATCOM*.xlsx")) + list(data.glob("Statcom*.xlsx")))
+    if not statcom_files:
+        sys.exit(f"ERREUR : aucun STATCOM*.xlsx trouvé dans {data}")
+    if len(statcom_files) > 1:
+        # Multi-fichiers : on les consolide intelligemment vers --out/STATCOM_consolide.xlsx
+        consolide = _load("consolide", ROOT / "_statcom_consolide.py")
+        out.mkdir(parents=True, exist_ok=True)
+        statcom = out / "STATCOM_consolide.xlsx"
+        print(f"\n=== 00 — consolidation STATCOM ({len(statcom_files)} fichiers) ===")
+        rc = consolide.main([*map(str, statcom_files), "-o", str(statcom)])
+        if rc: sys.exit("[STOP] consolidation STATCOM a échoué")
+    else:
+        statcom = statcom_files[0]
+        print(f"[info] STATCOM mono-fichier détecté : {statcom.name}")
+
+    for name, p in [("CRM", crm), ("IRIS", iris)]:
         if not p: sys.exit(f"ERREUR : {name} introuvable dans {data} (attendu : {name}*.xlsx)")
 
     # Charge les modules par chemin (les noms commencent par un chiffre).

@@ -110,9 +110,9 @@ def main(argv=None) -> int:
     pdm = pdm.merge(add_cagr(pdm, "VOLUME_MARCHE", "CAGR_MARCHE"), on="METIER", how="left")
 
     outdir = Path(args.outdir); outdir.mkdir(parents=True, exist_ok=True)
-    pdm.to_csv(outdir / "pdm.csv", index=False)
+    pdm.to_csv(outdir / "pdm.csv", index=False, encoding="utf-8")
     pdm_clients[["NOM_BASE", "METIER", "ANNEE", "VOLUME_PRINCIPAL", "_KEY_AGL"]]\
-        .rename(columns={"_KEY_AGL": "CLE_RMC"}).to_csv(outdir / "pdm_clients.csv", index=False)
+        .rename(columns={"_KEY_AGL": "CLE_RMC"}).to_csv(outdir / "pdm_clients.csv", index=False, encoding="utf-8")
 
     # Récap console.
     last = pdm["ANNEE"].max()

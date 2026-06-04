@@ -156,17 +156,17 @@ def main(argv=None) -> int:
 
     pdm, s = compare_pdm(n, n1)
     if pdm is not None:
-        pdm.to_csv(outdir / "comparison_pdm.csv", index=False)
+        pdm.to_csv(outdir / "comparison_pdm.csv", index=False, encoding="utf-8")
         summary["pdm"] = s
 
     ws, s = compare_whitespaces(n, n1)
     if ws is not None:
-        ws.to_csv(outdir / "comparison_whitespaces.csv", index=False)
+        ws.to_csv(outdir / "comparison_whitespaces.csv", index=False, encoding="utf-8")
         summary["whitespaces"] = s
 
     rmc, s = compare_rmc(n, n1)
     if rmc is not None:
-        rmc.to_csv(outdir / "comparison_rmc.csv", index=False)
+        rmc.to_csv(outdir / "comparison_rmc.csv", index=False, encoding="utf-8")
         summary["rmc"] = s
 
     with open(outdir / "comparison_summary.json", "w", encoding="utf-8") as f:

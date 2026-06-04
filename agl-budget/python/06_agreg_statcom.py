@@ -78,7 +78,7 @@ def main(argv=None) -> int:
                    NB_OPERATIONS=("NOM_BASE", "size"))
               .reset_index()
               .rename(columns={col_metier: "METIER", "_ANNEE": "ANNEE"}))
-    marche.to_csv(outdir / "marche_total.csv", index=False)
+    marche.to_csv(outdir / "marche_total.csv", index=False, encoding="utf-8")
 
     # 2) VOLUME_CLIENT : par client × métier × année.
     vc = (stat
@@ -90,7 +90,7 @@ def main(argv=None) -> int:
                ID_STATCOM=("ID_STATCOM", "first") if "ID_STATCOM" in stat else ("NOM_BASE", "first"))
           .reset_index()
           .rename(columns={col_metier: "METIER", "_ANNEE": "ANNEE"}))
-    vc.to_csv(outdir / "volume_client.csv", index=False)
+    vc.to_csv(outdir / "volume_client.csv", index=False, encoding="utf-8")
 
     # 3) METIERS_3ANS : pivot par métier 2023/2024/2025 + CAGR réel sur volume principal.
     def _vol_principal(row):
@@ -109,7 +109,7 @@ def main(argv=None) -> int:
             if v0 <= 0 or v1 <= 0: return None
             return (v1 / v0) ** (1.0 / years) - 1.0
         piv["CAGR"] = piv.apply(_cagr, axis=1)
-    piv.to_csv(outdir / "metiers_3ans.csv", index=False)
+    piv.to_csv(outdir / "metiers_3ans.csv", index=False, encoding="utf-8")
 
     print(f"[ok] {len(marche)} lignes marché_total | "
           f"{len(vc)} lignes volume_client | "

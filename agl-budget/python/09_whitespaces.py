@@ -87,7 +87,7 @@ def main(argv=None) -> int:
            .sort_values("VOLUME_PRINCIPAL", ascending=False))
 
     outdir = Path(args.outdir); outdir.mkdir(parents=True, exist_ok=True)
-    agg.to_csv(outdir / "whitespaces.csv", index=False)
+    agg.to_csv(outdir / "whitespaces.csv", index=False, encoding="utf-8")
 
     n = len(agg)
     n_abs = int((agg["STATUT"] == "ABSENT_CRM").sum())
