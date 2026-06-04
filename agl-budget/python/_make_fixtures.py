@@ -19,15 +19,15 @@ CRM = pd.DataFrame([
     {"crm_id_compte": "C008", "nom_du_compte": "ORANGE COTE D IVOIRE",            "secteur": "Telecom"},
 ])
 
-# IRIS : 7 clients (1 manquant, des variantes orthographiques).
+# IRIS : 7 clients (1 manquant, des variantes orthographiques) — avec période 2026.
 IRIS = pd.DataFrame([
-    {"id": "I100", "client": "NESTLÉ COTE D IVOIRE",          "cap": "1200000000"},
-    {"id": "I101", "client": "CARGILL CI",                    "cap": "850000000"},
-    {"id": "I102", "client": "SIR Société Ivoirienne Raff.",  "cap": "3200000000"},
-    {"id": "I103", "client": "KOUASSI FRERES ETS",            "cap": "120000000"},
-    {"id": "I104", "client": "COMPAGNIE FRUITIERE OUEST",     "cap": "560000000"},
-    {"id": "I105", "client": "SIFCA",                         "cap": "2900000000"},
-    {"id": "I106", "client": "ORANGE CI",                     "cap": "780000000"},
+    {"id": "I100", "client": "NESTLÉ COTE D IVOIRE",          "cap": "1200000000", "periode": "2026"},
+    {"id": "I101", "client": "CARGILL CI",                    "cap": "850000000",  "periode": "2026"},
+    {"id": "I102", "client": "SIR Société Ivoirienne Raff.",  "cap": "3200000000", "periode": "2026"},
+    {"id": "I103", "client": "KOUASSI FRERES ETS",            "cap": "120000000",  "periode": "2026"},
+    {"id": "I104", "client": "COMPAGNIE FRUITIERE OUEST",     "cap": "560000000",  "periode": "2026"},
+    {"id": "I105", "client": "SIFCA",                         "cap": "2900000000", "periode": "2026"},
+    {"id": "I106", "client": "ORANGE CI",                     "cap": "780000000",  "periode": "2026"},
 ])
 
 # STATCOM : 3 années (2023, 2024, 2025), 6 clients × variantes, métiers variés.
@@ -61,11 +61,14 @@ STATCOM = pd.DataFrame([
     {"metier": "Import Maritime",  "annee": 2025, "destinataires": "OLAM IVOIRE",              "chargeurs": "",                       "marchandise": "Riz",               "volume_teu": "320", "volume_bulk": "0",  "volume_kg": "0"},
 ])
 
-# RUBRIKS : enrichit le secteur de TOTAL (manquant côté CRM).
+# RUBRIKS : enrichit le secteur de TOTAL (manquant côté CRM) — budget PFA 2026.
 RUBRIKS = pd.DataFrame([
-    {"client": "TOTAL ENERGIES CI",     "secteur": "Energie",         "cap_pfa": "2400000000"},
-    {"client": "ORANGE COTE D'IVOIRE",  "secteur": "Telecom",         "cap_pfa": "900000000"},
-    {"client": "NESTLE CI",             "secteur": "Agroalimentaire", "cap_pfa": "1500000000"},
+    {"client": "TOTAL ENERGIES CI",     "secteur": "Energie",         "cap_pfa": "2400000000", "annee": "2026"},
+    {"client": "ORANGE COTE D'IVOIRE",  "secteur": "Telecom",         "cap_pfa": "900000000",  "annee": "2026"},
+    {"client": "NESTLE CI",             "secteur": "Agroalimentaire", "cap_pfa": "1500000000", "annee": "2026"},
+    {"client": "CARGILL COTE IVOIRE",   "secteur": "Agroalimentaire", "cap_pfa": "1000000000", "annee": "2026"},
+    {"client": "SIFCA SA",              "secteur": "Agroalimentaire", "cap_pfa": "2500000000", "annee": "2026"},
+    {"client": "SIR",                   "secteur": "Energie",         "cap_pfa": "3500000000", "annee": "2026"},
 ])
 
 CRM.to_excel(OUT / "CRM.xlsx", index=False)

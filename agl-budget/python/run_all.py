@@ -70,6 +70,7 @@ def main(argv=None) -> int:
     m07  = _load("m07",  ROOT / "07_calcul_pdm.py")
     m08  = _load("m08",  ROOT / "08_projections.py")
     m09  = _load("m09",  ROOT / "09_whitespaces.py")
+    m11  = _load("m11",  ROOT / "11_budget_real.py")
 
     def step(num, name, fn):
         if num in skip:
@@ -120,6 +121,10 @@ def main(argv=None) -> int:
                            "--volume-client", str(agreg / "volume_client.csv"),
                            "--match-crm-stat", str(m_cs),
                            "--outdir", str(agreg)]))
+    if rubriks:
+        step("11",  "budget PFA vs réel",
+             lambda: m11.main(["--rmc", str(rmc), "--iris", str(iris_norm),
+                               "--rubriks", str(rubriks), "--outdir", str(agreg)]))
 
     print(f"\n[ok] PIPELINE COMPLET TERMINÉ → {out}")
     print("Charger ces artefacts dans l'app HTML (onglet 01 → zone pipeline) :")

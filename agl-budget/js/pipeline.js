@@ -26,6 +26,8 @@
     PND_PROJETS:   { match: /projets_pnd\.csv$/i,           label: "PND — projets (Actions/Produits/Effets)" },
     PND_AXES:      { match: /axes_pnd\.csv$/i,              label: "PND — agrégat par axe" },
     PND_SECTORIELS:{ match: /sectoriels_pnd\.csv$/i,        label: "PND — agrégat par résultat sectoriel" },
+    BUDGET_REAL:   { match: /budget_vs_real\.csv$/i,        label: "Budget PFA vs Réel (par client)" },
+    BUDGET_SECTEUR:{ match: /budget_secteur\.csv$/i,        label: "Budget PFA vs Réel (par secteur)" },
   };
 
   // Cache mémoire des tables désérialisées.

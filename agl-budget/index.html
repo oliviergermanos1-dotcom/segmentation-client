@@ -316,12 +316,21 @@
   <section class="panel" data-panel="04">
     <div class="section">
       <h2>04 · Budget PFA vs Réel — RUBRIKS vs IRIS</h2>
-      <p class="muted">Comparaison cap budgétée (RUBRIKS) vs cap réel (IRIS) par secteur. Requiert RUBRIKS et IRIS chargés en onglet 01.</p>
-      <div id="m04-placeholder" class="placeholder">Charger RUBRIKS et IRIS dans l'onglet 01.</div>
+      <p class="muted">Comparaison CAP budgétée (RUBRIKS PFA) vs CAP réel (IRIS) jointe via le RMC. Lance <code>11_budget_real.py</code> puis charge <code>budget_vs_real.csv</code> + <code>budget_secteur.csv</code> dans l'onglet 01.</p>
+      <div id="m04-placeholder" class="placeholder">En attente des sorties 11_budget_real.py.</div>
       <div id="m04-content" style="display:none">
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+          <label for="m04-year">Année</label>
+          <select id="m04-year"></select>
+        </div>
+        <div id="m04-kpis" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-bottom:12px"></div>
+        <h3>Écart PFA vs Réel par secteur</h3>
         <canvas id="m04-chart"></canvas>
         <h3>Détail par secteur</h3>
-        <div id="m04-table"></div>
+        <div id="m04-sect-table"></div>
+        <h3>Détail par client (top 30)</h3>
+        <div id="m04-client-table"></div>
+        <div class="toolbar" data-toolbar="04"></div>
       </div>
     </div>
   </section>

@@ -347,16 +347,104 @@
   /*  Onglet 04 — Budget PFA vs Réel                                          */
   /* ====================================================================== */
   function renderBudgetTab() {
-    Promise.all([store.get("sources", "RUBRIKS"), store.get("sources", "IRIS")]).then(([ru, ir]) => {
-      if (!ru || !ir) { $("#m04-placeholder").style.display = ""; $("#m04-content").style.display = "none"; return; }
-      // Sprint 1 ne persiste que les snapshots légers (sample). Pour le calcul complet,
-      // il faut re-charger les bases — message clair en attendant le pipeline 04.
-      $("#m04-placeholder").style.display = "";
-      $("#m04-content").style.display = "none";
-      $("#m04-placeholder").innerHTML =
-        "Onglet 04 — fonctionnel à brancher au Sprint 4 (jointure RUBRIKS × IRIS via RMC). " +
-        "RUBRIKS chargé (" + U.formatNumber(ru.rows) + " lignes), IRIS chargé (" + U.formatNumber(ir.rows) + " lignes).";
+    Promise.all([global.AGL.pipeline.get("BUDGET_REAL"),
+                 global.AGL.pipeline.get("BUDGET_SECTEUR")]).then(([clients, sect]) => {
+      if (!clients || !sect) { $("#m04-placeholder").style.display = ""; $("#m04-content").style.display = "none"; return; }
+      $("#m04-placeholder").style.display = "none";
+      $("#m04-content").style.display = "";
+      const years = Array.from(new Set(clients.map((r) => +r.ANNEE).filter((y) => y))).sort();
+      fillYearSelect("#m04-year", years);
+      const sel = $("#m04-year");
+      sel.onchange = () => drawBudget(clients, sect, +sel.value);
+      drawBudget(clients, sect, +sel.value);
     });
+  }
+  function drawBudget(clients, sect, year) {
+    const cli = clients.filter((r) => +r.ANNEE === year);
+    const sec = sect.filter((r) => +r.ANNEE === year);
+    const pfa  = sec.reduce((a, r) => a + U.toNumber(r.CAP_PFA), 0);
+    const reel = sec.reduce((a, r) => a + U.toNumber(r.CAP_REEL), 0);
+    const ecart = reel - pfa;
+    const ecartPct = pfa > 0 ? ecart / pfa : 0;
+    const nbAtteint = sec.filter((r) => U.toNumber(r.ECART_PCT) >= 0).length;
+
+    const kpi = (l, v, color) => "<div style='border:1px solid var(--border);border-radius:6px;padding:10px" +
+      (color ? ";border-left:3px solid " + color : "") + "'>" +
+      "<div class='muted' style='font-size:11px;text-transform:uppercase'>" + l + "</div>" +
+      "<div style='font-size:18px'><strong>" + v + "</strong></div></div>";
+    $("#m04-kpis").innerHTML =
+      kpi("CAP PFA " + year, U.formatFCFA(pfa)) +
+      kpi("CAP Réel " + year, U.formatFCFA(reel)) +
+      kpi("Écart", U.formatFCFA(ecart), ecart >= 0 ? "var(--success)" : "var(--danger)") +
+      kpi("Écart %", (ecartPct * 100).toFixed(1) + " %", ecartPct >= 0 ? "var(--success)" : "var(--danger)") +
+      kpi("Secteurs PFA atteint", nbAtteint + " / " + sec.length);
+
+    // Bar chart : écart % par secteur.
+    const data = sec.slice().sort((a, b) => U.toNumber(b.CAP_PFA) - U.toNumber(a.CAP_PFA))
+                     .map((r) => ({ label: r.SECTEUR || "—", value: U.toNumber(r.ECART_PCT) * 100 }));
+    global.AGL.charts.bar($("#m04-chart"), data, { title: "Écart Réel vs PFA " + year + " (%)" });
+
+    // Table par secteur.
+    const tbl = el("table");
+    tbl.innerHTML = "<thead><tr><th>Secteur</th><th>CAP PFA</th><th>CAP Réel</th>" +
+      "<th>Écart</th><th>Écart %</th><th>Nb clients</th></tr></thead>";
+    const tb = el("tbody");
+    sec.slice().sort((a, b) => U.toNumber(b.CAP_PFA) - U.toNumber(a.CAP_PFA)).forEach((r) => {
+      const e = U.toNumber(r.ECART_PCT);
+      const tr = el("tr");
+      tr.innerHTML = "<td>" + (r.SECTEUR || "—") + "</td>" +
+        "<td>" + U.formatFCFA(U.toNumber(r.CAP_PFA)) + "</td>" +
+        "<td>" + U.formatFCFA(U.toNumber(r.CAP_REEL)) + "</td>" +
+        "<td>" + U.formatFCFA(U.toNumber(r.ECART)) + "</td>" +
+        "<td style='color:" + (e >= 0 ? "var(--success)" : "var(--danger)") + "'><strong>" +
+          (e * 100).toFixed(1) + " %</strong></td>" +
+        "<td>" + U.formatNumber(r.NB_CLIENTS) + "</td>";
+      tb.appendChild(tr);
+    });
+    tbl.appendChild(tb);
+    $("#m04-sect-table").innerHTML = ""; $("#m04-sect-table").appendChild(tbl);
+
+    // Table par client (top 30 par CAP_PFA).
+    const tbl2 = el("table");
+    tbl2.innerHTML = "<thead><tr><th>Client</th><th>Secteur</th><th>CAP PFA</th>" +
+      "<th>CAP Réel</th><th>Écart</th><th>Écart %</th></tr></thead>";
+    const tb2 = el("tbody");
+    cli.slice().sort((a, b) => U.toNumber(b.CAP_PFA) - U.toNumber(a.CAP_PFA)).slice(0, 30).forEach((r) => {
+      const e = U.toNumber(r.ECART_PCT);
+      const tr = el("tr");
+      tr.innerHTML = "<td>" + (r.NOM_CLIENT || "") + (r.LOCKED === true || r.LOCKED === "True" || r.LOCKED === "true" ? " 🔒" : "") + "</td>" +
+        "<td>" + (r.SECTEUR || "—") + "</td>" +
+        "<td>" + U.formatFCFA(U.toNumber(r.CAP_PFA)) + "</td>" +
+        "<td>" + U.formatFCFA(U.toNumber(r.CAP_REEL)) + "</td>" +
+        "<td>" + U.formatFCFA(U.toNumber(r.ECART)) + "</td>" +
+        "<td style='color:" + (e >= 0 ? "var(--success)" : "var(--danger)") + "'><strong>" +
+          (e * 100).toFixed(1) + " %</strong></td>";
+      tb2.appendChild(tr);
+    });
+    tbl2.appendChild(tb2);
+    $("#m04-client-table").innerHTML = ""; $("#m04-client-table").appendChild(tbl2);
+
+    renderToolbar("04", "Budget PFA vs Réel " + year, "Budget_PFA_vs_Reel_" + year,
+      null,
+      () => [
+        _tableSection("Synthèse " + year,
+          ["KPI", "Valeur"],
+          [["CAP PFA", U.formatFCFA(pfa)], ["CAP Réel", U.formatFCFA(reel)],
+           ["Écart", U.formatFCFA(ecart)], ["Écart %", (ecartPct * 100).toFixed(1) + " %"],
+           ["Secteurs PFA atteint", nbAtteint + " / " + sec.length]]),
+        _tableSection("Par secteur",
+          ["Secteur", "CAP PFA", "CAP Réel", "Écart", "Écart %", "Nb clients"],
+          sec.map((r) => [r.SECTEUR || "—", U.formatFCFA(U.toNumber(r.CAP_PFA)),
+            U.formatFCFA(U.toNumber(r.CAP_REEL)), U.formatFCFA(U.toNumber(r.ECART)),
+            (U.toNumber(r.ECART_PCT) * 100).toFixed(1) + " %", r.NB_CLIENTS])),
+        _tableSection("Top 30 clients par CAP PFA",
+          ["Client", "Secteur", "CAP PFA", "CAP Réel", "Écart %"],
+          cli.slice().sort((a, b) => U.toNumber(b.CAP_PFA) - U.toNumber(a.CAP_PFA)).slice(0, 30)
+             .map((r) => [r.NOM_CLIENT, r.SECTEUR || "—",
+               U.formatFCFA(U.toNumber(r.CAP_PFA)),
+               U.formatFCFA(U.toNumber(r.CAP_REEL)),
+               (U.toNumber(r.ECART_PCT) * 100).toFixed(1) + " %"]))
+      ]);
   }
 
   /* ====================================================================== */
