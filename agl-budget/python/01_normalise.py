@@ -186,8 +186,14 @@ def main(argv=None) -> int:
               "(pip install cleanco recommandé).", file=sys.stderr)
 
     df = load_table(in_path)
-    if args.col not in df.columns:
+
+    # Tolérance casse/espaces sur le nom de colonne : "Nom du compte" matche
+    # "nom_du_compte" et inversement. On utilise config.resolve_column.
+    import config as _cfg
+    real_col = _cfg.resolve_column(df.columns, args.col)
+    if real_col is None:
         sys.exit(f"ERREUR : colonne '{args.col}' absente. Colonnes : {list(df.columns)}")
+    args.col = real_col
 
     res = df[args.col].fillna("").map(normalise)
     df["NOM_NORMALISE"] = [r[0] for r in res]
