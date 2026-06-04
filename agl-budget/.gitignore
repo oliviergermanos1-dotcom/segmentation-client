@@ -1,0 +1,23 @@
+# AGL BUDGET — fichiers à ne jamais committer
+
+# Données sources confidentielles AGL (CONFIDENTIEL — ne jamais pousser)
+data/
+*.xlsx
+*.xls
+*.csv
+*_norm.xlsx
+PND*.pdf
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+
+# OS / éditeurs
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/

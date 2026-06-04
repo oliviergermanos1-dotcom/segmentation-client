@@ -1,0 +1,14 @@
+# AGL BUDGET — Pipeline Python de matching (cf. cahier des charges §4)
+# Sprint 1 : normalisation. Sprints 2+ : matching probabiliste Splink.
+
+pandas>=2.0
+openpyxl>=3.1            # lecture/écriture .xlsx
+
+# --- Matching (benchmarkés dans le cahier des charges §4) ---
+cleanco>=2.3            # suppression formes juridiques mondiales + OHADA
+splink>=4.0             # Fellegi-Sunter probabiliste (MoJ UK) — flux 02-04
+rapidfuzz>=3.0          # comparateurs de chaînes (utilisé par companymatch / fallback)
+
+# companymatch (Gawaboumga, licence MIT) : abréviations, typos phonétiques.
+# Non publié sur PyPI sous ce nom — à installer depuis la source si requis :
+#   pip install git+https://github.com/Gawaboumga/companymatch

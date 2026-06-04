@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>AGL BUDGET — Strategic Intelligence Platform</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- SheetJS (parsing Excel) — chargé aussi dans le Web Worker -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<style>
+  :root{
+    --bg:#f5f6f8; --card:#fff; --border:#e3e6ea; --text:#1f2937; --muted:#6b7280;
+    --navy:#0b3d91; --primary:#2563eb; --primary-dark:#1d4ed8;
+    --success:#16a34a; --danger:#dc2626; --warning:#d97706; --locked:#7c3aed;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.5}
+  header.app{background:var(--navy);color:#fff;padding:16px 24px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px}
+  header.app h1{margin:0;font-size:20px;letter-spacing:.5px}
+  header.app .sub{font-size:12px;opacity:.85}
+  .confidentiel{background:var(--danger);border-radius:4px;padding:2px 8px;font-size:11px;font-weight:600;letter-spacing:1px}
+  main{padding:20px 24px;max-width:1280px;margin:0 auto}
+  .section{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:18px;margin-bottom:16px}
+  h2{margin:0 0 12px;font-size:16px}
+  h3{margin:14px 0 6px;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .muted{color:var(--muted)}
+  /* onglets */
+  nav.tabs{display:flex;gap:4px;flex-wrap:wrap;border-bottom:2px solid var(--border);margin-bottom:16px}
+  .tab{background:none;border:none;padding:9px 12px;font-size:13px;color:var(--muted);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-2px;white-space:nowrap}
+  .tab:hover{color:var(--text)}
+  .tab.active{color:var(--primary);border-bottom-color:var(--primary);font-weight:600}
+  .tab .star{color:var(--warning)}
+  .panel{display:none}
+  .panel.active{display:block}
+  /* upload */
+  .sources-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}
+  .src-card{border:1px solid var(--border);border-radius:8px;padding:12px;display:flex;flex-direction:column;gap:8px}
+  .src-card .role{font-size:11px;color:var(--muted)}
+  .src-card .prio{font-size:10px;font-weight:600;align-self:flex-start;border-radius:999px;padding:2px 8px;background:#eef2ff;color:var(--primary)}
+  .src-card .prio.locked{background:#f3e8ff;color:var(--locked)}
+  .src-card input[type=file]{font-size:12px}
+  .src-status{font-size:12px;min-height:16px}
+  .ok{color:var(--success)} .err{color:var(--danger)}
+  .progress{height:6px;background:#eef0f3;border-radius:999px;overflow:hidden;display:none}
+  .progress.show{display:block}
+  .progress > div{height:100%;width:0;background:var(--primary);transition:width .15s}
+  table{border-collapse:collapse;width:100%;font-size:12px}
+  th,td{border:1px solid var(--border);padding:4px 8px;text-align:left}
+  th{background:#f8fafc}
+  .badge{display:inline-block;border-radius:999px;padding:2px 8px;font-size:11px;background:#eef2ff;color:var(--primary)}
+  .meta-bar{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-top:8px}
+  .placeholder{color:var(--muted);font-style:italic;padding:24px;text-align:center;border:1px dashed var(--border);border-radius:8px}
+  canvas{width:100%;height:280px}
+  .ro{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px}
+  .ro .item{border:1px solid var(--border);border-radius:6px;padding:10px}
+  .ro .RISQUE{border-left:3px solid var(--danger)}
+  .ro .OPPORTUNITE{border-left:3px solid var(--success)}
+  .ro .t{font-weight:600;font-size:13px}
+</style>
+</head>
+<body>
+<header class="app">
+  <div>
+    <h1>AGL BUDGET <span class="sub">— Strategic Intelligence Platform</span></h1>
+    <div class="sub">Direction Stratégie — AGL Côte d'Ivoire · v2.0 · Sources macro à date juin 2026</div>
+  </div>
+  <div><span class="confidentiel">CONFIDENTIEL</span></div>
+</header>
+
+<main>
+  <nav class="tabs" id="tabs"><!-- généré par app.js --></nav>
+
+  <!-- 01 — Matching & RMC : seul onglet actif au Sprint 1 -->
+  <section class="panel" data-panel="01">
+    <div class="section">
+      <h2>01 · Matching & RMC — Chargement des sources</h2>
+      <p class="muted">Upload séquentiel (une base à la fois). Parsing en arrière-plan (Web Worker), snapshot IndexedDB après chaque base — reprise sans re-upload en cas de crash.</p>
+      <div id="mem-warn" class="err" style="font-size:12px"></div>
+      <div class="sources-grid" id="sources-grid"></div>
+      <div class="progress" id="progress"><div></div></div>
+      <div class="meta-bar" id="quota-bar"></div>
+    </div>
+
+    <div class="section">
+      <h3>Aperçu de la dernière base chargée</h3>
+      <div id="preview" class="placeholder">Aucune base chargée pour l'instant. Chargez un fichier (ex : test 500 lignes).</div>
+    </div>
+
+    <div class="section">
+      <h3>État des sources (snapshots persistés)</h3>
+      <div id="loaded-list" class="placeholder">—</div>
+    </div>
+  </section>
+
+  <!-- Onglet macro (transverse, alimente Couche 2 / scénarios) -->
+  <section class="panel" data-panel="macro">
+    <div class="section">
+      <h2>Sources macro mondiales — à date juin 2026</h2>
+      <div id="macro-tables"></div>
+      <h3>Risques & opportunités actifs</h3>
+      <div class="ro" id="ro-grid"></div>
+    </div>
+  </section>
+
+  <!-- Onglets 02–14 : stubs Sprint 1 -->
+  <!-- générés dynamiquement par app.js avec un placeholder -->
+</main>
+
+<!-- Modules (1 module = 1 fichier — ordre de dépendance) -->
+<script src="js/utils.js"></script>
+<script src="js/macro_data.js"></script>
+<script src="js/store.js"></script>
+<script src="js/charts.js"></script>
+<script src="js/loader.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
