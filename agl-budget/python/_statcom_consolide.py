@@ -64,6 +64,19 @@ def resolve_col(df, candidates):
     return None
 
 
+# Codes de conditionnement BULK (confirmé utilisateur). Tout ce qui n'est pas
+# dans cet ensemble est considéré comme conteneurisé → volume en TEU.
+BULK_CODES = {"SACS", "VRAC", "BRBK", "BREAK BULK", "BREAKBULK"}
+
+
+def _to_num_series(s):
+    """Conversion str → float robuste (gère ',', espaces, NaN)."""
+    import pandas as pd
+    return pd.to_numeric(s.astype(str).str.replace(r"[ ,]", "", regex=True)
+                                       .str.replace(",", ".", regex=False),
+                         errors="coerce").fillna(0)
+
+
 def process_one(path: Path):
     """Traite UN fichier STATCOM par métier → DataFrame normalisé."""
     info = metier_du_fichier(path.name)
@@ -96,9 +109,39 @@ def process_one(path: Path):
         "mois escale", "mois", "month", "mois_escale",
     ])
     c_march = resolve_col(df, ["marchandise", "marchandises", "produit", "commodity", "designation"])
-    c_teu   = resolve_col(df, ["volume_teu", "teu", "volume teu", "nb_teu", "nb teu", "qte_teu"])
-    c_bulk  = resolve_col(df, ["volume_bulk", "bulk", "volume bulk", "tonnes", "tonnage", "conventionnel"])
-    c_kg    = resolve_col(df, ["volume_kg", "kg", "volume kg", "poids", "weight", "weight_kg"])
+    # Confirmé utilisateur : colonnes réelles STATCOM
+    c_teu    = resolve_col(df, ["NOMBRE_TEU", "nombre_teu", "nombre teu",
+                                "nb_teu", "nb teu", "teu", "evp", "volume_teu", "qte_teu"])
+    c_poids  = resolve_col(df, ["POIDS_MARCHANDISE", "poids_marchandise",
+                                "poids marchandise", "poids", "weight", "poids_brut", "kg",
+                                "tonnage", "tonnes"])
+    c_condit = resolve_col(df, ["CODE_CONDIT", "code_condit", "code condit",
+                                "conditionnement", "condit"])
+
+    # Volumes numériques bruts.
+    v_teu   = _to_num_series(df[c_teu])   if c_teu   else 0
+    v_poids = _to_num_series(df[c_poids]) if c_poids else 0
+    if c_condit is not None:
+        condit = df[c_condit].astype(str).str.upper().str.strip()
+        is_bulk = condit.isin(BULK_CODES)
+    else:
+        is_bulk = False  # pas de conditionnement → tout est conteneur si maritime/hinter
+    is_air = "AÉRIEN" in metier.upper() or "AERIEN" in metier.upper()
+
+    # Règles métier (confirmées user):
+    #  - Aérien        → tout dans volume_kg (POIDS_MARCHANDISE)
+    #  - Maritime/Hinterland + CODE_CONDIT ∈ {SACS, VRAC, BRBK} → volume_bulk = POIDS
+    #  - Maritime/Hinterland + conteneur (autre conditionnement)→ volume_teu = NOMBRE_TEU
+    if is_air:
+        vol_teu_final  = 0
+        vol_bulk_final = 0
+        vol_kg_final   = v_poids
+    else:
+        # On garde TEU SEULEMENT pour les conteneurs (is_bulk=False).
+        vol_teu_final  = v_teu if isinstance(v_teu, int) else v_teu.where(~is_bulk, 0)
+        # Et POIDS SEULEMENT pour les bulk (is_bulk=True).
+        vol_bulk_final = v_poids if isinstance(v_poids, int) else v_poids.where(is_bulk, 0)
+        vol_kg_final   = 0
 
     out = pd.DataFrame()
     out["client"]      = df[c_client] if c_client else ""
@@ -108,16 +151,20 @@ def process_one(path: Path):
     out["annee"]       = df[c_annee] if c_annee else ""
     out["mois"]        = df[c_mois]  if c_mois  else ""
     out["marchandise"] = df[c_march] if c_march else ""
-    out["volume_teu"]  = df[c_teu]   if c_teu  else 0
-    out["volume_bulk"] = df[c_bulk]  if c_bulk else 0
-    out["volume_kg"]   = df[c_kg]    if c_kg   else 0
+    out["code_condit"] = df[c_condit] if c_condit else ""
+    out["volume_teu"]  = vol_teu_final
+    out["volume_bulk"] = vol_bulk_final  # en kg ou tonnes selon source
+    out["volume_kg"]   = vol_kg_final
     out["fichier_source"] = path.name
 
     n = len(out)
     n_clients = out["client"].astype(str).str.strip().ne("").sum()
     n_annee   = out["annee"].astype(str).str.strip().ne("").sum()
+    teu_sum   = out["volume_teu"].sum()  if not isinstance(out["volume_teu"].iloc[0] if len(out) else 0, int) or out["volume_teu"].dtype != object else 0
+    bulk_sum  = out["volume_bulk"].sum() if not isinstance(out["volume_bulk"].iloc[0] if len(out) else 0, int) or out["volume_bulk"].dtype != object else 0
+    kg_sum    = out["volume_kg"].sum()   if not isinstance(out["volume_kg"].iloc[0]  if len(out) else 0, int) or out["volume_kg"].dtype != object else 0
     print(f"  [ok] {path.name:<55} → {metier:<20} "
-          f"{n:>7} lignes ({n_clients} client, {n_annee} année)")
+          f"{n:>7} l. · {int(teu_sum):>8,} TEU · {int(bulk_sum):>12,} bulk · {int(kg_sum):>12,} kg")
     return out
 
 
