@@ -1,0 +1,151 @@
+{
+  "_doc": "AGL CI 2026 — preset par défaut. Mappings confirmés utilisateur.",
+  "_version": "1.0",
+  "_generated": "2026-06-05",
+
+  "files": {
+    "crm":          { "pattern": "CRM*.xlsx" },
+    "iris":         { "pattern": "IRIS*.xlsx" },
+    "rubriks":      { "pattern": "RUBRIKS*.xlsx" },
+    "statcom":      { "pattern": "STATCOM_consolide.xlsx", "fallback_pattern": "STATCOM.xlsx" },
+    "opportunites": { "pattern": "opportunites*.xlsx", "optional": true }
+  },
+
+  "matching": {
+    "white_space_prefix": "TM",
+    "white_space_pad": 6,
+    "rubriks_cap_multiplier": 1000,
+    "rubriks_cap_unit_label": "K FCFA"
+  },
+
+  "fields": {
+    "id_crm": {
+      "type": "cascade",
+      "sources": [
+        { "file": "crm", "column": "CRM ID du Compte" },
+        { "file": "rubriks", "column": "CLIENT", "extract": "\\(([A-Z0-9\\-]+)\\)\\s*$" }
+      ]
+    },
+
+    "nom_client": {
+      "type": "cascade",
+      "sources": [
+        { "file": "crm", "column": "Nom du compte" },
+        { "file": "rubriks", "column": "CLIENT", "extract": "^(.*?)\\s*\\(" },
+        { "file": "rubriks", "column": "CLIENT" },
+        { "file": "iris", "column": "client" }
+      ]
+    },
+
+    "secteur": {
+      "type": "cascade",
+      "sources": [
+        { "file": "crm", "column": "Verticale" },
+        { "file": "rubriks", "column": "SECTEUR" }
+      ]
+    },
+
+    "activite": {
+      "type": "cascade",
+      "sources": [
+        { "file": "crm", "column": "Segment de marché" }
+      ]
+    },
+
+    "metier_principal": {
+      "type": "computed",
+      "method": "statcom_dominant_volume"
+    },
+
+    "cap_reel": {
+      "type": "per_year_from_iris",
+      "file": "iris",
+      "value_column": "montant",
+      "year_column": "periode",
+      "id_column": "id",
+      "aggregation": "sum"
+    },
+
+    "cap_pfa": {
+      "type": "per_year_from_rubriks",
+      "file": "rubriks",
+      "id_extract_column": "CLIENT",
+      "id_extract_pattern": "\\(([A-Z0-9\\-]+)\\)\\s*$",
+      "years": {
+        "2024": { "column": "2024", "multiplier": 1000 },
+        "2025": { "column": "2025", "multiplier": 1000 },
+        "2026": { "column": "B26",  "multiplier": 1000 }
+      },
+      "aggregation": "sum"
+    },
+
+    "volume_teu": {
+      "type": "per_year_from_statcom",
+      "file": "statcom",
+      "value_column": "volume_teu",
+      "year_column": "annee",
+      "client_column": "client",
+      "exclude_aerial_files": true,
+      "aggregation": "sum"
+    },
+
+    "volume_bulk_kg": {
+      "type": "per_year_from_statcom",
+      "file": "statcom",
+      "value_column": "volume_bulk",
+      "year_column": "annee",
+      "client_column": "client",
+      "exclude_aerial_files": true,
+      "aggregation": "sum"
+    },
+
+    "volume_kg_aerien": {
+      "type": "per_year_from_statcom",
+      "file": "statcom",
+      "value_column": "volume_kg",
+      "year_column": "annee",
+      "client_column": "client",
+      "aerial_files_only": true,
+      "aggregation": "sum"
+    },
+
+    "nb_operations": {
+      "type": "per_year_from_statcom",
+      "file": "statcom",
+      "value_column": null,
+      "year_column": "annee",
+      "client_column": "client",
+      "aggregation": "count"
+    },
+
+    "nb_opp_ouvertes": {
+      "type": "from_opportunites",
+      "file": "opportunites",
+      "id_column": "CRM ID du Compte",
+      "filter_column": "Statut",
+      "filter_values": ["Ouvert(e)", "Ouvert"],
+      "aggregation": "count"
+    },
+
+    "pipeline_cap_brut": {
+      "type": "from_opportunites",
+      "file": "opportunites",
+      "id_column": "CRM ID du Compte",
+      "value_column": "CAP Potentiel Global (€)",
+      "filter_column": "Statut",
+      "filter_values": ["Ouvert(e)", "Ouvert"],
+      "aggregation": "sum"
+    },
+
+    "pipeline_cap_pondere": {
+      "type": "from_opportunites",
+      "file": "opportunites",
+      "id_column": "CRM ID du Compte",
+      "value_column": "CAP Potentiel Global (€)",
+      "weight_column": "Probabilité de succès",
+      "filter_column": "Statut",
+      "filter_values": ["Ouvert(e)", "Ouvert"],
+      "aggregation": "weighted_sum"
+    }
+  }
+}
