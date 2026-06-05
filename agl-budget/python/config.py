@@ -68,8 +68,9 @@ STATCOM = {
 RUBRIKS = {
     "nom":     "client",
     "secteur": "secteur",
-    # À confirmer :
-    "cap_pfa": "cap_pfa",
+    # Confirmé utilisateur : colonne B26 = CAP prévu (budget PFA) fin 2026.
+    # Colonnes "2025" et "2024" = CAP réalisé années passées (utiles pour comparaison).
+    "cap_pfa": "B26",
     "annee":   "annee",
 }
 

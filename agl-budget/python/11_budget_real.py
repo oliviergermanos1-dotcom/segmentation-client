@@ -86,12 +86,19 @@ def main(argv=None) -> int:
                 .reset_index().rename(columns={iris_id: "ID_IRIS", "_annee": "ANNEE", "_cap": "CAP_REEL"}))
 
     # --- Côté RUBRIKS : cap PFA par client × année + normalisation pour jointure
-    ru_nom = config.resolve_column(ru.columns, config.RUBRIKS["nom"])
-    ru_sec = config.resolve_column(ru.columns, config.RUBRIKS["secteur"])
-    ru_cap = config.resolve_column(ru.columns, config.RUBRIKS["cap_pfa"], ["cap", "budget", "objectif"])
-    ru_ann = config.resolve_column(ru.columns, config.RUBRIKS["annee"], ["periode", "year"])
-    if not ru_nom or not ru_cap:
-        sys.exit("ERREUR : colonnes nom/cap_pfa RUBRIKS manquantes.")
+    ru_nom = config.resolve_column(ru.columns, config.RUBRIKS["nom"], ["Compte", "Nom du compte", "Client", "CLIENT"])
+    ru_sec = config.resolve_column(ru.columns, config.RUBRIKS["secteur"], ["Verticale", "Sector", "Activité", "Industry"])
+    ru_cap = config.resolve_column(ru.columns, config.RUBRIKS["cap_pfa"],
+                                    ["B26", "b26", "PFA 2026", "Budget 2026", "cap_pfa",
+                                     "cap_2026", "cap", "budget", "objectif", "BUDGET",
+                                     "Montant", "montant_pfa", "Forecast 2026"])
+    ru_ann = config.resolve_column(ru.columns, config.RUBRIKS["annee"], ["periode", "year", "exercice"])
+    missing = []
+    if not ru_nom: missing.append(f"nom (config.RUBRIKS['nom']='{config.RUBRIKS['nom']}')")
+    if not ru_cap: missing.append(f"cap_pfa (config.RUBRIKS['cap_pfa']='{config.RUBRIKS['cap_pfa']}')")
+    if missing:
+        sys.exit(f"ERREUR : colonnes RUBRIKS manquantes : {', '.join(missing)}.\n"
+                 f"Colonnes disponibles : {list(ru.columns)}")
 
     # Applique les aliases manuels RUBRIKS (cf. aliases.json) AVANT normalisation,
     # pour rattraper les acronymes (ex: "SIR" → "Société Ivoirienne de Raffinage").
