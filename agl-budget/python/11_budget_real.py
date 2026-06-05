@@ -64,6 +64,10 @@ def main(argv=None) -> int:
     ap.add_argument("--iris",    required=True, help="IRIS normalisé (sortie 01)")
     ap.add_argument("--rubriks", required=True)
     ap.add_argument("--outdir",  default="agreg")
+    ap.add_argument("--rubriks-multiplier", type=float, default=1000.0,
+                    help="Facteur multiplicatif sur le CAP PFA RUBRIKS. "
+                         "Défaut 1000 : RUBRIKS en K FCFA, IRIS en FCFA. "
+                         "Mettre 1.0 si même unité.")
     args = ap.parse_args(argv)
 
     rmc  = _load(args.rmc)
@@ -127,7 +131,11 @@ def main(argv=None) -> int:
     ru_nom_aliased = ru[ru_nom].fillna("").map(lambda n: norm.apply_alias(n, "RUBRIKS"))
     res = ru_nom_aliased.map(norm.normalise)
     ru["NOM_BASE"]      = [r[1] for r in res]
-    ru["_cap_pfa"]      = _num(ru[ru_cap])
+    # Conversion d'unité RUBRIKS → IRIS (par défaut K FCFA → FCFA, ×1000).
+    ru["_cap_pfa"]      = _num(ru[ru_cap]) * args.rubriks_multiplier
+    if args.rubriks_multiplier != 1.0:
+        print(f"[info] PFA RUBRIKS multiplié par {args.rubriks_multiplier:g} "
+              f"(défaut: conversion K FCFA → FCFA)")
     ru["_secteur"]      = ru[ru_sec] if ru_sec else ""
     ru["_annee"]        = ru[ru_ann].map(_year) if ru_ann else 2026
 
