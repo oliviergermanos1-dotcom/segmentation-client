@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import re
+import re
 import sys
 from pathlib import Path
 
@@ -100,6 +101,27 @@ def main(argv=None) -> int:
         sys.exit(f"ERREUR : colonnes RUBRIKS manquantes : {', '.join(missing)}.\n"
                  f"Colonnes disponibles : {list(ru.columns)}")
 
+    # Extraction de l'ID CRM directement depuis le nom RUBRIKS (cas confirmé
+    # utilisateur) : format "NOM_CLIENT (1-XXXXX)" ou "(D-XXXXX)" où la valeur
+    # entre parenthèses est l'ID CRM exact. Match par ID = 100% fiable.
+    _ID_CRM_RE = re.compile(r"\(([A-Z0-9][A-Z0-9\-]{2,}[A-Z0-9])\)\s*$")
+    def _extract_crm_id(name):
+        if not name: return None
+        m = _ID_CRM_RE.search(str(name).strip())
+        return m.group(1) if m else None
+
+    ru["_ID_CRM_RUBRIKS"] = ru[ru_nom].fillna("").map(_extract_crm_id)
+    n_with_id = ru["_ID_CRM_RUBRIKS"].notna().sum()
+    print(f"[in] RUBRIKS : {len(ru):,} lignes · ID CRM extrait directement pour "
+          f"{n_with_id:,} lignes ({n_with_id/max(len(ru),1):.0%})")
+
+    # Filtre les lignes 'Total Customer' qui sont des sous-totaux non exploitables.
+    n_total_customer = ru[ru_nom].fillna("").str.strip().str.lower().eq("total customer").sum()
+    if n_total_customer:
+        print(f"[info] {n_total_customer:,} lignes 'Total Customer' ignorées "
+              f"(sous-totaux RUBRIKS)")
+        ru = ru[~ru[ru_nom].fillna("").str.strip().str.lower().eq("total customer")].copy()
+
     # Applique les aliases manuels RUBRIKS (cf. aliases.json) AVANT normalisation,
     # pour rattraper les acronymes (ex: "SIR" → "Société Ivoirienne de Raffinage").
     ru_nom_aliased = ru[ru_nom].fillna("").map(lambda n: norm.apply_alias(n, "RUBRIKS"))
@@ -126,14 +148,35 @@ def main(argv=None) -> int:
     ], ignore_index=True).dropna(subset=["NOM_BASE"]).query("NOM_BASE != ''")
     keys = keys.drop_duplicates(subset=["NOM_BASE", "ID_CRM"])
 
-    # Drop des colonnes RUBRIKS qui entreraient en conflit avec celles du RMC
-    # (SECTEUR, LOCKED) — on garde seulement les variantes _xxx qu'on a déjà
-    # créées pour les valeurs utiles côté RUBRIKS.
+    # Drop des colonnes RUBRIKS qui entreraient en conflit avec celles du RMC.
     ru_clean = ru.drop(columns=[c for c in ("SECTEUR", "LOCKED", "ID_CRM", "ID_IRIS",
                                             "NOM_CANONIQUE", "ALIAS_STATCOM")
                                 if c in ru.columns], errors="ignore")
-    bud = ru_clean.merge(keys, on="NOM_BASE", how="left").copy()
+
+    # --- JOINTURE EN 2 PASSES ----------------------------------------------
+    # Passe 1 (prioritaire) : jointure directe via ID_CRM extrait du nom.
+    rmc_for_id = rmc[["ID_CRM", "ID_IRIS", "NOM_CANONIQUE", "SECTEUR", "LOCKED"]].copy()
+    bud = ru_clean.merge(rmc_for_id, left_on="_ID_CRM_RUBRIKS", right_on="ID_CRM", how="left")
+    n_match_id = bud["ID_CRM"].notna().sum()
+
+    # Passe 2 (fallback) : pour les lignes encore non rattachées, tente le
+    # match par NOM_BASE (cas où le nom RUBRIKS n'avait pas de parenthèses).
+    mask_orphans = bud["ID_CRM"].isna()
+    if mask_orphans.any():
+        orphan_idx = bud.index[mask_orphans]
+        orphan_match = bud.loc[mask_orphans, ["NOM_BASE"]].merge(
+            keys, on="NOM_BASE", how="left").set_index(orphan_idx)
+        for col in ("ID_CRM", "ID_IRIS", "NOM_CANONIQUE", "SECTEUR", "LOCKED"):
+            if col in orphan_match.columns:
+                bud.loc[orphan_idx, col] = orphan_match[col].values
+        n_match_nom = bud["ID_CRM"].notna().sum() - n_match_id
+    else:
+        n_match_nom = 0
+
     nb_unmatched = bud["ID_CRM"].isna().sum()
+    print(f"[ok] Jointure RUBRIKS→RMC : {n_match_id:,} via ID CRM + "
+          f"{n_match_nom:,} via nom = {n_match_id+n_match_nom:,} / {len(bud):,} "
+          f"({nb_unmatched:,} non rattachés)")
 
     # --- Joint avec IRIS (cap réel) ------------------------------------------
     bud = bud.merge(iris_agg, left_on=["ID_IRIS", "_annee"],
