@@ -108,7 +108,11 @@ def process_one(path: Path):
     c_mois  = resolve_col(df, [
         "mois escale", "mois", "month", "mois_escale",
     ])
-    c_march = resolve_col(df, ["marchandise", "marchandises", "produit", "commodity", "designation"])
+    c_march = resolve_col(df, [
+        "marchandise", "marchandises",
+        "libellé marchandise", "libelle marchandise",  # maritime / hinterland
+        "produit", "commodity", "designation",
+    ])
     # Confirmé utilisateur : colonnes réelles STATCOM
     c_teu    = resolve_col(df, ["NOMBRE_TEU", "nombre_teu", "nombre teu",
                                 "nb_teu", "nb teu", "teu", "evp", "volume_teu", "qte_teu"])
