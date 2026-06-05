@@ -92,19 +92,25 @@ def main(argv=None) -> int:
         lambda r: (r["VOLUME_AGL"] / r["VOLUME_MARCHE"]) if r["VOLUME_MARCHE"] > 0 else 0.0, axis=1)
 
     # CAGR AGL et CAGR marché par métier (sur la période disponible).
+    # Toujours renvoyer un DataFrame avec les bonnes colonnes même si vide
+    # (sinon merge plante avec KeyError 'METIER').
     def add_cagr(df, val_col, name):
         out = []
-        for metier, sub in df.groupby("METIER"):
-            sub = sub.sort_values("ANNEE")
-            if len(sub) >= 2:
-                a0, a1 = int(sub["ANNEE"].iloc[0]), int(sub["ANNEE"].iloc[-1])
-                v0, v1 = float(sub[val_col].iloc[0]), float(sub[val_col].iloc[-1])
-                years = (a1 - a0) or 1
-                cagr = (v1 / v0) ** (1 / years) - 1 if (v0 > 0 and v1 > 0) else None
-            else:
+        if "METIER" in df.columns and "ANNEE" in df.columns and val_col in df.columns:
+            for metier, sub in df.groupby("METIER", dropna=False):
+                sub = sub.sort_values("ANNEE")
                 cagr = None
-            out.append({"METIER": metier, name: cagr})
-        return pd.DataFrame(out)
+                if len(sub) >= 2:
+                    try:
+                        a0 = int(sub["ANNEE"].iloc[0]); a1 = int(sub["ANNEE"].iloc[-1])
+                        v0 = float(sub[val_col].iloc[0]); v1 = float(sub[val_col].iloc[-1])
+                        years = (a1 - a0) or 1
+                        if v0 > 0 and v1 > 0:
+                            cagr = (v1 / v0) ** (1 / years) - 1
+                    except (ValueError, TypeError):
+                        cagr = None
+                out.append({"METIER": metier, name: cagr})
+        return pd.DataFrame(out, columns=["METIER", name])
 
     pdm = pdm.merge(add_cagr(pdm, "VOLUME_AGL",    "CAGR_AGL"),    on="METIER", how="left")
     pdm = pdm.merge(add_cagr(pdm, "VOLUME_MARCHE", "CAGR_MARCHE"), on="METIER", how="left")
