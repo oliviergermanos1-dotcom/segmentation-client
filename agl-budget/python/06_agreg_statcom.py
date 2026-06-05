@@ -93,11 +93,11 @@ def main(argv=None) -> int:
     vc.to_csv(outdir / "volume_client.csv", index=False, encoding="utf-8")
 
     # 3) METIERS_3ANS : pivot par métier 2023/2024/2025 + CAGR réel sur volume principal.
-    def _vol_principal(row):
-        m = (row["METIER"] or "").upper()
-        if "AERIEN" in m or "AÉRIEN" in m: return row["VOLUME_KG"]
-        return row["VOLUME_TEU"]
-    marche["VOLUME_PRINCIPAL"] = marche.apply(_vol_principal, axis=1)
+    # Vectorisé pour éviter le bug pandas "apply returns DataFrame" sur certains
+    # cas (colonnes dupliquées via groupby+rename, etc.).
+    _m_up = marche["METIER"].fillna("").astype(str).str.upper()
+    _is_air = _m_up.str.contains("AERIEN") | _m_up.str.contains("AÉRIEN")
+    marche["VOLUME_PRINCIPAL"] = marche["VOLUME_TEU"].where(~_is_air, marche["VOLUME_KG"])
     piv = marche.pivot_table(index="METIER", columns="ANNEE", values="VOLUME_PRINCIPAL",
                              aggfunc="sum", fill_value=0).reset_index()
     annees = sorted([c for c in piv.columns if isinstance(c, (int,)) or (hasattr(c, "item") and isinstance(c.item(), int))])
