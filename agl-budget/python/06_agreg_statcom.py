@@ -41,6 +41,33 @@ def _to_num(s):
             .fillna(0))
 
 
+def _to_year(v):
+    """Extraction robuste d'année 4 chiffres depuis n'importe quel format :
+       2024, "2024", "2024-01-15", "Année 2024", 2024.0, datetime, etc."""
+    import re
+    if v is None: return None
+    try:
+        if pd.isna(v): return None
+    except (TypeError, ValueError):
+        pass
+    # Cas datetime/Timestamp
+    if hasattr(v, "year"):
+        try: return int(v.year)
+        except (TypeError, ValueError): pass
+    s = str(v).strip()
+    if not s: return None
+    # Cas direct : un nombre entier 2000-2100
+    try:
+        n = int(float(s))
+        if 1900 <= n <= 2100: return n
+    except (ValueError, TypeError):
+        pass
+    # Sinon, on cherche un motif YYYY dans la chaîne
+    m = re.search(r"(20\d{2}|19\d{2})", s)
+    if m: return int(m.group(1))
+    return None
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="AGL BUDGET — 06 agrégation STATCOM")
     ap.add_argument("--statcom", required=True, help="STATCOM normalisé (sortie 03)")
@@ -59,12 +86,29 @@ def main(argv=None) -> int:
     if "NOM_BASE" not in stat:
         sys.exit("ERREUR : STATCOM non normalisé — relance 03 avec --stat-norm-out")
 
+    print(f"[in] STATCOM {len(stat):,} lignes · colonnes utilisées : "
+          f"metier='{col_metier}', annee='{col_annee}', teu='{col_teu}', "
+          f"bulk='{col_bulk}', kg='{col_kg}'")
+
     # Conversion numérique des volumes (ce qui n'existe pas → 0).
     stat["_TEU"]  = _to_num(stat[col_teu])  if col_teu  else 0.0
     stat["_BULK"] = _to_num(stat[col_bulk]) if col_bulk else 0.0
     stat["_KG"]   = _to_num(stat[col_kg])   if col_kg   else 0.0
-    stat["_ANNEE"] = pd.to_numeric(stat[col_annee], errors="coerce").astype("Int64")
+    # Extraction robuste de l'année (entier 2000-2100, ou motif YYYY dans texte/date).
+    stat["_ANNEE"] = stat[col_annee].map(_to_year)
+    stat["_ANNEE"] = pd.to_numeric(stat["_ANNEE"], errors="coerce").astype("Int64")
+    n_avant = len(stat)
     stat = stat.dropna(subset=["_ANNEE"])
+    n_apres = len(stat)
+    if n_apres < n_avant:
+        sys.stderr.write(f"[info] {n_avant - n_apres:,} lignes sans année exploitable supprimées "
+                         f"({n_apres:,} restantes)\n")
+    if n_apres == 0:
+        # Diagnostic : on échantillonne la colonne année pour aider l'utilisateur.
+        sample = stat[col_annee].astype(str).head(10).tolist() if col_annee in stat else []
+        sys.exit(f"ERREUR : 0 lignes après filtrage année. Colonne '{col_annee}' contient des "
+                 f"valeurs non interprétables. Échantillon : {sample}. "
+                 f"Adapter _to_year() dans 06_agreg_statcom.py.")
 
     outdir = Path(args.outdir); outdir.mkdir(parents=True, exist_ok=True)
 
