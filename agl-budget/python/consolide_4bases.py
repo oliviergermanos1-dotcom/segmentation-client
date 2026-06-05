@@ -30,6 +30,7 @@ Usage:
 """
 from __future__ import annotations
 import argparse
+import datetime as dt
 import json
 import re
 import sys
@@ -285,10 +286,192 @@ def _extract_id(s, pattern):
 
 
 # ---------------------------------------------------------------------------
+# RÉFÉRENTIEL PERSISTANT — IDs stables d'un run à l'autre
+# ---------------------------------------------------------------------------
+
+def load_referentiel(path: Path) -> dict:
+    """Charge le référentiel ou retourne un référentiel vide."""
+    if path.exists():
+        with open(path, encoding="utf-8") as f:
+            ref = json.load(f)
+        # Sanity check : structure minimale
+        ref.setdefault("clients", {})
+        ref.setdefault("tm_counter", 0)
+        ref.setdefault("history", [])
+        return ref
+    return {
+        "_doc": "Référentiel client persistant AGL BUDGET. NE PAS RENOMMER LES CLÉS.",
+        "_format_version": "1.0",
+        "clients": {},
+        "tm_counter": 0,
+        "last_run": None,
+        "history": []
+    }
+
+
+def save_referentiel(path: Path, ref: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(ref, f, indent=2, ensure_ascii=False)
+
+
+def get_or_assign_id(ref: dict, nom_base: str, id_crm: str, period: str,
+                     presence: list) -> tuple:
+    """
+    Retourne (id_unique, is_new, type_id).
+    Garantit la stabilité : un même client garde son ID d'un run à l'autre.
+
+    Stratégie :
+      1. Si ID Concerto existe → l'utilise (et le lie au NOM_BASE)
+      2. Sinon lookup par NOM_BASE dans le référentiel
+      3. Sinon nouveau client → assigne TM_NNNNNN incrémenté
+    """
+    nom_base = (nom_base or "").strip()
+
+    # 1. Client avec ID Concerto
+    if id_crm and id_crm.strip():
+        id_crm = id_crm.strip()
+        # Cherche si l'ID est déjà connu (sous n'importe quel NOM_BASE)
+        for nb, info in ref["clients"].items():
+            if info.get("id_unique") == id_crm:
+                # Connu — mise à jour
+                info["last_seen"] = period
+                info.setdefault("presence_history", {})[period] = presence
+                # Ajoute le NOM_BASE comme alias si différent
+                if nom_base and nom_base != nb:
+                    aliases_list = info.setdefault("aliases", [])
+                    if nom_base not in aliases_list:
+                        aliases_list.append(nom_base)
+                return id_crm, False, info.get("type_id", "Concerto")
+        # Nouveau client Concerto
+        key = nom_base or id_crm
+        ref["clients"][key] = {
+            "id_unique": id_crm,
+            "type_id": "Concerto",
+            "first_seen": period,
+            "last_seen": period,
+            "presence_history": {period: presence},
+        }
+        return id_crm, True, "Concerto"
+
+    # 2. Match par NOM_BASE
+    if nom_base in ref["clients"]:
+        info = ref["clients"][nom_base]
+        info["last_seen"] = period
+        info.setdefault("presence_history", {})[period] = presence
+        return info["id_unique"], False, info.get("type_id", "TM auto")
+
+    # 3. Brand new → TM_NNNNNN
+    if not nom_base:
+        return None, False, None  # impossible à tracker sans nom
+    ref["tm_counter"] += 1
+    new_tm = f"TM{str(ref['tm_counter']).zfill(6)}"
+    ref["clients"][nom_base] = {
+        "id_unique": new_tm,
+        "type_id": "TM auto",
+        "first_seen": period,
+        "last_seen": period,
+        "presence_history": {period: presence},
+    }
+    return new_tm, True, "TM auto"
+
+
+def compute_delta(ref: dict, period: str) -> dict:
+    """
+    Calcule les nouveautés/disparitions par rapport au run précédent.
+    Retourne {new, disappeared, changed_presence, changed_secteur}.
+    """
+    new = []
+    disappeared = []
+    changed_presence = []
+    for nb, info in ref["clients"].items():
+        hist = info.get("presence_history", {})
+        last_seen = info.get("last_seen")
+        first_seen = info.get("first_seen")
+        # NOUVEAU = vu pour la 1ère fois ce run
+        if first_seen == period:
+            new.append({
+                "ID_UNIQUE": info["id_unique"],
+                "NOM_BASE": nb,
+                "TYPE_ID": info.get("type_id"),
+                "PRESENCE_INITIALE": ",".join(hist.get(period, [])),
+            })
+        # DISPARU = pas vu ce run mais vu avant
+        elif last_seen and last_seen != period:
+            disappeared.append({
+                "ID_UNIQUE": info["id_unique"],
+                "NOM_BASE": nb,
+                "TYPE_ID": info.get("type_id"),
+                "DERNIERE_PRESENCE": last_seen,
+                "BASES_OU_VU": ",".join(hist.get(last_seen, [])),
+            })
+        # CHANGEMENT DE PRÉSENCE = ce run vs run précédent (entrée/sortie d'une base)
+        else:
+            keys_sorted = sorted([k for k in hist if k <= period])
+            if len(keys_sorted) >= 2:
+                prev = set(hist[keys_sorted[-2]])
+                curr = set(hist[keys_sorted[-1]])
+                gained = curr - prev
+                lost = prev - curr
+                if gained or lost:
+                    changed_presence.append({
+                        "ID_UNIQUE": info["id_unique"],
+                        "NOM_BASE": nb,
+                        "GAGNÉ": ",".join(sorted(gained)) or "—",
+                        "PERDU": ",".join(sorted(lost)) or "—",
+                    })
+    return {
+        "new": new,
+        "disappeared": disappeared,
+        "changed_presence": changed_presence,
+    }
+
+
+def write_delta_xlsx(delta: dict, target: Path, period: str, period_prev: str = None) -> None:
+    """Génère delta_clients.xlsx avec les changements vs run précédent."""
+    synth = pd.DataFrame({
+        "Indicateur": [
+            "Période courante",
+            "Période précédente",
+            "Nouveaux clients (1ère apparition)",
+            "Clients disparus (absents ce mois)",
+            "Changements de présence (gain/perte base)",
+        ],
+        "Valeur": [
+            period,
+            period_prev or "—",
+            len(delta["new"]),
+            len(delta["disappeared"]),
+            len(delta["changed_presence"]),
+        ],
+    })
+
+    with pd.ExcelWriter(target, engine="openpyxl") as writer:
+        synth.to_excel(writer, sheet_name="synthese_evolution", index=False)
+        if delta["new"]:
+            pd.DataFrame(delta["new"]).to_excel(writer, sheet_name="nouveaux_clients", index=False)
+        else:
+            pd.DataFrame({"Info": ["Aucun nouveau client ce run."]}).to_excel(
+                writer, sheet_name="nouveaux_clients", index=False)
+        if delta["disappeared"]:
+            pd.DataFrame(delta["disappeared"]).to_excel(writer, sheet_name="clients_disparus", index=False)
+        else:
+            pd.DataFrame({"Info": ["Aucun client disparu ce run."]}).to_excel(
+                writer, sheet_name="clients_disparus", index=False)
+        if delta["changed_presence"]:
+            pd.DataFrame(delta["changed_presence"]).to_excel(writer, sheet_name="changements_presence", index=False)
+        else:
+            pd.DataFrame({"Info": ["Aucun changement de présence."]}).to_excel(
+                writer, sheet_name="changements_presence", index=False)
+    print(f"[ok] Delta écrit : {target}")
+
+
+# ---------------------------------------------------------------------------
 # CONSTRUCTION DU MASTER
 # ---------------------------------------------------------------------------
 
-def build_master(data_dir: Path, rmc_dir: Path, mapping: dict, aliases: dict):
+def build_master(data_dir: Path, rmc_dir: Path, mapping: dict, aliases: dict,
+                 referentiel: dict = None, period: str = None):
     """
     Construit le DataFrame master 4 bases.
     """
@@ -507,21 +690,23 @@ def build_master(data_dir: Path, rmc_dir: Path, mapping: dict, aliases: dict):
     white_spaces = sorted(statcom_clients - rmc_alias_set - {""})
     print(f"[BUILD] {len(white_spaces):,} clients STATCOM absents du RMC (white spaces TM_xxx)")
 
-    # On crée des fiches "client" pour chaque WS, avec ID TM_NNNNNN
-    pad = mapping.get("matching", {}).get("white_space_pad", 6)
-    prefix = mapping.get("matching", {}).get("white_space_prefix", "TM")
+    # On crée des fiches "client" pour chaque WS, avec ID issu du référentiel
+    # PERSISTANT (TM stable d'un run à l'autre).
     ws_rows = []
-    for i, alias in enumerate(white_spaces, start=1):
-        tm_id = f"{prefix}{str(i).zfill(pad)}"
-        # On essaie de matcher au RMC quand même (fallback fuzzy) — ne devrait
-        # pas trouver, mais au cas où…
-        m = matcher.match(alias)
+    n_new_ws = 0
+    for alias in white_spaces:
+        tm_id, is_new, type_id = get_or_assign_id(
+            referentiel, alias, id_crm=None,
+            period=period, presence=["STATCOM"])
+        if tm_id is None:
+            continue
+        if is_new: n_new_ws += 1
         ws_rows.append({
             "ID_UNIQUE":      tm_id,
             "TYPE_ID":        "TM auto (STATCOM hors CRM)",
             "ID_CRM":         "",
             "ID_IRIS":        "",
-            "ID_STATCOM":     alias,  # = NOM_BASE
+            "ID_STATCOM":     alias,
             "NOM_CANONIQUE":  alias,
             "NOM_CLIENT":     alias,
             "SECTEUR":        "",
@@ -532,11 +717,31 @@ def build_master(data_dir: Path, rmc_dir: Path, mapping: dict, aliases: dict):
             "LOCKED":         False,
             "SCORE_MATCH_IRIS": "",
             "SCORE_MATCH_STATCOM": "",
-            "STATUT_MATCHING": "STATCOM hors AGL (white space)",
+            "STATUT_MATCHING": "STATCOM hors AGL (white space)" + (" — NOUVEAU" if is_new else ""),
             "COULEUR_MATCH":   "red",
             "SCORE_MATCH":     0.0,
+            "EST_NOUVEAU":     is_new,
         })
     ws_df = pd.DataFrame(ws_rows)
+    if n_new_ws:
+        print(f"[BUILD] Dont {n_new_ws:,} NOUVEAUX white spaces (TM_xxx jamais vus avant)")
+
+    # Maintenant on enregistre aussi les clients CRM/RMC dans le référentiel
+    # (pour garder leur historique de présence par base).
+    n_new_crm = 0
+    for _, r in rmc.iterrows():
+        nom_base = normalize_name(r.get("NOM_CANONIQUE", ""))[1]
+        id_crm = str(r.get("ID_CRM", "") or "").strip()
+        if not id_crm and not nom_base:
+            continue
+        presence = ["CRM"]
+        if str(r.get("ID_IRIS", "") or "").strip():    presence.append("IRIS")
+        if str(r.get("ID_STATCOM", "") or "").strip(): presence.append("STATCOM")
+        _, is_new, _ = get_or_assign_id(
+            referentiel, nom_base or id_crm, id_crm, period, presence)
+        if is_new: n_new_crm += 1
+    if n_new_crm:
+        print(f"[BUILD] Dont {n_new_crm:,} NOUVEAUX clients CRM jamais vus avant")
 
     # Concatène RMC + white spaces
     master_full = pd.concat([master, ws_df], ignore_index=True, sort=False)
@@ -775,19 +980,33 @@ def write_xlsx(result: dict, target: Path, mapping: dict):
 # ---------------------------------------------------------------------------
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description="AGL BUDGET — consolidation 4 bases haute performance")
-    ap.add_argument("--data-dir", required=True, help="Dossier source (CRM, IRIS, RUBRIKS, STATCOMs, opportunites)")
-    ap.add_argument("--rmc-dir",  required=True, help="Dossier AGL-out (avec RMC.xlsx, STATCOM_consolide.xlsx)")
-    ap.add_argument("--mapping",  default=None,  help="mapping.json (sinon defaults AGL CI 2026)")
-    ap.add_argument("--aliases",  default=None,  help="aliases.json (corrections nom)")
-    ap.add_argument("--out",      default="master_4bases.xlsx", help="Fichier xlsx de sortie")
+    ap = argparse.ArgumentParser(description="AGL BUDGET — consolidation 4 bases haute performance avec référentiel persistant")
+    ap.add_argument("--data-dir",    required=True, help="Dossier source (CRM, IRIS, RUBRIKS, STATCOMs, opportunites)")
+    ap.add_argument("--rmc-dir",     required=True, help="Dossier AGL-out (avec RMC.xlsx, STATCOM_consolide.xlsx)")
+    ap.add_argument("--mapping",     default=None,  help="mapping.json (sinon defaults AGL CI 2026)")
+    ap.add_argument("--aliases",     default=None,  help="aliases.json (corrections nom)")
+    ap.add_argument("--referentiel", default=None,
+                    help="Référentiel persistant client.json (créé si absent). "
+                         "Défaut: <rmc-dir>/referentiel_clients.json")
+    ap.add_argument("--period",      default=None,
+                    help="Période YYYY-MM (défaut: mois courant)")
+    ap.add_argument("--out",         default=None,
+                    help="Fichier master xlsx de sortie. "
+                         "Défaut: <rmc-dir>/master_4bases.xlsx")
+    ap.add_argument("--delta-out",   default=None,
+                    help="Fichier delta xlsx de sortie. "
+                         "Défaut: <rmc-dir>/delta_clients_<period>.xlsx")
     args = ap.parse_args(argv)
 
     data_dir = Path(args.data_dir)
     rmc_dir  = Path(args.rmc_dir)
-    target   = Path(args.out)
+    target   = Path(args.out) if args.out else rmc_dir / "master_4bases.xlsx"
 
-    # Mapping : défaut ou custom
+    # Période courante (YYYY-MM)
+    period = args.period or dt.datetime.now().strftime("%Y-%m")
+    print(f"[init] Période : {period}\n")
+
+    # Mapping
     if args.mapping:
         with open(args.mapping, encoding="utf-8") as f:
             mapping = json.load(f)
@@ -796,17 +1015,51 @@ def main(argv=None) -> int:
         with open(default_path, encoding="utf-8") as f:
             mapping = json.load(f)
 
-    # Aliases (optionnel)
+    # Aliases
     aliases = {}
-    if args.aliases or (Path(__file__).parent / "aliases.json").exists():
-        ap_path = Path(args.aliases) if args.aliases else Path(__file__).parent / "aliases.json"
-        if ap_path.exists():
-            with open(ap_path, encoding="utf-8") as f:
-                data = json.load(f)
-                aliases = data.get("RUBRIKS", {}) if "RUBRIKS" in data else data
+    ap_path = (Path(args.aliases) if args.aliases else Path(__file__).parent / "aliases.json")
+    if ap_path.exists():
+        with open(ap_path, encoding="utf-8") as f:
+            data = json.load(f)
+            aliases = data.get("RUBRIKS", {}) if "RUBRIKS" in data else data
 
-    result = build_master(data_dir, rmc_dir, mapping, aliases)
+    # Référentiel persistant
+    ref_path = Path(args.referentiel) if args.referentiel else rmc_dir / "referentiel_clients.json"
+    referentiel = load_referentiel(ref_path)
+    period_prev = referentiel.get("last_run")
+    n_known = len(referentiel["clients"])
+    print(f"[init] Référentiel : {ref_path}")
+    print(f"       {n_known:,} clients déjà connus (dernier run : {period_prev or '—'})")
+    print(f"       Compteur TM actuel : {referentiel['tm_counter']}\n")
+
+    # BUILD
+    result = build_master(data_dir, rmc_dir, mapping, aliases, referentiel, period)
+
+    # Sauve le référentiel mis à jour
+    referentiel["last_run"] = period
+    referentiel["history"].append({
+        "period": period,
+        "date": dt.datetime.now().isoformat(timespec="seconds"),
+        "n_clients_total": len(referentiel["clients"]),
+        "tm_counter": referentiel["tm_counter"],
+    })
+    save_referentiel(ref_path, referentiel)
+    print(f"\n[ok] Référentiel mis à jour : {ref_path}")
+    print(f"     {len(referentiel['clients']):,} clients au total · "
+          f"compteur TM : {referentiel['tm_counter']}")
+
+    # Master
     write_xlsx(result, target, mapping)
+
+    # Delta
+    delta = compute_delta(referentiel, period)
+    delta_target = (Path(args.delta_out) if args.delta_out
+                    else rmc_dir / f"delta_clients_{period}.xlsx")
+    write_delta_xlsx(delta, delta_target, period, period_prev)
+    print(f"\n[summary] Période {period}")
+    print(f"  Nouveaux clients     : {len(delta['new']):>6,}")
+    print(f"  Clients disparus     : {len(delta['disappeared']):>6,}")
+    print(f"  Changements présence : {len(delta['changed_presence']):>6,}")
     return 0
 
 
