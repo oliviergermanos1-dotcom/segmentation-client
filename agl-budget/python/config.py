@@ -90,10 +90,40 @@ SEUILS = {
 # Helpers
 # ----------------------------------------------------------------------------
 def resolve_column(df_columns, expected, alternatives=()):
-    """Retrouve une colonne avec tolérance (casse, espaces, alternatives)."""
-    norm = {c.strip().lower().replace(" ", "_"): c for c in df_columns}
+    """Retrouve une colonne avec tolérance (casse, espaces, alternatives, tokens).
+
+    Stratégie en 3 étapes:
+      1. Match exact normalisé (lowercase + espaces→underscores)
+      2. Match avec les alternatives passées
+      3. Match par tokens : si tous les mots significatifs de `expected` sont
+         présents dans la colonne, on accepte.
+         Exemple : 'crm_id_compte' (tokens crm/id/compte) matche
+         'CRM ID du Compte' (tokens crm/id/du/compte) — le 'du' en plus
+         n'empêche pas le match.
+    """
+    def _norm(s):
+        return str(s).strip().lower().replace(" ", "_")
+
+    def _tokens(s):
+        # Tokens significatifs : longueur >= 2, sans accents.
+        import unicodedata
+        s = unicodedata.normalize("NFD", str(s))
+        s = "".join(c for c in s if not unicodedata.combining(c))
+        s = s.lower().replace(" ", "_")
+        return set(t for t in s.split("_") if len(t) >= 2)
+
+    cols_norm = {_norm(c): c for c in df_columns}
+
+    # 1+2. Match exact insensible casse/espaces (expected + alternatives)
     for cand in (expected,) + tuple(alternatives):
-        key = cand.strip().lower().replace(" ", "_")
-        if key in norm:
-            return norm[key]
+        if _norm(cand) in cols_norm:
+            return cols_norm[_norm(cand)]
+
+    # 3. Match par tokens (sous-ensemble) — tolère ajouts de mots ("du", "de", etc.)
+    expected_tokens = _tokens(expected)
+    if expected_tokens:
+        for col in df_columns:
+            col_tokens = _tokens(col)
+            if expected_tokens.issubset(col_tokens):
+                return col
     return None
