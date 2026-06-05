@@ -71,7 +71,9 @@ def main(argv=None) -> int:
 
     # --- Côté IRIS : cap réel par CRM × année --------------------------------
     iris_id  = config.resolve_column(iris.columns, config.IRIS["id"])
-    iris_cap = config.resolve_column(iris.columns, config.IRIS["cap"], ["ca", "ca_fcfa", "revenue"])
+    iris_cap = config.resolve_column(iris.columns, config.IRIS["cap"],
+                                      ["montant", "cap", "ca", "ca_fcfa", "revenue",
+                                       "montant_fcfa", "ca_reel"])
     iris_per = config.resolve_column(iris.columns, config.IRIS["periode"], ["annee", "year"])
     if not iris_id:  sys.exit("ERREUR : colonne id IRIS absente (config.IRIS['id']).")
     if not iris_cap: sys.exit("ERREUR : colonne cap IRIS absente — fournis 'cap' ou ajuste config.IRIS['cap'].")

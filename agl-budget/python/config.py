@@ -33,8 +33,8 @@ CRM = {
 IRIS = {
     "id":   "id",
     "nom":  "client",
-    # À confirmer :
-    "cap":      "cap",
+    # CAP IRIS = colonne "montant" (confirmé utilisateur).
+    "cap":      "montant",
     "periode":  "periode",
     "metier":   "metier",
 }
