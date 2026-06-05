@@ -194,15 +194,19 @@ def main(argv=None) -> int:
     bud["ECART_PCT"] = bud.apply(
         lambda r: (r["ECART"] / r["_cap_pfa"]) if r["_cap_pfa"] > 0 else 0.0, axis=1)
 
+    # On ajoute le nom RUBRIKS d'origine en colonne pour qu'il survive aux merges,
+    # afin de l'utiliser en fallback quand NOM_CANONIQUE est vide (non rattaché).
+    bud["_NOM_RUBRIKS"] = bud[ru_nom].fillna("").astype(str) if ru_nom in bud.columns else ""
+
     out = bud[["ID_CRM", "ID_IRIS", "NOM_CANONIQUE", "SECTEUR_FINAL", "LOCKED",
-               "_annee", "_cap_pfa", "CAP_REEL", "ECART", "ECART_PCT"]].rename(
+               "_annee", "_cap_pfa", "CAP_REEL", "ECART", "ECART_PCT", "_NOM_RUBRIKS"]].rename(
         columns={"_annee": "ANNEE", "_cap_pfa": "CAP_PFA",
                  "NOM_CANONIQUE": "NOM_CLIENT", "SECTEUR_FINAL": "SECTEUR"})
 
-    # On fait remonter les RUBRIKS non rattachés (NOM_CANONIQUE vide) avec le nom RUBRIKS d'origine.
-    fallback_name = ru[ru_nom].astype(str)
-    out["NOM_CLIENT"] = out["NOM_CLIENT"].fillna("")
-    out.loc[out["NOM_CLIENT"] == "", "NOM_CLIENT"] = fallback_name.loc[out["NOM_CLIENT"] == ""]
+    # Fallback nom RUBRIKS d'origine si non rattaché au RMC (NOM_CLIENT vide).
+    nom_clean = out["NOM_CLIENT"].fillna("").astype(str)
+    out["NOM_CLIENT"] = nom_clean.where(nom_clean.str.len() > 0, out["_NOM_RUBRIKS"])
+    out = out.drop(columns=["_NOM_RUBRIKS"])
 
     outdir = Path(args.outdir); outdir.mkdir(parents=True, exist_ok=True)
     out.to_csv(outdir / "budget_vs_real.csv", index=False, encoding="utf-8")
