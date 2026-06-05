@@ -95,8 +95,31 @@ def main(argv=None) -> int:
     stat["_BULK"] = _to_num(stat[col_bulk]) if col_bulk else 0.0
     stat["_KG"]   = _to_num(stat[col_kg])   if col_kg   else 0.0
     # Extraction robuste de l'année (entier 2000-2100, ou motif YYYY dans texte/date).
+    sample_raw = stat[col_annee].astype(str).head(10).tolist() if col_annee in stat else []
     stat["_ANNEE"] = stat[col_annee].map(_to_year)
     stat["_ANNEE"] = pd.to_numeric(stat["_ANNEE"], errors="coerce").astype("Int64")
+
+    # Fallback : si la colonne année est inexploitable, on cherche dans TOUTES
+    # les colonnes celle qui contient le plus de valeurs interprétables comme années.
+    if stat["_ANNEE"].notna().sum() == 0:
+        sys.stderr.write(f"[warn] colonne '{col_annee}' inexploitable (échantillon: {sample_raw[:5]})\n")
+        sys.stderr.write("[info] recherche d'une colonne contenant des années dans tout le fichier…\n")
+        best_col, best_hits = None, 0
+        for c in stat.columns:
+            if c.startswith("_") or c in ("NOM_BASE", "NOM_NORMALISE", "CLIENT_RESOLU", "ID_STATCOM"):
+                continue
+            try:
+                test = stat[c].head(500).map(_to_year)
+                hits = test.notna().sum()
+                if hits > best_hits:
+                    best_hits, best_col = hits, c
+            except Exception:
+                continue
+        if best_col and best_hits >= 50:
+            sys.stderr.write(f"[ok] colonne '{best_col}' utilisée à la place ({best_hits}/500 années valides en échantillon)\n")
+            stat["_ANNEE"] = stat[best_col].map(_to_year)
+            stat["_ANNEE"] = pd.to_numeric(stat["_ANNEE"], errors="coerce").astype("Int64")
+
     n_avant = len(stat)
     stat = stat.dropna(subset=["_ANNEE"])
     n_apres = len(stat)
@@ -104,11 +127,15 @@ def main(argv=None) -> int:
         sys.stderr.write(f"[info] {n_avant - n_apres:,} lignes sans année exploitable supprimées "
                          f"({n_apres:,} restantes)\n")
     if n_apres == 0:
-        # Diagnostic : on échantillonne la colonne année pour aider l'utilisateur.
-        sample = stat[col_annee].astype(str).head(10).tolist() if col_annee in stat else []
-        sys.exit(f"ERREUR : 0 lignes après filtrage année. Colonne '{col_annee}' contient des "
-                 f"valeurs non interprétables. Échantillon : {sample}. "
-                 f"Adapter _to_year() dans 06_agreg_statcom.py.")
+        # Diagnostic complet : liste les colonnes et leurs échantillons.
+        cols_sample = {}
+        for c in stat.columns[:20]:
+            try: cols_sample[c] = stat[c].astype(str).head(3).tolist()
+            except Exception: pass
+        sys.exit(f"ERREUR : 0 lignes après filtrage année. "
+                 f"Échantillon colonne '{col_annee}' : {sample_raw[:10]}. "
+                 f"Aucune autre colonne ne contient d'années 4 chiffres.\n"
+                 f"Colonnes disponibles + échantillons : {cols_sample}")
 
     outdir = Path(args.outdir); outdir.mkdir(parents=True, exist_ok=True)
 
