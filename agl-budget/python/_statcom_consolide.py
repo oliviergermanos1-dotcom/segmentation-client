@@ -85,7 +85,16 @@ def process_one(path: Path):
                          f"colonnes dispos = {list(df.columns)}\n")
 
     # Colonnes optionnelles (on tente plusieurs alias usuels).
-    c_annee = resolve_col(df, ["annee", "année", "year", "exercice"])
+    # Année : confirmé utilisateur — colonne "années escale" dans les
+    # fichiers STATCOM réels (escale = port call).
+    c_annee = resolve_col(df, [
+        "années escale", "annees escale", "année escale", "annee escale",
+        "annee", "année", "year", "exercice",
+        "date_escale", "date_operation", "date",
+    ])
+    c_mois  = resolve_col(df, [
+        "mois escale", "mois", "month", "mois_escale",
+    ])
     c_march = resolve_col(df, ["marchandise", "marchandises", "produit", "commodity", "designation"])
     c_teu   = resolve_col(df, ["volume_teu", "teu", "volume teu", "nb_teu", "nb teu", "qte_teu"])
     c_bulk  = resolve_col(df, ["volume_bulk", "bulk", "volume bulk", "tonnes", "tonnage", "conventionnel"])
@@ -97,6 +106,7 @@ def process_one(path: Path):
     out["sens"]        = sens
     out["unite_principale"] = unite
     out["annee"]       = df[c_annee] if c_annee else ""
+    out["mois"]        = df[c_mois]  if c_mois  else ""
     out["marchandise"] = df[c_march] if c_march else ""
     out["volume_teu"]  = df[c_teu]   if c_teu  else 0
     out["volume_bulk"] = df[c_bulk]  if c_bulk else 0
@@ -105,7 +115,9 @@ def process_one(path: Path):
 
     n = len(out)
     n_clients = out["client"].astype(str).str.strip().ne("").sum()
-    print(f"  [ok] {path.name:<55} → {metier:<20} {n:>7} lignes ({n_clients} avec client)")
+    n_annee   = out["annee"].astype(str).str.strip().ne("").sum()
+    print(f"  [ok] {path.name:<55} → {metier:<20} "
+          f"{n:>7} lignes ({n_clients} client, {n_annee} année)")
     return out
 
 
