@@ -41,14 +41,18 @@ def main(argv=None):
     ap = argparse.ArgumentParser(__doc__)
     ap.add_argument("--master-v2", required=True, help="clients_master_v2.xlsx (sortie 05c)")
     ap.add_argument("--rmc", required=True, help="RMC.xlsx (pour récupérer ALIAS et scores fins)")
+    ap.add_argument("--rubriks", help="RUBRIKS.xlsx (pour récupérer ALIAS_RUBRIKS)")
     ap.add_argument("--out", required=True, help="clients_referentiel.xlsx")
     args = ap.parse_args(argv)
 
-    print("[1/4] Chargement master v2 + RMC…")
+    print("[1/4] Chargement master v2 + RMC + RUBRIKS…")
     master = pd.read_excel(args.master_v2, sheet_name="clients_master")
     rmc = pd.read_excel(args.rmc)
-    print(f"     Master : {len(master):,} lignes")
-    print(f"     RMC    : {len(rmc):,} lignes (CRM matchés)")
+    rubriks = pd.read_excel(args.rubriks, sheet_name="Extraction Rubiks") if args.rubriks else None
+    print(f"     Master  : {len(master):,} lignes")
+    print(f"     RMC     : {len(rmc):,} lignes (CRM matchés)")
+    if rubriks is not None:
+        print(f"     RUBRIKS : {len(rubriks):,} lignes")
 
     # === Enrichir master avec ALIAS + scores fins du RMC =================
     print("[2/4] Enrichissement (alias par base, scores fins)…")
@@ -56,6 +60,24 @@ def main(argv=None):
                     "SCORE_MATCH_IRIS", "SCORE_MATCH_STATCOM"]].copy()
     rmc_keys = rmc_keys.dropna(subset=["ID_CRM"]).drop_duplicates(subset=["ID_CRM"])
     master = master.merge(rmc_keys, on="ID_CRM", how="left")
+
+    # === RUBRIKS : extraire le NOM (alias) et l'ID Concerto =============
+    if rubriks is not None:
+        import re
+        rubriks = rubriks[~rubriks["CLIENT"].astype(str).str.startswith("Total Customer")]
+        pat = re.compile(r"^(.*?)\s*\(([A-Z0-9\-]+(?:-[A-Z0-9]+)*)\)\s*$")
+        def split_rubriks(s):
+            m = pat.match(str(s))
+            if m:
+                return pd.Series([m.group(1).strip(), m.group(2).strip()])
+            return pd.Series([str(s).strip(), None])
+        rubriks[["ALIAS_RUBRIKS", "ID_RUBRIKS"]] = rubriks["CLIENT"].apply(split_rubriks)
+        # 1 ligne par client RUBRIKS (dedup sur ID Concerto si dispo)
+        rb_keys = rubriks.dropna(subset=["ID_RUBRIKS"]).drop_duplicates(
+            subset=["ID_RUBRIKS"])[["ID_RUBRIKS", "ALIAS_RUBRIKS"]]
+        # jointure : RUBRIKS.ID_RUBRIKS == master.ID_CRM
+        master = master.merge(rb_keys, left_on="ID_CRM", right_on="ID_RUBRIKS", how="left")
+        print(f"     ALIAS_RUBRIKS rattaché : {master['ALIAS_RUBRIKS'].notna().sum():,} clients")
 
     # === Normaliser SECTEUR =============================================
     print("[3/4] Normalisation secteurs (mapping marchandise → CRM)…")
@@ -90,6 +112,7 @@ def main(argv=None):
         "ALIAS_CRM",
         "ALIAS_IRIS",
         "ALIAS_STATCOM",
+        "ALIAS_RUBRIKS",
         "SECTEUR",
         "SECTEUR_SOURCE",
         "SCORE_GLOBAL",
