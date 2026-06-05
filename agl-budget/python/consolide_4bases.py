@@ -130,8 +130,11 @@ class Matcher:
     # Seuils de confiance (RapidFuzz token_set_ratio sur 100)
     THRESHOLD_GREEN          = 92    # > 92  → vert (match confiant)
     THRESHOLD_ORANGE         = 75    # 75-92 → orange (match moyen)
-    THRESHOLD_ORANGE_SEC     = 65    # 65-92 si secteur identique → orange
+    THRESHOLD_ORANGE_SEC     = 70    # 70-92 si secteur identique → orange
     JACCARD_TOKEN_THRESHOLD  = 0.66  # token similarity bidirectionnelle ≥ 2/3 → vert
+    # Barrière anti faux-positif : un vrai match doit partager l'essentiel des
+    # MOTS du nom (token_set_ratio), pas juste un préfixe. En-dessous → refus.
+    TOKEN_FLOOR              = 80    # token_set_ratio minimal (sur 100)
 
     def __init__(self, rmc_df: pd.DataFrame, aliases: dict = None):
         """rmc_df doit avoir colonnes : ID_CRM, NOM_CANONIQUE, SECTEUR."""
@@ -225,7 +228,11 @@ class Matcher:
                 self.stats["jaccard"] += 1
                 return self._result(i, max(0.90, jaccard), "Tokens Jaccard", "green")
 
-        # 5. Fuzzy match (RapidFuzz : token_set + Jaro-Winkler + partial)
+        # 5. Fuzzy match piloté par les MOTS (lit tout le nom, pas le préfixe).
+        #    token_set_ratio = signal principal (accord réel sur les mots),
+        #    Jaro-Winkler = appoint pour les fautes de frappe.
+        #    PAS de partial_ratio : il matche un sous-texte ("ASSE…") et crée
+        #    des faux positifs (ASSETCO vs ASSEKE ORO).
         if not HAS_RAPIDFUZZ:
             return None
 
@@ -233,18 +240,20 @@ class Matcher:
         for i in candidates:
             cand = self.base_list[i]
             if not cand: continue
-            s_tsr     = fuzz.token_set_ratio(base, cand)
-            s_jw      = distance.JaroWinkler.normalized_similarity(base, cand) * 100
-            s_partial = fuzz.partial_ratio(base, cand)
-            # Score combiné — on prend le max entre la pondération classique
-            # et le partial_ratio (qui capture "ABC" inclus dans "ABC XYZ")
-            score = max(0.6 * s_tsr + 0.4 * s_jw, s_partial * 0.92)
-            # Bonus secteur identique : +10 pts (renforcé pour confidence)
+            s_tsr = fuzz.token_set_ratio(base, cand)
+            # GATE : mots trop différents → on ignore ce candidat, quoi que
+            # dise Jaro-Winkler (préfixe commun ≠ même client).
+            if s_tsr < self.TOKEN_FLOOR:
+                continue
+            s_jw  = distance.JaroWinkler.normalized_similarity(base, cand) * 100
+            score = 0.85 * s_tsr + 0.15 * s_jw
+            # Bonus secteur identique : petit appoint (+5), ne franchit jamais
+            # la barrière de tokens à lui seul.
             sec_match = False
             if secteur and secteur.strip():
                 sec_rmc = str(self.rmc.iloc[i].get("SECTEUR", "")).strip()
                 if sec_rmc and sec_rmc.upper() == secteur.upper():
-                    score = min(100, score + 10)
+                    score = min(100, score + 5)
                     sec_match = True
             if score > best_score:
                 best_score, best_i, best_sec_match = score, i, sec_match
@@ -846,7 +855,11 @@ def build_master(data_dir: Path, rmc_dir: Path, mapping: dict, aliases: dict,
     master_final["PRESENCE_CRM"]     = master_final["ID_CRM"].fillna("").astype(str).str.len().gt(0).map({True: "✓", False: "—"})
     master_final["PRESENCE_IRIS"]    = master_final["ID_IRIS"].fillna("").astype(str).str.len().gt(0).map({True: "✓", False: "—"})
     master_final["PRESENCE_STATCOM"] = master_final["ID_STATCOM"].fillna("").astype(str).str.len().gt(0).map({True: "✓", False: "—"})
-    master_final["PRESENCE_RUBRIKS"] = master_final["CAP_PFA_TOTAL"].fillna(0).gt(0).map({True: "✓", False: "—"})
+    # Présence RUBRIKS = client effectivement matché dans RUBRIKS (indépendant
+    # du CAP, qu'on n'exporte plus dans le référentiel).
+    rubriks_ids = {cid for (cid, _y) in cap_pfa_by_id_year.keys() if cid}
+    master_final["PRESENCE_RUBRIKS"] = master_final["ID_CRM"].map(
+        lambda i: "✓" if str(i).strip() in rubriks_ids else "—")
 
     # Stats matching
     n_master = len(master_final)
@@ -888,16 +901,15 @@ def write_xlsx(result: dict, target: Path, mapping: dict):
     master = result["master"]
     par_annee = result["par_annee"]
 
-    # Sélection + ordre des colonnes
+    # Sélection + ordre des colonnes.
+    # Le référentiel ne contient QUE l'identité + le rattachement + la présence
+    # par base. Les volumes / CAP seront ajoutés plus tard EN S'APPUYANT sur ce
+    # référentiel (demande utilisateur).
     cols_master = [
         "ID_UNIQUE", "TYPE_ID", "ID_CRM", "ID_IRIS", "ID_STATCOM",
         "NOM_CLIENT", "SECTEUR", "ALIAS_STATCOM",
         "STATUT_MATCHING", "SCORE_MATCH",
         "PRESENCE_CRM", "PRESENCE_IRIS", "PRESENCE_STATCOM", "PRESENCE_RUBRIKS",
-        "CAP_REEL_TOTAL", "CAP_PFA_TOTAL", "ECART_TOTAL", "ECART_PCT_GLOBAL",
-        "VOLUME_TEU_TOTAL", "VOLUME_BULK_KG_TOTAL", "VOLUME_KG_AERIEN_TOTAL",
-        "NB_OPS_TOTAL",
-        "NB_OPP_OUVERTES", "PIPELINE_CAP_BRUT", "PIPELINE_CAP_POND",
     ]
     cols_master_existing = [c for c in cols_master if c in master.columns]
     master_out = master[cols_master_existing].copy()
@@ -916,16 +928,10 @@ def write_xlsx(result: dict, target: Path, mapping: dict):
             "Match ORANGE (75-92%)",
             "Match ROUGE (TM auto, non rattaché)",
             "% rattachés (vert+orange)",
-            "CAP RÉEL total (FCFA, toutes années)",
-            "CAP PFA total (FCFA, toutes années)",
-            "Écart global (FCFA)",
-            "Volume TEU total",
-            "Volume Bulk total (kg)",
-            "Volume Kg total (aérien)",
-            "Pipeline opportunités ouvertes (nb)",
-            "Pipeline CAP brut (€/FCFA)",
-            "Pipeline CAP pondéré",
-            "Années couvertes",
+            "Présents dans CRM",
+            "Présents dans IRIS",
+            "Présents dans STATCOM",
+            "Présents dans RUBRIKS",
         ],
         "Valeur": [
             n_master,
@@ -933,17 +939,10 @@ def write_xlsx(result: dict, target: Path, mapping: dict):
             int((master["TYPE_ID"].str.startswith("TM")).sum()),
             n_green, n_orange, n_red,
             f"{(n_green + n_orange) / max(n_master, 1):.1%}",
-            master["CAP_REEL_TOTAL"].sum() if "CAP_REEL_TOTAL" in master else 0,
-            master["CAP_PFA_TOTAL"].sum() if "CAP_PFA_TOTAL" in master else 0,
-            (master["CAP_REEL_TOTAL"].sum() - master["CAP_PFA_TOTAL"].sum())
-                if "CAP_REEL_TOTAL" in master and "CAP_PFA_TOTAL" in master else 0,
-            master["VOLUME_TEU_TOTAL"].sum() if "VOLUME_TEU_TOTAL" in master else 0,
-            master["VOLUME_BULK_KG_TOTAL"].sum() if "VOLUME_BULK_KG_TOTAL" in master else 0,
-            master["VOLUME_KG_AERIEN_TOTAL"].sum() if "VOLUME_KG_AERIEN_TOTAL" in master else 0,
-            master["NB_OPP_OUVERTES"].sum() if "NB_OPP_OUVERTES" in master else 0,
-            master["PIPELINE_CAP_BRUT"].sum() if "PIPELINE_CAP_BRUT" in master else 0,
-            master["PIPELINE_CAP_POND"].sum() if "PIPELINE_CAP_POND" in master else 0,
-            ", ".join(result["years"]),
+            int((master["PRESENCE_CRM"] == "✓").sum())     if "PRESENCE_CRM" in master else 0,
+            int((master["PRESENCE_IRIS"] == "✓").sum())    if "PRESENCE_IRIS" in master else 0,
+            int((master["PRESENCE_STATCOM"] == "✓").sum()) if "PRESENCE_STATCOM" in master else 0,
+            int((master["PRESENCE_RUBRIKS"] == "✓").sum()) if "PRESENCE_RUBRIKS" in master else 0,
         ],
     })
 
@@ -958,7 +957,6 @@ def write_xlsx(result: dict, target: Path, mapping: dict):
     with pd.ExcelWriter(target, engine="openpyxl") as writer:
         kpis.to_excel(writer, sheet_name="kpi_global", index=False)
         master_out.to_excel(writer, sheet_name="clients_master", index=False)
-        par_annee.to_excel(writer, sheet_name="clients_par_annee", index=False)
         diag.to_excel(writer, sheet_name="diagnostic_matching", index=False)
         pd.DataFrame({"mapping_json": [json.dumps(mapping, indent=2, ensure_ascii=False)]}).to_excel(
             writer, sheet_name="mapping_utilise", index=False)
@@ -995,7 +993,7 @@ def write_xlsx(result: dict, target: Path, mapping: dict):
                     ws.column_dimensions[get_column_letter(headers.index(header) + 1)].width = w
 
     print(f"[ok] Master 4 bases écrit : {target}")
-    print(f"     Onglets : kpi_global, clients_master, clients_par_annee, diagnostic_matching, mapping_utilise")
+    print(f"     Onglets : kpi_global, clients_master, diagnostic_matching, mapping_utilise")
 
 
 # ---------------------------------------------------------------------------

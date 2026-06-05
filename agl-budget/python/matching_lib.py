@@ -91,20 +91,35 @@ def candidate_pairs(left, right, key="NOM_BASE", prefix=None, max_pairs=None):
 # ---------------------------------------------------------------------------
 # 2. Scoring
 # ---------------------------------------------------------------------------
+# Un VRAI match doit partager l'essentiel des MOTS (pas juste un préfixe).
+# En-dessous de ce token_set_ratio, on refuse — quoi que disent Jaro-Winkler
+# ou partial_ratio (qui se laissent berner par un préfixe commun :
+# "ASSETCO" vs "ASSEKE ORO" → JW=0.84 mais token_set_ratio=0.59 → FAUX).
+TOKEN_FLOOR = 0.80
+
+
 def _score_rapidfuzz(name_l: str, name_r: str,
                      sec_l: str = "", sec_r: str = "") -> float:
     """
-    Score 0..1 (RapidFuzz). Combine token_set_ratio (insensible à l'ordre)
-    et Jaro-Winkler (typos / abréviations) — pondéré 70/30.
-    Si une colonne secondaire (marchandise/secteur) est fournie, bonus jusqu'à 10 %.
+    Score 0..1 (RapidFuzz) piloté par les MOTS du nom, pas par le préfixe.
+
+    Règle d'or (demande utilisateur) : on lit tout le contenu du nom.
+      - token_set_ratio = accord réel sur les mots → signal principal (85 %).
+      - Jaro-Winkler    = tolérance aux fautes de frappe → appoint (15 %).
+    GATE : si token_set_ratio < TOKEN_FLOOR, ce n'est PAS un match (on plafonne
+    le score sous le seuil ambigu pour forcer le REJET), même si JW est élevé.
+    Si une colonne secondaire (marchandise/secteur) est fournie, petit bonus (5 %).
     """
     if not name_l or not name_r:
         return 0.0
     tsr = fuzz.token_set_ratio(name_l, name_r) / 100.0
+    if tsr < TOKEN_FLOOR:
+        # Mots trop différents → refus net (sous match_bas), peu importe le préfixe.
+        return min(tsr, SEUILS["match_bas"] - 0.01)
     jw = distance.JaroWinkler.normalized_similarity(name_l, name_r)
-    base = 0.7 * tsr + 0.3 * jw
+    base = 0.85 * tsr + 0.15 * jw
     if sec_l and sec_r:
-        bonus = 0.10 * (fuzz.token_set_ratio(sec_l, sec_r) / 100.0)
+        bonus = 0.05 * (fuzz.token_set_ratio(sec_l, sec_r) / 100.0)
         base = min(1.0, base + bonus)
     return base
 
