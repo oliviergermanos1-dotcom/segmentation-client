@@ -78,6 +78,7 @@ ARTICLES = {"DE", "DU", "DES", "LA", "LE", "LES", "ET", "AUX", "AU",
 
 PUNCT_RE = re.compile(r"[^A-Z0-9 ]+")
 MULTISPACE_RE = re.compile(r"\s+")
+PAREN_RE = re.compile(r"\([^)]*\)")   # supprime tout entre parenthèses
 
 
 def normalize_name(s):
@@ -85,6 +86,9 @@ def normalize_name(s):
     if not s or (isinstance(s, float) and pd.isna(s)):
         return "", ""
     s = str(s)
+    # IMPORTANT : strip parenthèses AVANT toute autre normalisation
+    # ("NESTLE (1-XXXX)" → "NESTLE" et non "NESTLE 1 XXXX").
+    s = PAREN_RE.sub(" ", s)
     # Suppression accents
     s = unicodedata.normalize("NFKD", s)
     s = "".join(c for c in s if not unicodedata.combining(c))
@@ -124,9 +128,10 @@ class Matcher:
     """
 
     # Seuils de confiance (RapidFuzz token_set_ratio sur 100)
-    THRESHOLD_GREEN  = 92     # > 92  → vert (match confiant)
-    THRESHOLD_ORANGE = 75     # 75-92 → orange (match moyen)
-    # < 75 → rouge (pas de match)
+    THRESHOLD_GREEN          = 92    # > 92  → vert (match confiant)
+    THRESHOLD_ORANGE         = 75    # 75-92 → orange (match moyen)
+    THRESHOLD_ORANGE_SEC     = 65    # 65-92 si secteur identique → orange
+    JACCARD_TOKEN_THRESHOLD  = 0.66  # token similarity bidirectionnelle ≥ 2/3 → vert
 
     def __init__(self, rmc_df: pd.DataFrame, aliases: dict = None):
         """rmc_df doit avoir colonnes : ID_CRM, NOM_CANONIQUE, SECTEUR."""
@@ -189,44 +194,60 @@ class Matcher:
             self.stats["exact"] += 1
             return self._result(i, 1.0, "Nom exact", "green")
 
-        # 4. Token subset (tous les tokens cibles présents)
+        # 4. Génération de candidats élargie : tokens directs + préfixes 3-char
         target_tokens = {t for t in base.split() if len(t) >= 3}
         if not target_tokens:
             return None
         candidates = set()
         for t in target_tokens:
             candidates.update(self.idx_by_token.get(t, []))
+            # Pool élargi : tokens qui commencent comme le token cible
+            t_prefix = t[:3]
+            for cand_token, cand_list in self.idx_by_token.items():
+                if cand_token.startswith(t_prefix) or t.startswith(cand_token[:3]):
+                    candidates.update(cand_list)
         if not candidates:
             self.stats["no_candidates"] += 1
             return None
-
         candidates = list(candidates)
-        # Pour chaque candidat, vérifier si tous les tokens cibles sont
-        # contenus dans le candidat (token subset)
+
+        # 4.bis Tokens : similarité Jaccard bidirectionnelle
+        # (couvre les 2 sens : target ⊆ cand ET cand ⊆ target)
         for i in candidates:
             cand_tokens = {t for t in self.base_list[i].split() if len(t) >= 3}
-            if target_tokens.issubset(cand_tokens):
-                self.stats["subset"] += 1
-                return self._result(i, 0.95, "Tokens inclus", "green")
+            if not cand_tokens:
+                continue
+            inter = len(target_tokens & cand_tokens)
+            union = len(target_tokens | cand_tokens)
+            jaccard = inter / union if union else 0
+            if jaccard >= self.JACCARD_TOKEN_THRESHOLD:
+                # Au moins 2/3 des tokens en commun, dans les 2 sens.
+                self.stats["jaccard"] += 1
+                return self._result(i, max(0.90, jaccard), "Tokens Jaccard", "green")
 
-        # 5. Fuzzy match (RapidFuzz token_set_ratio + Jaro-Winkler)
+        # 5. Fuzzy match (RapidFuzz : token_set + Jaro-Winkler + partial)
         if not HAS_RAPIDFUZZ:
             return None
 
-        best_i, best_score = None, 0
+        best_i, best_score, best_sec_match = None, 0, False
         for i in candidates:
             cand = self.base_list[i]
             if not cand: continue
-            s_tsr = fuzz.token_set_ratio(base, cand)
-            s_jw  = distance.JaroWinkler.normalized_similarity(base, cand) * 100
-            score = 0.6 * s_tsr + 0.4 * s_jw   # pondéré
-            # Bonus secteur identique (+5 pts)
+            s_tsr     = fuzz.token_set_ratio(base, cand)
+            s_jw      = distance.JaroWinkler.normalized_similarity(base, cand) * 100
+            s_partial = fuzz.partial_ratio(base, cand)
+            # Score combiné — on prend le max entre la pondération classique
+            # et le partial_ratio (qui capture "ABC" inclus dans "ABC XYZ")
+            score = max(0.6 * s_tsr + 0.4 * s_jw, s_partial * 0.92)
+            # Bonus secteur identique : +10 pts (renforcé pour confidence)
+            sec_match = False
             if secteur and secteur.strip():
                 sec_rmc = str(self.rmc.iloc[i].get("SECTEUR", "")).strip()
                 if sec_rmc and sec_rmc.upper() == secteur.upper():
-                    score = min(100, score + 5)
+                    score = min(100, score + 10)
+                    sec_match = True
             if score > best_score:
-                best_score, best_i = score, i
+                best_score, best_i, best_sec_match = score, i, sec_match
 
         if best_i is None:
             self.stats["no_fuzzy"] += 1
@@ -234,7 +255,9 @@ class Matcher:
         if best_score >= self.THRESHOLD_GREEN:
             self.stats["fuzzy_high"] += 1
             return self._result(best_i, best_score / 100, "Fuzzy fort", "green")
-        if best_score >= self.THRESHOLD_ORANGE:
+        # Seuil orange abaissé à 65 si secteur identique (sinon 75)
+        threshold = self.THRESHOLD_ORANGE_SEC if best_sec_match else self.THRESHOLD_ORANGE
+        if best_score >= threshold:
             self.stats["fuzzy_medium"] += 1
             return self._result(best_i, best_score / 100, "Fuzzy moyen", "orange")
         self.stats["fuzzy_low"] += 1
