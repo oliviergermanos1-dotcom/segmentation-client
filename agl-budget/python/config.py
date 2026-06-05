@@ -21,8 +21,7 @@ Décisions colonnes confirmées :
 CRM = {
     "id":      "crm_id_compte",     # clé principale SI AGL
     "nom":     "nom_du_compte",     # nom client
-    # À confirmer (utilisé si présent, sinon ignoré) :
-    "secteur":     "secteur",
+    "secteur":     "secteur",       # alias "Verticale" géré via alternatives en 05
     "commercial":  "commercial",
     "pipeline":    "pipeline",
 }

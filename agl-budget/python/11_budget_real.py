@@ -126,7 +126,13 @@ def main(argv=None) -> int:
     ], ignore_index=True).dropna(subset=["NOM_BASE"]).query("NOM_BASE != ''")
     keys = keys.drop_duplicates(subset=["NOM_BASE", "ID_CRM"])
 
-    bud = ru.merge(keys, on="NOM_BASE", how="left").copy()
+    # Drop des colonnes RUBRIKS qui entreraient en conflit avec celles du RMC
+    # (SECTEUR, LOCKED) — on garde seulement les variantes _xxx qu'on a déjà
+    # créées pour les valeurs utiles côté RUBRIKS.
+    ru_clean = ru.drop(columns=[c for c in ("SECTEUR", "LOCKED", "ID_CRM", "ID_IRIS",
+                                            "NOM_CANONIQUE", "ALIAS_STATCOM")
+                                if c in ru.columns], errors="ignore")
+    bud = ru_clean.merge(keys, on="NOM_BASE", how="left").copy()
     nb_unmatched = bud["ID_CRM"].isna().sum()
 
     # --- Joint avec IRIS (cap réel) ------------------------------------------
@@ -135,7 +141,11 @@ def main(argv=None) -> int:
     bud["CAP_REEL"] = bud["CAP_REEL"].fillna(0)
 
     # On préfère le secteur LOCKED du RMC si dispo, sinon le secteur RUBRIKS.
-    bud["SECTEUR_FINAL"] = bud["SECTEUR"].where(bud["SECTEUR"].fillna("").str.len() > 0, bud["_secteur"])
+    # Tolère l'absence de la colonne SECTEUR côté RMC (cas: CRM sans colonne secteur).
+    if "SECTEUR" not in bud.columns:
+        bud["SECTEUR"] = ""
+    bud["SECTEUR_FINAL"] = bud["SECTEUR"].fillna("").where(
+        bud["SECTEUR"].fillna("").str.len() > 0, bud["_secteur"])
 
     bud["ECART"]     = bud["CAP_REEL"] - bud["_cap_pfa"]
     bud["ECART_PCT"] = bud.apply(

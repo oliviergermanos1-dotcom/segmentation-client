@@ -53,7 +53,10 @@ def main(argv=None) -> int:
     crm = _load(args.crm)
     id_crm  = config.resolve_column(crm.columns, config.CRM["id"])
     nom_crm = config.resolve_column(crm.columns, config.CRM["nom"])
-    sec_crm = config.resolve_column(crm.columns, config.CRM["secteur"])
+    sec_crm = config.resolve_column(crm.columns, config.CRM["secteur"],
+                                     ["Verticale", "Verticale (Compte) (Compte)",
+                                      "Industry", "Sector", "Activité",
+                                      "Segment de marché", "Secteur d activité"])
     if not id_crm or not nom_crm:
         sys.exit("ERREUR : colonnes id/nom CRM manquantes (cf. config.CRM).")
 
