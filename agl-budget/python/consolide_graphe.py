@@ -61,6 +61,21 @@ def _prep(path, source, name_col, sec_col):
         return toks[0][:4] if toks else (s[:4] if s else "ZZZZ")
     out["bloc"] = out["name"].map(blk)
     out = out[out["name"] != ""]
+    # IRIS/STATCOM sont des tables de transactions (1 ligne/facture ou /BL).
+    # On déduplique au CLIENT UNIQUE (par nom normalisé) avant le maillage,
+    # sinon le produit cartésien explose (159k×497k = 1,4 Md de paires).
+    # Secteur retenu pour un client = le plus fréquent parmi ses lignes.
+    if len(out):
+        def _mode_sec(s):
+            nz = s[s != ""]
+            return nz.mode().iloc[0] if len(nz) else ""
+        out = (out.groupby("name", as_index=False)
+                  .agg(unique_id=("unique_id", "first"),
+                       source=("source", "first"),
+                       secteur=("secteur", _mode_sec),
+                       bloc=("bloc", "first")))
+        # ré-attribuer un unique_id propre et unique par source
+        out["unique_id"] = [f"{source}_{i}" for i in range(len(out))]
     return out
 
 
