@@ -30,23 +30,51 @@ from rapidfuzz import fuzz, distance
 TOKEN_FLOOR = 0.80
 
 
-def _prep(path, source, name_col, sec_col):
+# Pays / régions (UEMOA + voisins) détectés dans le nom complet.
+PAYS_KW = {
+    "CI": ["COTE IVOIRE", "COTE D IVOIRE", "IVOIRE", "RCI", " CIV", "ABIDJAN"],
+    "BF": [" BF", "BURKINA", "OUAGA"],
+    "ML": [" MALI", "BAMAKO"],
+    "SN": ["SENEGAL", "DAKAR"],
+    "GH": ["GHANA", "ACCRA"],
+    "TG": [" TOGO", "LOME"],
+    "BJ": ["BENIN", "COTONOU"],
+    "NE": [" NIGER ", "NIAMEY"],
+    "GN": ["GUINEE", "CONAKRY"],
+    "NG": ["NIGERIA", "LAGOS"],
+}
+
+
+def detect_pays(full):
+    s = f" {str(full).upper()} "
+    for code, kws in PAYS_KW.items():
+        for kw in kws:
+            if kw in s:
+                return code
+    return ""   # pays inconnu
+
+
+def _prep(path, source, name_col, sec_col, full_col="NOM_NORMALISE"):
     if not path:
         return None
     df = pd.read_excel(path)
     nm = name_col if name_col in df.columns else None
     if not nm:
         return None
+    fc = full_col if full_col in df.columns else nm
     out = pd.DataFrame()
     out["name"] = df[nm].fillna("").astype(str).str.upper().str.strip()
+    out["full"] = df[fc].fillna("").astype(str).str.upper().str.strip()
     out["secteur"] = (df[sec_col].fillna("").astype(str).str.upper().str.strip()
                       if sec_col and sec_col in df.columns else "")
     out = out[out["name"] != ""]
-    # client unique : secteur dominant par nom
+
     def _mode_sec(s):
         nz = s[s != ""]
         return nz.mode().iloc[0] if len(nz) else ""
-    out = out.groupby("name", as_index=False).agg(secteur=("secteur", _mode_sec))
+    out = out.groupby("name", as_index=False).agg(
+        full=("full", "first"), secteur=("secteur", _mode_sec))
+    out["pays"] = out["full"].map(detect_pays)
     out["source"] = source
     out["uid"] = [f"{source}_{i}" for i in range(len(out))]
     return out
@@ -56,19 +84,27 @@ def _toks(name):
     return [t for t in name.split() if len(t) >= 3]
 
 
-def _score(a, b, rare_a, rare_b):
-    """Score length-aware qui NE récompense PAS les sous-ensembles.
+def _score(a, b, rare_a, rare_b, full_a="", full_b="", pays_a="", pays_b=""):
+    """Matching à 2 niveaux + garde-fou pays.
 
-    - token_sort_ratio (≠ token_set_ratio) : compare les séquences complètes,
-      donc "BOUTIQUE" vs "RIAM BOUTIQUE" tombe à ~0.6, pas 1.0.
-    - exige le partage d'au moins 1 token RARE (sinon ce sont des génériques
-      type SERVICES/AUTO/MAIRIE qui ne prouvent rien).
+    1. tronc (NOM_BASE) : token_sort_ratio (length-aware) + ≥1 token rare partagé.
+    2. nom COMPLET (NOM_NORMALISE) : doit aussi concorder → évite de fusionner
+       deux entités dont seuls les tokens amputés (pays/forme) différaient.
+    3. garde-fou PAYS : 2 pays explicites différents → JAMAIS de fusion.
     """
     if not (rare_a & rare_b):
-        return 0.0  # aucun token discriminant partagé → pas de lien
+        return 0.0
+    # garde-fou pays : si les deux ont un pays explicite et qu'ils diffèrent → refus
+    if pays_a and pays_b and pays_a != pays_b:
+        return 0.0
     tsort = fuzz.token_sort_ratio(a, b) / 100.0
     if tsort < TOKEN_FLOOR:
         return 0.0
+    # confirmation sur le nom complet (lit TOUT le nom)
+    if full_a and full_b:
+        tfull = fuzz.token_sort_ratio(full_a, full_b) / 100.0
+        if tfull < TOKEN_FLOOR - 0.05:   # léger jeu pour formes juridiques
+            return 0.0
     jw = distance.JaroWinkler.normalized_similarity(a, b)
     return 0.85 * tsort + 0.15 * jw
 
@@ -105,7 +141,7 @@ def main(argv=None):
     pool = pd.concat(parts, ignore_index=True)
     print(f"  POOL     : {len(pool):,} enregistrements")
 
-    rec = pool.set_index("uid")[["name", "source", "secteur"]].to_dict("index")
+    rec = pool.set_index("uid")[["name", "full", "pays", "source", "secteur"]].to_dict("index")
 
     # --- Fréquence des tokens (DF) : un token fréquent = générique ---------
     df_tok = defaultdict(int)
@@ -143,7 +179,9 @@ def main(argv=None):
                     continue
                 seen.add(key)
                 if _score(rec[a]["name"], rec[c]["name"],
-                          rare_of[a], rare_of[c]) >= args.threshold:
+                          rare_of[a], rare_of[c],
+                          rec[a]["full"], rec[c]["full"],
+                          rec[a]["pays"], rec[c]["pays"]) >= args.threshold:
                     uf.union(a, c); n_links += 1
     print(f"[match] {n_links:,} liens retenus (>= {args.threshold})")
 
