@@ -113,15 +113,36 @@ def _score(a, b, rare_a, rare_b, full_a="", full_b="", pays_a="", pays_b=""):
 
 
 class UF:
-    def __init__(self): self.p = {}
+    """Union-find conscient du PAYS : un cluster porte son pays explicite ;
+    une fusion qui joindrait 2 pays différents (même via un nœud sans pays)
+    est refusée → empêche le chaînage transitif CI—(inconnu)—BF."""
+    def __init__(self):
+        self.p = {}
+        self.cp = {}   # root -> pays explicite du cluster
     def find(self, x):
         self.p.setdefault(x, x)
         while self.p[x] != x:
             self.p[x] = self.p[self.p[x]]; x = self.p[x]
         return x
-    def union(self, a, b):
-        ra, rb = self.find(a), self.find(b)
-        if ra != rb: self.p[ra] = rb
+    def set_pays(self, x, pays):
+        if pays:
+            r = self.find(x)
+            self.cp.setdefault(r, pays)
+    def country_ok(self, a, c):
+        pa, pc = self.cp.get(self.find(a), ""), self.cp.get(self.find(c), "")
+        return not (pa and pc and pa != pc)
+    def union(self, a, c, force=False):
+        ra, rb = self.find(a), self.find(c)
+        if ra == rb:
+            return True
+        pa, pb = self.cp.get(ra, ""), self.cp.get(rb, "")
+        if not force and pa and pb and pa != pb:
+            return False   # refus : pays explicites différents
+        self.p[ra] = rb
+        merged = pb or pa
+        if merged:
+            self.cp[rb] = merged
+        return True
 
 
 def main(argv=None):
@@ -171,11 +192,14 @@ def main(argv=None):
             idx[t[:5]].append(uid)
 
     uf = UF()
-    for uid in rec: uf.find(uid)
+    for uid in rec:
+        uf.find(uid)
+        uf.set_pays(uid, rec[uid]["pays"])
     links = []   # (a, c, score, type)
 
     # --- PASSE 1 : ANCRES PAR ID EXACT (Concerto) — 0 erreur ---------------
-    # RUBRIKS et CRM partagent l'ID Concerto : lien certain, pas de fuzzy.
+    # RUBRIKS et CRM partagent l'ID Concerto : lien certain (force=True : un
+    # même ID Concerto = même entité légale, même si succursale autre pays).
     id_index = defaultdict(list)
     for uid in rec:
         eid = rec[uid]["extid"]
@@ -184,14 +208,15 @@ def main(argv=None):
     n_anchor = 0
     for eid, uids in id_index.items():
         for k in range(1, len(uids)):
-            uf.union(uids[0], uids[k])
-            links.append((uids[0], uids[k], 1.0, "ANCRE_ID"))
-            n_anchor += 1
+            if uf.union(uids[0], uids[k], force=True):
+                links.append((uids[0], uids[k], 1.0, "ANCRE_ID"))
+                n_anchor += 1
     print(f"[match] passe 1 — {n_anchor:,} liens par ID exact (Concerto)")
 
     # --- PASSE 2 : FUZZY (tronc + nom complet + garde-fou pays) ------------
     print("[match] passe 2 — scoring fuzzy…")
     seen = set()
+    cand = []
     for b, uids in idx.items():
         if len(uids) < 2 or len(uids) > 2000:
             continue
@@ -206,13 +231,20 @@ def main(argv=None):
                             rec[a]["full"], rec[c]["full"],
                             rec[a]["pays"], rec[c]["pays"])
                 if sc >= args.threshold:
-                    uf.union(a, c)
-                    typ = "FORT" if sc >= args.verify_band else "A_VERIFIER"
-                    links.append((a, c, round(sc, 3), typ))
-    n_fuzzy = sum(1 for l in links if l[3] != "ANCRE_ID")
-    n_verif = sum(1 for l in links if l[3] == "A_VERIFIER")
+                    cand.append((sc, a, c))
+    # meilleurs liens d'abord : ils fixent le pays du cluster en priorité
+    cand.sort(reverse=True)
+    n_fuzzy = n_verif = n_blocked = 0
+    for sc, a, c in cand:
+        if uf.union(a, c):                       # refuse si pays cluster diffère
+            typ = "FORT" if sc >= args.verify_band else "A_VERIFIER"
+            links.append((a, c, round(sc, 3), typ))
+            n_fuzzy += 1
+            n_verif += (typ == "A_VERIFIER")
+        else:
+            n_blocked += 1
     print(f"[match] passe 2 — {n_fuzzy:,} liens fuzzy "
-          f"(dont {n_verif:,} à vérifier, score < {args.verify_band})")
+          f"(dont {n_verif:,} à vérifier) · {n_blocked:,} bloqués par garde-fou pays")
 
     # Grappes
     groups = defaultdict(list)
