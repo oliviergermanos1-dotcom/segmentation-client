@@ -74,7 +74,7 @@ def top_rubriks(path, cap25="r2025", cap26="B26"):
     return g[["RANG", "NOM_RUBRIKS", "ID_RUBRIKS", "CAP_2024", "CAP_2025", "CAP_2026"]]
 
 
-def top_statcom_agl(raw_dir, transitaire, nb_lookup):
+def top_statcom_agl(raw_dir, transitaire, nb_lookup, id_lookup):
     out = {}
     abbr = {"Import Maritime": "TIM", "Export Maritime": "TEM",
             "Import Aérien": "TIA", "Export Aérien": "TEA",
@@ -117,13 +117,14 @@ def top_statcom_agl(raw_dir, transitaire, nb_lookup):
         for y in YEARS:
             if y not in piv.columns: piv[y] = 0
         piv = piv.rename(columns={y: f"POIDS_{y}" for y in YEARS}).reset_index()
+        piv["ID_STATCOM"] = piv["cli"].map(id_lookup).fillna("")
         piv["NOM_BASE"] = piv["cli"].map(nb_lookup).fillna("")
         piv = piv.sort_values(f"POIDS_{RANK_YEAR}", ascending=False).head(TOPN)
         piv.insert(0, "RANG", range(1, len(piv) + 1))
         piv.insert(1, "METIER", metier)
         piv = piv.rename(columns={"cli": "NOM_STATCOM"})
         out[f"top300_stat_{abbr.get(metier, metier)[:16]}"] = piv[
-            ["RANG", "METIER", "NOM_STATCOM", "NOM_BASE",
+            ["RANG", "METIER", "NOM_STATCOM", "ID_STATCOM", "NOM_BASE",
              "POIDS_2024", "POIDS_2025", "POIDS_2026"]]
         print(f"STATCOM {metier:18s}: top {len(piv)} clients AGL")
     return out
@@ -147,10 +148,11 @@ def main(argv=None):
     gr = top_rubriks(args.rubriks); sheets["top300_rubriks_cap"] = gr
     print(f"RUBRIKS : top {len(gr)} (CAP 2025 max {gr['CAP_2025'].max():,.0f})")
 
-    snorm = pd.read_excel(args.statcom_norm, usecols=["CLIENT_RESOLU", "NOM_BASE"])
-    nb_lookup = {str(k).upper().strip(): v for k, v in
-                 zip(snorm["CLIENT_RESOLU"], snorm["NOM_BASE"]) if pd.notna(k)}
-    sheets.update(top_statcom_agl(args.statcom_raw_dir, args.transitaire.upper(), nb_lookup))
+    snorm = pd.read_excel(args.statcom_norm, usecols=["CLIENT_RESOLU", "NOM_BASE", "ID_STATCOM"])
+    snorm = snorm.dropna(subset=["CLIENT_RESOLU"]).drop_duplicates("CLIENT_RESOLU")
+    nb_lookup = {str(k).upper().strip(): v for k, v in zip(snorm["CLIENT_RESOLU"], snorm["NOM_BASE"])}
+    id_lookup = {str(k).upper().strip(): v for k, v in zip(snorm["CLIENT_RESOLU"], snorm["ID_STATCOM"])}
+    sheets.update(top_statcom_agl(args.statcom_raw_dir, args.transitaire.upper(), nb_lookup, id_lookup))
 
     # --- ID compte consolidé (depuis le référentiel) dans chaque onglet ----
     vue = pd.read_excel(args.referentiel)
@@ -165,8 +167,8 @@ def main(argv=None):
             df["ID_COMPTE"] = df["ID_IRIS"].astype(str).map(m_iris).fillna("")
         elif name.startswith("top300_rubriks"):
             df["ID_COMPTE"] = df["ID_RUBRIKS"].astype(str).map(m_rub).fillna("")
-        else:  # STATCOM : on retient l'ID_STATCOM (= NOM_BASE canonique)
-            df["ID_COMPTE"] = df["NOM_BASE"].astype(str)
+        else:  # STATCOM : on retient l'ID_STATCOM (STAT_XXXXXX)
+            df["ID_COMPTE"] = df["ID_STATCOM"].astype(str)
 
     with pd.ExcelWriter(args.out, engine="openpyxl") as xl:
         for name, df in sheets.items():
