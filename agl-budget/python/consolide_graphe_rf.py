@@ -52,17 +52,25 @@ def _prep(path, source, name_col, sec_col):
     return out
 
 
-def _blocks(name, prefix=4):
-    toks = [t for t in name.split() if len(t) >= 3][:4]
-    return {t[:prefix] for t in toks} or ({name[:prefix]} if name else set())
+def _toks(name):
+    return [t for t in name.split() if len(t) >= 3]
 
 
-def _score(a, b):
-    tsr = fuzz.token_set_ratio(a, b) / 100.0
-    if tsr < TOKEN_FLOOR:
+def _score(a, b, rare_a, rare_b):
+    """Score length-aware qui NE récompense PAS les sous-ensembles.
+
+    - token_sort_ratio (≠ token_set_ratio) : compare les séquences complètes,
+      donc "BOUTIQUE" vs "RIAM BOUTIQUE" tombe à ~0.6, pas 1.0.
+    - exige le partage d'au moins 1 token RARE (sinon ce sont des génériques
+      type SERVICES/AUTO/MAIRIE qui ne prouvent rien).
+    """
+    if not (rare_a & rare_b):
+        return 0.0  # aucun token discriminant partagé → pas de lien
+    tsort = fuzz.token_sort_ratio(a, b) / 100.0
+    if tsort < TOKEN_FLOOR:
         return 0.0
     jw = distance.JaroWinkler.normalized_similarity(a, b)
-    return 0.85 * tsr + 0.15 * jw
+    return 0.85 * tsort + 0.15 * jw
 
 
 class UF:
@@ -97,21 +105,35 @@ def main(argv=None):
     pool = pd.concat(parts, ignore_index=True)
     print(f"  POOL     : {len(pool):,} enregistrements")
 
-    # Index blocking
-    idx = defaultdict(list)
     rec = pool.set_index("uid")[["name", "source", "secteur"]].to_dict("index")
-    for uid, r in rec.items():
-        for b in _blocks(r["name"]):
-            idx[b].append(uid)
 
-    # Scoring intra-bloc + union-find
+    # --- Fréquence des tokens (DF) : un token fréquent = générique ---------
+    df_tok = defaultdict(int)
+    for r in rec.values():
+        for t in set(_toks(r["name"])):
+            df_tok[t] += 1
+    # seuil "générique" : token présent dans > GEN_CAP noms (≈ stopword métier)
+    GEN_CAP = max(25, int(0.003 * len(rec)))
+    rare_of = {uid: {t for t in _toks(rec[uid]["name"]) if df_tok[t] <= GEN_CAP}
+               for uid in rec}
+    n_generic = sum(1 for t, c in df_tok.items() if c > GEN_CAP)
+    print(f"[match] {n_generic:,} tokens génériques ignorés "
+          f"(présents dans > {GEN_CAP} noms) ; blocking sur tokens RARES")
+
+    # --- Blocking sur préfixe 5 des tokens RARES uniquement ----------------
+    idx = defaultdict(list)
+    for uid in rec:
+        for t in rare_of[uid]:
+            idx[t[:5]].append(uid)
+
+    # --- Scoring intra-bloc + union-find -----------------------------------
     print("[match] scoring des paires candidates…")
     uf = UF()
     for uid in rec: uf.find(uid)
     seen = set()
     n_links = 0
     for b, uids in idx.items():
-        if len(uids) < 2:
+        if len(uids) < 2 or len(uids) > 2000:   # bloc trop gros = token encore trop commun
             continue
         for i in range(len(uids)):
             for j in range(i + 1, len(uids)):
@@ -120,7 +142,8 @@ def main(argv=None):
                 if key in seen:
                     continue
                 seen.add(key)
-                if _score(rec[a]["name"], rec[c]["name"]) >= args.threshold:
+                if _score(rec[a]["name"], rec[c]["name"],
+                          rare_of[a], rare_of[c]) >= args.threshold:
                     uf.union(a, c); n_links += 1
     print(f"[match] {n_links:,} liens retenus (>= {args.threshold})")
 
