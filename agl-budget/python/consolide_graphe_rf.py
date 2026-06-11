@@ -87,26 +87,39 @@ def _toks(name):
     return [t for t in name.split() if len(t) >= 3]
 
 
+# Mots géo/pays retirés du nom complet AVANT la confirmation (le pays est
+# déjà géré par le garde-fou dédié ; "CI" ≠ "COTE D IVOIRE" ne doit pas
+# faire échouer un tronc identique — cf. CFAO MOBILITY CI = ...COTE D'IVOIRE).
+_GEO_WORDS = {"COTE", "DIVOIRE", "IVOIRE", "CI", "CIV", "RCI", "ABIDJAN", "PLATEAU",
+              "BF", "BURKINA", "OUAGA", "MALI", "BAMAKO", "SENEGAL", "DAKAR", "GHANA",
+              "TOGO", "LOME", "BENIN", "COTONOU", "NIGER", "NIAMEY", "GUINEE", "FASO",
+              "AFRIQUE", "AFRICA", "WEST", "OUEST", "SARL", "SAS", "SA"}
+
+
+def _degeo(s):
+    return " ".join(t for t in str(s).upper().split() if t not in _GEO_WORDS)
+
+
 def _score(a, b, rare_a, rare_b, full_a="", full_b="", pays_a="", pays_b=""):
     """Matching à 2 niveaux + garde-fou pays.
 
     1. tronc (NOM_BASE) : token_sort_ratio (length-aware) + ≥1 token rare partagé.
-    2. nom COMPLET (NOM_NORMALISE) : doit aussi concorder → évite de fusionner
-       deux entités dont seuls les tokens amputés (pays/forme) différaient.
+    2. nom COMPLET (hors mots géo) : doit aussi concorder → garde la partie
+       MÉTIER du nom, sans pénaliser les variantes géo (CI vs COTE D'IVOIRE).
     3. garde-fou PAYS : 2 pays explicites différents → JAMAIS de fusion.
     """
     if not (rare_a & rare_b):
         return 0.0
-    # garde-fou pays : si les deux ont un pays explicite et qu'ils diffèrent → refus
     if pays_a and pays_b and pays_a != pays_b:
         return 0.0
     tsort = fuzz.token_sort_ratio(a, b) / 100.0
     if tsort < TOKEN_FLOOR:
         return 0.0
-    # confirmation sur le nom complet (lit TOUT le nom)
-    if full_a and full_b:
-        tfull = fuzz.token_sort_ratio(full_a, full_b) / 100.0
-        if tfull < TOKEN_FLOOR - 0.05:   # léger jeu pour formes juridiques
+    # confirmation sur le nom complet SANS les mots géo (le pays est déjà gardé)
+    fa, fb = _degeo(full_a), _degeo(full_b)
+    if fa and fb:
+        tfull = fuzz.token_sort_ratio(fa, fb) / 100.0
+        if tfull < TOKEN_FLOOR - 0.05:
             return 0.0
     jw = distance.JaroWinkler.normalized_similarity(a, b)
     return 0.85 * tsort + 0.15 * jw
