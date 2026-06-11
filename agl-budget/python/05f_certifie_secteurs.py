@@ -78,13 +78,15 @@ def certifie(row):
     n_distinct = len(votes)
 
     if n_best >= 2:
-        niveau = "CERTIFIE"
+        niveau = "CERTIFIE_CROISE"        # ≥2 sources indépendantes d'accord (or)
     elif n_distinct >= 2:
-        # plusieurs signaux mais aucun accord → conflit
-        niveau = "A_TRANCHER"
+        niveau = "A_TRANCHER"             # plusieurs signaux en conflit
+    elif "CRM" in best_srcs:
+        niveau = "CERTIFIE_CRM"           # 1 signal mais source officielle CRM
+    elif "MARCH" in best_srcs:
+        niveau = "CERTIFIE_MARCH"         # 1 signal marchandise fort (dominance ≥60%)
     else:
-        # 1 seul signal : fort si CRM ou marchandise dominante
-        niveau = "PROBABLE"
+        niveau = "PROBABLE"               # 1 signal faible (RUBRIKS seul / march. moyen)
     return pd.Series([best_sec, niveau, n_best, detail])
 
 
@@ -93,7 +95,8 @@ def main(argv=None):
     ap.add_argument("--master-v2", required=True, help="clients_master_v2.xlsx (S3 marchandise)")
     ap.add_argument("--rmc", required=True, help="RMC.xlsx (S1 Verticale CRM)")
     ap.add_argument("--rubriks", required=True, help="RUBRIKS.xlsx (S2 secteur RUBRIKS)")
-    ap.add_argument("--statcom-norm", help="STATCOM_norm.xlsx (S4 vertical_destinataire)")
+    ap.add_argument("--statcom-norm", help="STATCOM_norm.xlsx (S3 marchandise pour TOUS + S4)")
+    ap.add_argument("--mapping-marchandises", help="SEGEMENTATION_ENRICHI.xlsx (dico marchandise→secteur)")
     ap.add_argument("--out", default="secteurs_certifies.xlsx")
     args = ap.parse_args(argv)
 
@@ -116,10 +119,35 @@ def main(argv=None):
     rub_keys = rub_keys.rename(columns={"SECTEUR": "S2_rubriks"})
     m = m.merge(rub_keys, left_on="ID_CRM", right_on="ID_RUB", how="left")
 
-    # S3 — Marchandise dominante : on ne garde que si dominance >= 0.60 (sinon non fiable)
-    dom = pd.to_numeric(m.get("DOMINANCE_SECTEUR"), errors="coerce").fillna(0)
-    m["S3_march"] = m["SECTEUR"].where(
-        m["SECTEUR_SOURCE"].isin(["INFERE", "INFERE_MOYEN"]) & (dom >= 0.40))
+    # S3 — Marchandise dominante calculée pour TOUS les clients ayant une
+    # activité STATCOM (CRM matchés compris), pas seulement les white spaces.
+    # C'est la cross-validation : un client CRM dont les marchandises confirment
+    # son secteur déclaré = certifié croisé.
+    if args.statcom_norm and args.mapping_marchandises:
+        sc = pd.read_excel(args.statcom_norm,
+                           usecols=["NOM_BASE", "marchandise",
+                                    "volume_teu", "volume_bulk", "volume_kg"])
+        seg = pd.read_excel(args.mapping_marchandises, sheet_name="tim",
+                            usecols=["SECTEUR", "MARCHANDISES"])
+        dico = dict(zip(seg["MARCHANDISES"].astype(str).str.upper().str.strip(),
+                        seg["SECTEUR"]))
+        sc["sec"] = sc["marchandise"].astype(str).str.upper().str.strip().map(dico)
+        sc["poids"] = (sc["volume_kg"].fillna(0)
+                       + sc["volume_bulk"].fillna(0) * 1000
+                       + sc["volume_teu"].fillna(0) * 15000).clip(lower=1)
+        scm = sc.dropna(subset=["sec"])
+        # secteur dominant + dominance par client (NOM_BASE)
+        agg = (scm.groupby(["NOM_BASE", "sec"])["poids"].sum().reset_index())
+        tot = agg.groupby("NOM_BASE")["poids"].transform("sum")
+        agg["dom"] = agg["poids"] / tot
+        top = agg.sort_values("poids", ascending=False).drop_duplicates("NOM_BASE")
+        top = top[top["dom"] >= 0.40][["NOM_BASE", "sec"]].rename(columns={"sec": "S3_march"})
+        m = m.merge(top, left_on="ID_STATCOM", right_on="NOM_BASE", how="left")
+    else:
+        # fallback : ancien comportement (white spaces seulement, depuis master_v2)
+        dom = pd.to_numeric(m.get("DOMINANCE_SECTEUR"), errors="coerce").fillna(0)
+        m["S3_march"] = m["SECTEUR"].where(
+            m["SECTEUR_SOURCE"].isin(["INFERE", "INFERE_MOYEN"]) & (dom >= 0.40))
 
     # S4 — vertical_destinataire STATCOM (dominant par client) si fourni
     if args.statcom_norm:
@@ -140,12 +168,15 @@ def main(argv=None):
 
     # ===== KPI =====
     niv = m["NIVEAU"].value_counts()
-    pct_cert = (m["NIVEAU"] == "CERTIFIE").mean() * 100
+    FIABLES = ["CERTIFIE_CROISE", "CERTIFIE_CRM", "CERTIFIE_MARCH"]
+    pct_fiable = m["NIVEAU"].isin(FIABLES).mean() * 100
+    pct_croise = (m["NIVEAU"] == "CERTIFIE_CROISE").mean() * 100
     print(f"\n=== RÉSULTAT CERTIFICATION ===")
     for n, c in niv.items():
-        print(f"  {n:14s} : {c:>6,} ({c/len(m)*100:4.1f}%)")
-    print(f"\n  → % CERTIFIÉ (≥2 signaux d'accord) : {pct_cert:.1f}%")
-    print(f"  → Conflits à trancher (worklist)    : {(m['NIVEAU']=='A_TRANCHER').sum():,}")
+        print(f"  {n:16s} : {c:>6,} ({c/len(m)*100:4.1f}%)")
+    print(f"\n  → % FIABLE (CRM officiel OU marchandise forte OU ≥2 d'accord) : {pct_fiable:.1f}%")
+    print(f"  → dont CERTIFIÉ CROISÉ (≥2 signaux d'accord, or)             : {pct_croise:.1f}%")
+    print(f"  → Conflits à trancher (worklist)                             : {(m['NIVEAU']=='A_TRANCHER').sum():,}")
 
     # ===== Écriture =====
     cols = ["ID_UNIQUE", "ID_CRM", "NOM_CLIENT", "SECTEUR_CERTIFIE", "NIVEAU",
@@ -158,8 +189,8 @@ def main(argv=None):
     conflits = conflits.sort_values("_nb", ascending=False)
 
     kpi = pd.DataFrame({
-        "Niveau": list(niv.index) + ["", "% CERTIFIE"],
-        "Clients": list(niv.values) + ["", f"{pct_cert:.1f}%"],
+        "Niveau": list(niv.index) + ["", "% FIABLE", "% CERTIFIE_CROISE"],
+        "Clients": list(niv.values) + ["", f"{pct_fiable:.1f}%", f"{pct_croise:.1f}%"],
     })
 
     with pd.ExcelWriter(args.out, engine="openpyxl") as xl:
