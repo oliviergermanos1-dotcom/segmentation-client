@@ -27,9 +27,18 @@ def main(argv=None):
 
     sheets = {}
 
-    # --- IRIS : CAP = Σ MONTANT par client -------------------------------
+    # --- IRIS : CAP = Σ MONTANT par client (hors comptes internes) -------
     i = pd.read_excel(args.iris, usecols=["CLIENT", "MONTANT", "ID", "NOM_BASE"])
     i["MONTANT"] = pd.to_numeric(i["MONTANT"], errors="coerce").fillna(0)
+    # Exclure facturation inter-agence / interne / comptant (pas de vrais clients)
+    INTERNE = ("FACT INTERNE", "INTERNE TRANSIT", "FACTURATION INTERNE", "COMPTANT",
+               "INTERCO", "AGL CI FACT", "BOLLORE TL CI FACT", "DIVERS CLIENT",
+               "CLIENT DIVERS", "FACT INTRAGROUPE", "INTRA GROUPE FACT")
+    pat_int = "|".join(INTERNE)
+    masque_int = i["CLIENT"].astype(str).str.upper().str.contains(pat_int, na=False, regex=True)
+    n_int = i.loc[masque_int, "NOM_BASE"].nunique()
+    i = i[~masque_int]
+    print(f"IRIS    : {n_int} comptes internes/comptant exclus")
     gi = (i.groupby("NOM_BASE")
             .agg(NOM_IRIS=("CLIENT", "first"), ID_IRIS=("ID", "first"),
                  CAP_IRIS=("MONTANT", "sum"))
