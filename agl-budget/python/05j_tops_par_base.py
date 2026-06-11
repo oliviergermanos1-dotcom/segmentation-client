@@ -10,17 +10,76 @@ AGL BUDGET — Top 200 par base (pour filtrer le référentiel sur les top acteu
 Chaque ligne porte NOM_BASE (= clé de jointure vers referentiel_vue) + nom
 brut + id + la métrique + le rang. Sortie multi-onglets.
 """
-import argparse, sys
+import argparse, sys, glob, os
+import importlib.util
 import pandas as pd
 
 TOPN = 200
+
+# Helpers de _statcom_consolide (métier, résolution colonnes, règles poids)
+_spec = importlib.util.spec_from_file_location(
+    "scmod", os.path.join(os.path.dirname(__file__), "_statcom_consolide.py"))
+scmod = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(scmod)
+
+
+def statcom_tops_agl(raw_dir, transitaire, nb_lookup):
+    """Top 200 par métier des clients dont le Transitaire = AGL."""
+    out = {}
+    abbr = {"Import Maritime": "TIM", "Export Maritime": "TEM",
+            "Import Aérien": "TIA", "Export Aérien": "TEA",
+            "Hinterland Import": "HINT_IMP", "Hinterland Export": "HINT_EXP"}
+    for path in sorted(glob.glob(os.path.join(raw_dir, "STATCOM*.xlsx"))):
+        info = scmod.metier_du_fichier(os.path.basename(path))
+        if not info:
+            continue
+        metier, sens, unite = info
+        df = pd.read_excel(path, dtype=str)
+        df.columns = [str(c).strip() for c in df.columns]
+        c_tr = scmod.resolve_col(df, ["transitaire"])
+        if c_tr is None:
+            print(f"  [skip] {os.path.basename(path)} : pas de colonne Transitaire")
+            continue
+        df = df[df[c_tr].astype(str).str.upper().str.strip() == transitaire]
+        if not len(df):
+            continue
+        c_cli = (scmod.resolve_col(df, ["destinataires", "destinataire", "consignee"])
+                 if sens == "import" else
+                 scmod.resolve_col(df, ["chargeurs", "chargeur", "expediteur", "shipper"]))
+        c_poids = scmod.resolve_col(df, ["POIDS_MARCHANDISE", "poids marchandise", "poids"])
+        c_teu = scmod.resolve_col(df, ["NOMBRE_TEU", "nombre teu", "teu"])
+        c_cond = scmod.resolve_col(df, ["CODE_CONDIT", "code condit", "conditionnement"])
+        poids = scmod._to_num_series(df[c_poids]) if c_poids else 0
+        teu = scmod._to_num_series(df[c_teu]) if c_teu else 0
+        is_air = "AERIEN" in metier.upper() or "AÉRIEN" in metier.upper()
+        if is_air:
+            w = poids
+        else:
+            is_bulk = (df[c_cond].astype(str).str.upper().str.strip().isin(scmod.BULK_CODES)
+                       if c_cond else False)
+            w = (poids * 1000).where(is_bulk, teu * 15000) if c_cond is not None else teu * 15000
+        g = pd.DataFrame({"cli": df[c_cli].astype(str).str.upper().str.strip(), "POIDS": w})
+        g = g[g["cli"] != ""]
+        gt = (g.groupby("cli")["POIDS"].sum().reset_index()
+                .sort_values("POIDS", ascending=False).head(TOPN))
+        gt["NOM_BASE"] = gt["cli"].map(nb_lookup).fillna("")
+        gt.insert(0, "RANG", range(1, len(gt) + 1))
+        gt.insert(1, "METIER", metier)
+        gt = gt.rename(columns={"cli": "NOM_STATCOM"})
+        out[f"top200_stat_{abbr.get(metier, metier)[:18]}"] = gt[
+            ["RANG", "METIER", "NOM_STATCOM", "NOM_BASE", "POIDS"]]
+        print(f"STATCOM {metier:18s}: top {len(gt)} clients AGL")
+    return out
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(__doc__)
     ap.add_argument("--iris", required=True)
     ap.add_argument("--rubriks", required=True)
-    ap.add_argument("--statcom", required=True)
+    ap.add_argument("--statcom-raw-dir", required=True,
+                    help="dossier des STATCOM bruts (avec colonne Transitaire)")
+    ap.add_argument("--statcom-norm", required=True,
+                    help="STATCOM_norm.xlsx (lookup CLIENT_RESOLU→NOM_BASE)")
+    ap.add_argument("--transitaire", default="AFRICA GLOBAL LOGISTICS")
     ap.add_argument("--rubriks-cap-col", default="r2025")
     ap.add_argument("--out", default="tops_par_base.xlsx")
     args = ap.parse_args(argv)
@@ -70,29 +129,11 @@ def main(argv=None):
     sheets["top200_rubriks_cap"] = gr
     print(f"RUBRIKS : top {len(gr)} (CAP max {gr['CAP_RUBRIKS'].max():,.0f})")
 
-    # --- STATCOM : top 200 par MÉTIER par poids unifié -------------------
-    s = pd.read_excel(args.statcom, usecols=["metier", "NOM_BASE", "CLIENT_RESOLU",
-                                             "ID_STATCOM", "volume_teu",
-                                             "volume_bulk", "volume_kg"])
-    s["POIDS"] = (pd.to_numeric(s["volume_kg"], errors="coerce").fillna(0)
-                  + pd.to_numeric(s["volume_bulk"], errors="coerce").fillna(0) * 1000
-                  + pd.to_numeric(s["volume_teu"], errors="coerce").fillna(0) * 15000)
-    abbr = {"Import Maritime": "TIM", "Export Maritime": "TEM",
-            "Import Aérien": "TIA", "Export Aérien": "TEA",
-            "Hinterland Import": "HINT_IMP", "Hinterland Export": "HINT_EXP"}
-    for metier, gm in s.groupby("metier"):
-        gt = (gm.groupby("NOM_BASE")
-                .agg(NOM_STATCOM=("CLIENT_RESOLU", "first"),
-                     ID_STATCOM=("ID_STATCOM", "first"),
-                     POIDS=("POIDS", "sum"),
-                     TEU=("volume_teu", "sum"), BULK=("volume_bulk", "sum"),
-                     KG=("volume_kg", "sum"))
-                .reset_index().sort_values("POIDS", ascending=False).head(TOPN))
-        gt.insert(0, "RANG", range(1, len(gt) + 1))
-        gt.insert(1, "METIER", metier)
-        name = f"top200_stat_{abbr.get(metier, metier)[:20]}"
-        sheets[name] = gt
-        print(f"STATCOM {metier:18s}: top {len(gt)}")
+    # --- STATCOM : top 200 par MÉTIER des clients TRAITÉS PAR AGL --------
+    snorm = pd.read_excel(args.statcom_norm, usecols=["CLIENT_RESOLU", "NOM_BASE"])
+    nb_lookup = {str(k).upper().strip(): v for k, v in
+                 zip(snorm["CLIENT_RESOLU"], snorm["NOM_BASE"]) if pd.notna(k)}
+    sheets.update(statcom_tops_agl(args.statcom_raw_dir, args.transitaire.upper(), nb_lookup))
 
     with pd.ExcelWriter(args.out, engine="openpyxl") as xl:
         for name, df in sheets.items():
