@@ -54,7 +54,7 @@ def detect_pays(full):
     return ""   # pays inconnu
 
 
-def _prep(path, source, name_col, sec_col, full_col="NOM_NORMALISE"):
+def _prep(path, source, name_col, sec_col, full_col="NOM_NORMALISE", id_col=None):
     if not path:
         return None
     df = pd.read_excel(path)
@@ -65,6 +65,8 @@ def _prep(path, source, name_col, sec_col, full_col="NOM_NORMALISE"):
     out = pd.DataFrame()
     out["name"] = df[nm].fillna("").astype(str).str.upper().str.strip()
     out["full"] = df[fc].fillna("").astype(str).str.upper().str.strip()
+    out["extid"] = (df[id_col].fillna("").astype(str).str.upper().str.strip()
+                    if id_col and id_col in df.columns else "")
     out["secteur"] = (df[sec_col].fillna("").astype(str).str.upper().str.strip()
                       if sec_col and sec_col in df.columns else "")
     out = out[out["name"] != ""]
@@ -73,7 +75,8 @@ def _prep(path, source, name_col, sec_col, full_col="NOM_NORMALISE"):
         nz = s[s != ""]
         return nz.mode().iloc[0] if len(nz) else ""
     out = out.groupby("name", as_index=False).agg(
-        full=("full", "first"), secteur=("secteur", _mode_sec))
+        full=("full", "first"), extid=("extid", "first"),
+        secteur=("secteur", _mode_sec))
     out["pays"] = out["full"].map(detect_pays)
     out["source"] = source
     out["uid"] = [f"{source}_{i}" for i in range(len(out))]
@@ -127,21 +130,26 @@ def main(argv=None):
     ap.add_argument("--statcom"); ap.add_argument("--rubriks")
     ap.add_argument("--name-col", default="NOM_BASE")
     ap.add_argument("--sec-col", default="secteur")
+    ap.add_argument("--crm-id-col", default="crm_id_compte")
+    ap.add_argument("--rubriks-id-col", default="ID_CONCERTO")
     ap.add_argument("--threshold", type=float, default=0.90)
+    ap.add_argument("--verify-band", type=float, default=0.95,
+                    help="liens fuzzy entre threshold et cette valeur = à vérifier")
     ap.add_argument("--max-cluster", type=int, default=10)
     ap.add_argument("--out", default="entites_graphe.xlsx")
     args = ap.parse_args(argv)
 
+    id_cols = {"CRM": args.crm_id_col, "RUBRIKS": args.rubriks_id_col}
     parts = []
     for src, p in [("CRM", args.crm), ("IRIS", args.iris),
                    ("STATCOM", args.statcom), ("RUBRIKS", args.rubriks)]:
-        t = _prep(p, src, args.name_col, args.sec_col)
+        t = _prep(p, src, args.name_col, args.sec_col, id_col=id_cols.get(src))
         if t is not None and len(t):
             parts.append(t); print(f"  {src:8s} : {len(t):,} clients uniques")
     pool = pd.concat(parts, ignore_index=True)
     print(f"  POOL     : {len(pool):,} enregistrements")
 
-    rec = pool.set_index("uid")[["name", "full", "pays", "source", "secteur"]].to_dict("index")
+    rec = pool.set_index("uid")[["name", "full", "pays", "extid", "source", "secteur"]].to_dict("index")
 
     # --- Fréquence des tokens (DF) : un token fréquent = générique ---------
     df_tok = defaultdict(int)
@@ -162,14 +170,30 @@ def main(argv=None):
         for t in rare_of[uid]:
             idx[t[:5]].append(uid)
 
-    # --- Scoring intra-bloc + union-find -----------------------------------
-    print("[match] scoring des paires candidates…")
     uf = UF()
     for uid in rec: uf.find(uid)
+    links = []   # (a, c, score, type)
+
+    # --- PASSE 1 : ANCRES PAR ID EXACT (Concerto) — 0 erreur ---------------
+    # RUBRIKS et CRM partagent l'ID Concerto : lien certain, pas de fuzzy.
+    id_index = defaultdict(list)
+    for uid in rec:
+        eid = rec[uid]["extid"]
+        if eid and len(eid) >= 5:
+            id_index[eid].append(uid)
+    n_anchor = 0
+    for eid, uids in id_index.items():
+        for k in range(1, len(uids)):
+            uf.union(uids[0], uids[k])
+            links.append((uids[0], uids[k], 1.0, "ANCRE_ID"))
+            n_anchor += 1
+    print(f"[match] passe 1 — {n_anchor:,} liens par ID exact (Concerto)")
+
+    # --- PASSE 2 : FUZZY (tronc + nom complet + garde-fou pays) ------------
+    print("[match] passe 2 — scoring fuzzy…")
     seen = set()
-    n_links = 0
     for b, uids in idx.items():
-        if len(uids) < 2 or len(uids) > 2000:   # bloc trop gros = token encore trop commun
+        if len(uids) < 2 or len(uids) > 2000:
             continue
         for i in range(len(uids)):
             for j in range(i + 1, len(uids)):
@@ -178,57 +202,92 @@ def main(argv=None):
                 if key in seen:
                     continue
                 seen.add(key)
-                if _score(rec[a]["name"], rec[c]["name"],
-                          rare_of[a], rare_of[c],
-                          rec[a]["full"], rec[c]["full"],
-                          rec[a]["pays"], rec[c]["pays"]) >= args.threshold:
-                    uf.union(a, c); n_links += 1
-    print(f"[match] {n_links:,} liens retenus (>= {args.threshold})")
+                sc = _score(rec[a]["name"], rec[c]["name"], rare_of[a], rare_of[c],
+                            rec[a]["full"], rec[c]["full"],
+                            rec[a]["pays"], rec[c]["pays"])
+                if sc >= args.threshold:
+                    uf.union(a, c)
+                    typ = "FORT" if sc >= args.verify_band else "A_VERIFIER"
+                    links.append((a, c, round(sc, 3), typ))
+    n_fuzzy = sum(1 for l in links if l[3] != "ANCRE_ID")
+    n_verif = sum(1 for l in links if l[3] == "A_VERIFIER")
+    print(f"[match] passe 2 — {n_fuzzy:,} liens fuzzy "
+          f"(dont {n_verif:,} à vérifier, score < {args.verify_band})")
 
     # Grappes
     groups = defaultdict(list)
     for uid in rec:
         groups[uf.find(uid)].append(uid)
 
+    cid_to_eid = {cid: f"E{i:08d}" for i, cid in enumerate(sorted(groups))}
+
+    # confiance par entité : a-t-elle une ancre ID ? un lien à vérifier ?
+    ent_has_anchor, ent_min_fuzzy = defaultdict(bool), {}
+    for a, c, sc, typ in links:
+        e = cid_to_eid[uf.find(a)]
+        if typ == "ANCRE_ID":
+            ent_has_anchor[e] = True
+        else:
+            ent_min_fuzzy[e] = min(ent_min_fuzzy.get(e, 1.0), sc)
+
     rows = []
     for cid, members in groups.items():
+        eid = cid_to_eid[cid]
         srcs = {rec[m]["source"] for m in members}
         secs = [rec[m]["secteur"] for m in members if rec[m]["secteur"]]
         sec_vote = pd.Series(secs).value_counts().idxmax() if secs else ""
         names = sorted({rec[m]["name"] for m in members})
+        mn = ent_min_fuzzy.get(eid)
+        if len(members) == 1:
+            conf = "SINGLETON"
+        elif ent_has_anchor[eid]:
+            conf = "ANCRE_ID"
+        elif mn is None or mn >= args.verify_band:
+            conf = "FORT"
+        else:
+            conf = "A_VERIFIER"
         rows.append({
-            "ID_UNIQUE": f"E{abs(hash(cid)) % 10**8:08d}",
-            "NOM_PRINCIPAL": max(names, key=len) if names else "",
-            "N_MEMBRES": len(members),
-            "N_BASES": len(srcs),
+            "ID_UNIQUE": eid, "NOM_PRINCIPAL": max(names, key=len) if names else "",
+            "N_MEMBRES": len(members), "N_BASES": len(srcs),
+            "CONFIANCE_LIEN": conf,
+            "SCORE_MIN_FUSION": round(mn, 3) if mn is not None else "",
             "PRESENCE_CRM": "✓" if "CRM" in srcs else "—",
             "PRESENCE_IRIS": "✓" if "IRIS" in srcs else "—",
             "PRESENCE_STATCOM": "✓" if "STATCOM" in srcs else "—",
             "PRESENCE_RUBRIKS": "✓" if "RUBRIKS" in srcs else "—",
-            "SECTEUR_VOTE": sec_vote,
-            "NOMS_VARIANTES": " | ".join(names[:6]),
+            "SECTEUR_VOTE": sec_vote, "NOMS_VARIANTES": " | ".join(names[:6]),
         })
     ent = pd.DataFrame(rows).sort_values(["N_BASES", "N_MEMBRES"], ascending=False)
     alertes = ent[ent["N_MEMBRES"] > args.max_cluster]
 
-    print(f"\n=== RÉSULTAT MAILLAGE (déterministe) ===")
+    print(f"\n=== RÉSULTAT MAILLAGE (max fiabilité) ===")
     print(f"  Entités uniques            : {len(ent):,}")
     print(f"  Entités multi-bases (>=2)  : {(ent['N_BASES']>=2).sum():,}")
-    print(f"  Entités sur 3 bases        : {(ent['N_BASES']==3).sum():,}")
+    print(f"    dont ancrées par ID exact: {(ent['CONFIANCE_LIEN']=='ANCRE_ID').sum():,}")
+    print(f"    dont fuzzy fort          : {(ent['CONFIANCE_LIEN']=='FORT').sum():,}")
+    print(f"    dont à vérifier          : {(ent['CONFIANCE_LIEN']=='A_VERIFIER').sum():,}")
     print(f"  Entités sur 4 bases        : {(ent['N_BASES']==4).sum():,}")
-    print(f"  ⚠️ Grappes à vérifier (>{args.max_cluster}) : {len(alertes):,}")
+    print(f"  ⚠️ Grappes anormales (>{args.max_cluster}) : {len(alertes):,}")
 
     membres = pd.DataFrame([
-        {"ID_UNIQUE": f"E{abs(hash(uf.find(uid))) % 10**8:08d}",
-         "source": rec[uid]["source"], "name": rec[uid]["name"],
-         "secteur": rec[uid]["secteur"]}
-        for uid in rec])
+        {"ID_UNIQUE": cid_to_eid[uf.find(uid)], "source": rec[uid]["source"],
+         "name": rec[uid]["name"], "secteur": rec[uid]["secteur"]} for uid in rec])
+
+    liens = pd.DataFrame([
+        {"ID_UNIQUE": cid_to_eid[uf.find(a)], "TYPE": typ, "SCORE": sc,
+         "NOM_A": rec[a]["name"], "NOM_B": rec[c]["name"],
+         "BASE_A": rec[a]["source"], "BASE_B": rec[c]["source"]}
+        for a, c, sc, typ in links])
+    a_verif = liens[liens["TYPE"] == "A_VERIFIER"].sort_values("SCORE")
 
     with pd.ExcelWriter(args.out, engine="openpyxl") as xl:
         ent.to_excel(xl, sheet_name="entites", index=False)
         membres.to_excel(xl, sheet_name="membres", index=False)
+        liens.to_excel(xl, sheet_name="liens", index=False)
+        a_verif.to_excel(xl, sheet_name="liens_a_verifier", index=False)
         alertes.to_excel(xl, sheet_name="grappes_alerte", index=False)
-    print(f"\n[ok] → {args.out}")
+    print(f"  Worklist liens à vérifier  : {len(a_verif):,}")
+    print(f"[ok] → {args.out}")
     return 0
 
 
