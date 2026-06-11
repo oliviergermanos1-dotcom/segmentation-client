@@ -31,6 +31,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from nom_secteur import secteur_par_nom, particulier_ou_sale
+
 # Normalisation vers nomenclature CRM officielle (idem 05d).
 SECTEUR_NORM = {
     "FMCG / RETAIL": "FAST MOVING CONSUMER GOODS (FMCG)",
@@ -54,6 +56,12 @@ def norm(s):
 
 def certifie(row):
     """Vote sur les 4 signaux → (secteur, niveau, n_signaux, detail)."""
+    # Règle utilisateur : particuliers / noms non propres → OTHERS d'office.
+    if particulier_ou_sale(row.get("NOM_CLIENT")):
+        return pd.Series(["OTHERS", "PARTICULIER_AUTRES", 0, "nom non exploitable"])
+
+    # Signaux de DONNÉE uniquement (le nom n'entre pas dans le vote principal :
+    # il ne doit pas créer de faux conflit face à un signal fort).
     signaux = {
         "CRM": row.get("S1_crm"),
         "RUBRIKS": row.get("S2_rubriks"),
@@ -68,7 +76,11 @@ def certifie(row):
 
     detail = " | ".join(f"{v}←{'+'.join(srcs)}" for v, srcs in votes.items())
 
+    # Aucun signal de donnée → on tente le NOM (comble les white spaces).
     if not votes:
+        s_nom = norm(secteur_par_nom(row.get("NOM_CLIENT")))
+        if s_nom:
+            return pd.Series([s_nom, "CERTIFIE_NOM", 1, f"{s_nom}←NOM"])
         return pd.Series([None, "NON_QUALIFIE", 0, ""])
 
     # Secteur le plus voté
@@ -78,13 +90,23 @@ def certifie(row):
     n_distinct = len(votes)
 
     if n_best >= 2:
-        niveau = "CERTIFIE_CROISE"        # ≥2 sources indépendantes d'accord (or)
+        # ≥2 sources d'accord. RE-VÉRIFICATION par le nom : un nom à HAUTE
+        # CONFIANCE non ambigu (RAFFINAGE/MINIER/CAOUTCHOUC/TRANSIT…) PRIME
+        # et corrige automatiquement (ex : transitaire dont la marchandise
+        # reflète le fret d'autrui, pas son métier). Traçable via RESOLU_NOM.
+        s_nom_hc = norm(secteur_par_nom(row.get("NOM_CLIENT"), high_only=True))
+        if s_nom_hc and s_nom_hc != best_sec and "NOM" not in best_srcs:
+            detail += f" ⚠ croisé={best_sec}→corrigé par nom"
+            return pd.Series([s_nom_hc, "RESOLU_NOM", n_best, detail])
+        niveau = "CERTIFIE_CROISE"
     elif n_distinct >= 2:
         niveau = "A_TRANCHER"             # plusieurs signaux en conflit
     elif "CRM" in best_srcs:
-        niveau = "CERTIFIE_CRM"           # 1 signal mais source officielle CRM
+        niveau = "CERTIFIE_CRM"           # source officielle CRM
     elif "MARCH" in best_srcs:
-        niveau = "CERTIFIE_MARCH"         # 1 signal marchandise fort (dominance ≥60%)
+        niveau = "CERTIFIE_MARCH"         # marchandise dominante forte
+    elif "NOM" in best_srcs:
+        niveau = "CERTIFIE_NOM"           # nom d'entreprise probant (white space)
     else:
         niveau = "PROBABLE"               # 1 signal faible (RUBRIKS seul / march. moyen)
     return pd.Series([best_sec, niveau, n_best, detail])
@@ -168,7 +190,8 @@ def main(argv=None):
 
     # ===== KPI =====
     niv = m["NIVEAU"].value_counts()
-    FIABLES = ["CERTIFIE_CROISE", "CERTIFIE_CRM", "CERTIFIE_MARCH"]
+    FIABLES = ["CERTIFIE_CROISE", "CERTIFIE_CRM", "CERTIFIE_MARCH",
+               "CERTIFIE_NOM", "PARTICULIER_AUTRES", "RESOLU_NOM"]
     pct_fiable = m["NIVEAU"].isin(FIABLES).mean() * 100
     pct_croise = (m["NIVEAU"] == "CERTIFIE_CROISE").mean() * 100
     print(f"\n=== RÉSULTAT CERTIFICATION ===")

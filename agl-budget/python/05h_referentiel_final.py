@@ -20,7 +20,8 @@ import argparse, json, sys
 from pathlib import Path
 import pandas as pd
 
-FIABLES = {"CERTIFIE_CROISE", "CERTIFIE_CRM", "CERTIFIE_MARCH", "TRANCHE_MANUEL"}
+FIABLES = {"CERTIFIE_CROISE", "CERTIFIE_CRM", "CERTIFIE_MARCH", "CERTIFIE_NOM",
+           "PARTICULIER_AUTRES", "TRANCHE_MANUEL"}
 
 
 def main(argv=None):
