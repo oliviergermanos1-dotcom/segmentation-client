@@ -157,6 +157,9 @@ def main(argv=None):
     ap.add_argument("--verify-band", type=float, default=0.95,
                     help="liens fuzzy entre threshold et cette valeur = à vérifier")
     ap.add_argument("--max-cluster", type=int, default=10)
+    ap.add_argument("--rematch", action="store_true",
+                    help="active la passe 3 de rattrapage des orphelins (opt-in)")
+    ap.add_argument("--rematch-threshold", type=float, default=0.93)
     ap.add_argument("--out", default="entites_graphe.xlsx")
     args = ap.parse_args(argv)
 
@@ -245,6 +248,54 @@ def main(argv=None):
             n_blocked += 1
     print(f"[match] passe 2 — {n_fuzzy:,} liens fuzzy "
           f"(dont {n_verif:,} à vérifier) · {n_blocked:,} bloqués par garde-fou pays")
+
+    # --- PASSE 3 : RATTRAPAGE DES ORPHELINS (exclus de la passe 2) ---------
+    # Les orphelins (entité mono-base) ont échoué la passe 2 car ils ne
+    # partageaient aucun token RARE. On les repasse avec un blocking ÉLARGI
+    # (tous les tokens) mais un seuil STRICT sur le nom COMPLET (≥0.93) +
+    # ≥2 tokens significatifs communs (ou token_set ≥0.95) + garde-fou pays.
+    if getattr(args, "rematch", False):
+        cl_bases = defaultdict(set)
+        for uid in rec:
+            cl_bases[uf.find(uid)].add(rec[uid]["source"])
+        orphans = [uid for uid in rec if len(cl_bases[uf.find(uid)]) == 1]
+        oidx = defaultdict(list)
+        for uid in orphans:
+            for t in _toks(rec[uid]["name"]):       # TOUS les tokens, pas que rares
+                oidx[t[:4]].append(uid)
+        seen2, cand3 = set(), []
+        RT = args.rematch_threshold
+        for b, uids in oidx.items():
+            if len(uids) < 2 or len(uids) > 1500:
+                continue
+            for i in range(len(uids)):
+                for j in range(i + 1, len(uids)):
+                    a, c = uids[i], uids[j]
+                    if rec[a]["source"] == rec[c]["source"]:
+                        continue                    # on cherche du cross-base
+                    key = (a, c) if a < c else (c, a)
+                    if key in seen2:
+                        continue
+                    seen2.add(key)
+                    pa, pc = rec[a]["pays"], rec[c]["pays"]
+                    if pa and pc and pa != pc:
+                        continue
+                    fa, fb = rec[a]["full"], rec[c]["full"]
+                    tfull = fuzz.token_sort_ratio(fa, fb) / 100.0
+                    if tfull < RT:
+                        continue
+                    shared = len(set(_toks(rec[a]["name"])) & set(_toks(rec[c]["name"])))
+                    tset = fuzz.token_set_ratio(rec[a]["name"], rec[c]["name"]) / 100.0
+                    if shared >= 2 or tset >= 0.95:
+                        cand3.append((tfull, a, c))
+        cand3.sort(reverse=True)
+        n_rattr = 0
+        for sc, a, c in cand3:
+            if len(cl_bases[uf.find(a)]) == 1 and uf.union(a, c):
+                links.append((a, c, round(sc, 3), "RATTRAPE"))
+                n_rattr += 1
+        print(f"[match] passe 3 — {n_rattr:,} orphelins rattrapés "
+              f"(seuil nom complet ≥ {RT})")
 
     # Grappes
     groups = defaultdict(list)
