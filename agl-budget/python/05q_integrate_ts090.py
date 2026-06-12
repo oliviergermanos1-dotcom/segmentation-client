@@ -14,6 +14,18 @@ from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
 
 BASES = ["CRM", "STATCOM", "IRIS", "RUBRIKS"]
+PAYS_KW = {"CI": ["COTE IVOIRE", "COTE D IVOIRE", "IVOIRE", "RCI", "CIV", "ABIDJAN"],
+           "BF": ["BURKINA", "OUAGA", " BF"], "ML": ["MALI", "BAMAKO"],
+           "SN": ["SENEGAL", "DAKAR"], "GH": ["GHANA"], "TG": ["TOGO", "LOME"],
+           "BJ": ["BENIN", "COTONOU"], "GN": ["GUINEE", "CONAKRY"]}
+
+
+def row_pays(row):
+    s = " " + " ".join(str(row.get(f"NOM_{b}", "")) for b in BASES).upper() + " "
+    for c, ks in PAYS_KW.items():
+        if any(k in s for k in ks):
+            return c
+    return ""
 
 
 class UF:
@@ -63,12 +75,17 @@ def main(argv=None):
             val = str(row.get(f"ID_{b}", "")).strip()
             if val and val.lower() != "nan":
                 idx[b].setdefault(val, i)
-    uf = UF(); fused = set(); n_ok = 0
+    rpays = {i: row_pays(v.loc[i]) for i in range(len(v))}
+    uf = UF(); fused = set(); n_ok = n_blk = 0
     for ba, ida, bb, idb in links:
         ra, rb = idx[ba].get(ida), idx[bb].get(idb)
         if ra is None or rb is None or ra == rb: continue
+        # garde-fou pays au niveau des entités fusionnées
+        pa, pb = rpays[uf.find(ra)] or rpays[ra], rpays[uf.find(rb)] or rpays[rb]
+        if pa and pb and pa != pb:
+            n_blk += 1; continue
         uf.union(ra, rb); fused.add(ra); fused.add(rb); n_ok += 1
-    print(f"Liens appliqués : {n_ok:,}")
+    print(f"Liens appliqués : {n_ok:,} · {n_blk:,} bloqués (garde-fou pays)")
 
     groups = defaultdict(list)
     for i in range(len(v)): groups[uf.find(i)].append(i)
