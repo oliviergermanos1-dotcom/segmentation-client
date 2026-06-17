@@ -2743,7 +2743,9 @@ function ReportPreview({ analyses, allMetiers }) {
       {isMultiTab ? <MultiMetierAnalysis analyses={validAnalyses} hinterland={hinterland} /> :
        isImpHTab ? <HinterlandPreviewContent A={hinterland.importHinterland} sens="import" /> :
        isExpHTab ? <HinterlandPreviewContent A={hinterland.exportHinterland} sens="export" /> :
-       <MetierPreviewContent A={A} />}
+       (A && (A.schema.key === "HINTERLAND_IMPORT" || A.schema.key === "HINTERLAND_EXPORT"))
+         ? <HinterlandPreviewContent A={A} sens={A.schema.sens} />
+         : <MetierPreviewContent A={A} />}
     </div>
   );
 }
@@ -3892,6 +3894,15 @@ function App() {
     }
     if (allRows.length === 0) return { rows: [], analysis: null, index: {} };
     const analysis = buildAnalysis(allRows, schema);
+    if (metierKey === "HINTERLAND_IMPORT" || metierKey === "HINTERLAND_EXPORT") {
+      analysis._hinterlandSens = schema.sens;
+      analysis._hinterlandIcon = schema.icon;
+      analysis._hinterlandLabel = metierKey === "HINTERLAND_IMPORT"
+        ? "Hinterland Import (source dédiée — transit CI → pays enclavés)"
+        : "Hinterland Export (source dédiée — pays enclavés via CI)";
+      analysis._originalCount = analysis.nbBL;
+      analysis._filteredCount = analysis.nbBL;
+    }
     const index = buildIndex(allRows, schema);
     return { rows: allRows, analysis, index };
   }, []);
@@ -3936,6 +3947,27 @@ function App() {
       const targetSchema = METIER_SCHEMAS[metierKey];
       if (detected && METIER_SCHEMAS[detected].type !== targetSchema.type) {
         throw new Error(`Le fichier ${file.name} semble être ${METIER_SCHEMAS[detected].label} et non ${targetSchema.label}.`);
+      }
+
+      // Heuristique Hinterland : un fichier Hinterland devrait avoir une majorité de lignes hors Côte d'Ivoire
+      if (metierKey === "HINTERLAND_IMPORT" || metierKey === "HINTERLAND_EXPORT") {
+        const paysField = metierKey === "HINTERLAND_IMPORT" ? targetSchema.paysDestField : targetSchema.paysOrigineField;
+        if (paysField) {
+          const sample = rows.slice(0, Math.min(2000, rows.length));
+          let ciCount = 0, validCount = 0;
+          for (const r of sample) {
+            const v = r[paysField];
+            if (!isEmptyValueGlobal(v)) {
+              validCount++;
+              if (isCoteDIvoire(v)) ciCount++;
+            }
+          }
+          if (validCount > 0 && (ciCount / validCount) > 0.5) {
+            const pctCI = Math.round(ciCount / validCount * 100);
+            setGlobalMsg({ type: "warning", text: `⚠ Le fichier ${file.name} chargé dans ${targetSchema.label} contient ${pctCI} % de lignes avec ${paysField} = Côte d'Ivoire. Ce n'est probablement pas un fichier Hinterland (les flux Hinterland sont à destination/origine des pays enclavés).` });
+            setTimeout(() => setGlobalMsg(null), 10000);
+          }
+        }
       }
 
       // Nouveau fileId
@@ -4159,20 +4191,51 @@ function App() {
       const newFilters = typeof updater === "function" ? updater(cur.filters || {}) : updater;
       // Recalcule analysis sur rows filtrées (en partant des rows déjà concatenées + filtrées par années)
       const filtered = applyFilters(cur.rows, newFilters);
-      const analysis = buildAnalysis(filtered, METIER_SCHEMAS[metierKey]);
+      const schema = METIER_SCHEMAS[metierKey];
+      const analysis = buildAnalysis(filtered, schema);
+      if (metierKey === "HINTERLAND_IMPORT" || metierKey === "HINTERLAND_EXPORT") {
+        analysis._hinterlandSens = schema.sens;
+        analysis._hinterlandIcon = schema.icon;
+        analysis._hinterlandLabel = metierKey === "HINTERLAND_IMPORT"
+          ? "Hinterland Import (source dédiée — transit CI → pays enclavés)"
+          : "Hinterland Export (source dédiée — pays enclavés via CI)";
+        analysis._originalCount = analysis.nbBL;
+        analysis._filteredCount = analysis.nbBL;
+      }
       return { ...prev, [metierKey]: { ...cur, filters: newFilters, analysis } };
     });
   }, []);
 
+  // Hinterland dérivé depuis Maritime (réutilisé pour l'export quand pas de fichier dédié)
+  const hinterlandDerived = useMemo(() => buildHinterlandAnalysis(metiers), [metiers]);
+
   // Analyses à inclure dans le rapport
   const analysesForReport = useMemo(() => {
+    let base;
     if (mode === "single" && activeMetier) {
       const m = metiers[activeMetier];
-      return m && m.analysis ? [m.analysis] : [];
+      base = m && m.analysis ? [m.analysis] : [];
+    } else {
+      base = METIER_KEYS.filter(k => selectedForReport.has(k) && metiers[k] && metiers[k].analysis)
+        .map(k => metiers[k].analysis);
     }
-    return METIER_KEYS.filter(k => selectedForReport.has(k) && metiers[k] && metiers[k].analysis)
-      .map(k => metiers[k].analysis);
-  }, [metiers, activeMetier, mode, selectedForReport]);
+    // En mode rapport global : injecter le Hinterland dérivé si pas de fichier dédié charge
+    if (mode !== "single") {
+      const hasDedImp = metiers.HINTERLAND_IMPORT?.analysis && !metiers.HINTERLAND_IMPORT.analysis.empty;
+      const hasDedExp = metiers.HINTERLAND_EXPORT?.analysis && !metiers.HINTERLAND_EXPORT.analysis.empty;
+      const extras = [];
+      if (hinterlandDerived.importHinterland && !hasDedImp) {
+        const a = hinterlandDerived.importHinterland;
+        extras.push({ ...a, schema: { ...a.schema, label: "Hinterland Import (corridor de transit)", icon: "🚛⬇", key: "DERIVED_HINTERLAND_IMPORT" } });
+      }
+      if (hinterlandDerived.exportHinterland && !hasDedExp) {
+        const a = hinterlandDerived.exportHinterland;
+        extras.push({ ...a, schema: { ...a.schema, label: "Hinterland Export (corridor de transit)", icon: "🚛⬆", key: "DERIVED_HINTERLAND_EXPORT" } });
+      }
+      return [...base, ...extras];
+    }
+    return base;
+  }, [metiers, activeMetier, mode, selectedForReport, hinterlandDerived]);
 
   const canGenerate = analysesForReport.length > 0 && analysesForReport.some(a => !a.empty);
 
@@ -4304,6 +4367,7 @@ function App() {
         <div className={"max-w-7xl mx-auto px-6 mt-3 p-3 rounded text-sm font-medium " +
           (globalMsg.type === "success" ? "bg-green-50 text-green-800 border border-green-200" :
            globalMsg.type === "error" ? "bg-red-50 text-red-800 border border-red-200" :
+           globalMsg.type === "warning" ? "bg-amber-50 text-amber-800 border border-amber-200" :
            "bg-blue-50 text-blue-800 border border-blue-200")}>
           {globalMsg.text}
         </div>
