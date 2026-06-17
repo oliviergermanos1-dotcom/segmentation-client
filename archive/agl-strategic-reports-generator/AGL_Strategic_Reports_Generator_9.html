@@ -3066,7 +3066,7 @@ function ClientDetailContent({ selected, perMetier, years }) {
 // ============================================================
 // COMPOSANT : Carte stratégique (taille × croissance) — SVG scatter
 // ============================================================
-function StrategicMap({ title, subtitle, points, xUnit, height = 460, entityLabel = "client" }) {
+function StrategicMap({ title, subtitle, points, xUnit, height = 460, entityLabel = "client", growthLabel = "Croissance" }) {
   const [hovered, setHovered] = useState(null);
   const margin = { top: 30, right: 30, bottom: 50, left: 60 };
   const width = 1100;
@@ -3193,7 +3193,7 @@ function StrategicMap({ title, subtitle, points, xUnit, height = 460, entityLabe
           <div style={{position:"absolute", top:8, right:8, background:"#0a2540", color:"white", padding:"10px 14px", borderRadius:6, fontSize:12, maxWidth:360, pointerEvents:"none", boxShadow:"0 4px 12px rgba(0,0,0,0.2)"}}>
             <div style={{fontWeight:700, marginBottom:4, fontSize:13}}>{valid[hovered].name}</div>
             <div>Volume : <strong>{fmt(valid[hovered].x)} {xUnit}</strong></div>
-            <div>Croissance (entite) : <strong>{valid[hovered].y >= 0 ? "+" : ""}{fmt(valid[hovered].y, 1)} %</strong></div>
+            <div>{growthLabel} : <strong>{valid[hovered].y >= 0 ? "+" : ""}{fmt(valid[hovered].y, 1)} %</strong></div>
             {valid[hovered].totalEvol !== null && valid[hovered].totalEvol !== undefined && (
               <div>Croissance volume <strong>total</strong> client : <strong>{valid[hovered].totalEvol >= 0 ? "+" : ""}{fmt(valid[hovered].totalEvol, 1)} %</strong></div>
             )}
@@ -3421,14 +3421,16 @@ function StrategicTab({ analyses, mode }) {
           subtitle={`X = volume en ${m.xUnit} (echelle log) · Y = croissance % N vs N-1 (clampee [-100 %, +300 %]) · Taille du rond ∝ volume`}
           points={m.points}
           xUnit={m.xUnit}
-          entityLabel={entityLabel} />
+          entityLabel={entityLabel}
+          growthLabel={isAGL ? "Croissance AGL" : "Croissance transitaire"} />
       ))}
       <StrategicMap
         title="🔗 Vue multi-metiers (cumul Tonnes)"
         subtitle={`Cumul Tonnes sur tous les metiers charges. Survolez un point pour voir la repartition par metier.`}
         points={multiPoints}
         xUnit="Tonnes"
-        entityLabel={entityLabel} />
+        entityLabel={entityLabel}
+        growthLabel={isAGL ? "Croissance AGL" : "Croissance transitaire"} />
     </div>
   );
 }
