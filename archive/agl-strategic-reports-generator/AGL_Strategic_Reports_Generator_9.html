@@ -5348,19 +5348,41 @@ function App() {
     return Array.from(set).sort();
   }, [metiers]);
 
-  // ----- Quand le filtre années change, recalcule toutes les analyses -----
+  // ----- Quand le filtre années change : flag loading immediat + recompute asynchrone debounced -----
+  const yearFilterDebounceRef = useRef(null);
+  const yearFilterIsInitial = useRef(true);
   useEffect(() => {
+    // Skip le premier appel (mount initial)
+    if (yearFilterIsInitial.current) { yearFilterIsInitial.current = false; return; }
+    // 1. Flag loading immediat
     setMetiers(prev => {
       const next = { ...prev };
       for (const k of METIER_KEYS) {
         const cur = next[k];
         if (cur && cur.files && cur.files.length > 0) {
-          const { rows, analysis, index } = recomputeFromFiles(k, cur.files, yearFilter);
-          next[k] = { ...cur, rows, analysis, index };
+          next[k] = { ...cur, loading: true, progress: "Application du filtre années…" };
         }
       }
       return next;
     });
+    // 2. Recompute deferre (debounce 300ms pour clics rapides)
+    if (yearFilterDebounceRef.current) clearTimeout(yearFilterDebounceRef.current);
+    yearFilterDebounceRef.current = setTimeout(() => {
+      requestAnimationFrame(() => setTimeout(() => {
+        setMetiers(prev => {
+          const next = { ...prev };
+          // Recompute par metier (cher mais on yield via setMetiers individuels serait plus complexe)
+          for (const k of METIER_KEYS) {
+            const cur = next[k];
+            if (cur && cur.files && cur.files.length > 0) {
+              const { rows, analysis, index } = recomputeFromFiles(k, cur.files, yearFilter);
+              next[k] = { ...cur, rows, analysis, index, loading: false, progress: null };
+            }
+          }
+          return next;
+        });
+      }, 0));
+    }, 300);
   }, [yearFilter, recomputeFromFiles]);
 
   // ----- Mémorisation manuelle (sauvegarde tous les fichiers actuels) -----
@@ -5465,26 +5487,39 @@ function App() {
     })();
   }, []);
 
+  const filterDebounceRef = useRef({}); // metierKey -> timeout id
   const setFiltersFor = useCallback((metierKey, updater) => {
+    // 1. MAJ immediate des filtres + flag loading (pour feedback UI)
     setMetiers(prev => {
       const cur = prev[metierKey];
       if (!cur) return prev;
       const newFilters = typeof updater === "function" ? updater(cur.filters || {}) : updater;
-      // Recalcule analysis sur rows filtrées (en partant des rows déjà concatenées + filtrées par années)
-      const filtered = applyFilters(cur.rows, newFilters);
-      const schema = METIER_SCHEMAS[metierKey];
-      const analysis = buildAnalysis(filtered, schema);
-      if (metierKey === "HINTERLAND_IMPORT" || metierKey === "HINTERLAND_EXPORT") {
-        analysis._hinterlandSens = schema.sens;
-        analysis._hinterlandIcon = schema.icon;
-        analysis._hinterlandLabel = metierKey === "HINTERLAND_IMPORT"
-          ? "Hinterland Import (source dédiée — transit CI → pays enclavés)"
-          : "Hinterland Export (source dédiée — pays enclavés via CI)";
-        analysis._originalCount = analysis.nbBL;
-        analysis._filteredCount = analysis.nbBL;
-      }
-      return { ...prev, [metierKey]: { ...cur, filters: newFilters, analysis } };
+      return { ...prev, [metierKey]: { ...cur, filters: newFilters, loading: true, progress: "Application des filtres…" } };
     });
+    // 2. Recompute deferre (debounce 250ms) pour eviter de bloquer l UI sur cliques rapides
+    if (filterDebounceRef.current[metierKey]) clearTimeout(filterDebounceRef.current[metierKey]);
+    filterDebounceRef.current[metierKey] = setTimeout(() => {
+      // Yield au browser pour render le loading state avant le travail lourd
+      requestAnimationFrame(() => setTimeout(() => {
+        setMetiers(prev => {
+          const cur = prev[metierKey];
+          if (!cur) return prev;
+          const filtered = applyFilters(cur.rows, cur.filters || {});
+          const schema = METIER_SCHEMAS[metierKey];
+          const analysis = buildAnalysis(filtered, schema);
+          if (metierKey === "HINTERLAND_IMPORT" || metierKey === "HINTERLAND_EXPORT") {
+            analysis._hinterlandSens = schema.sens;
+            analysis._hinterlandIcon = schema.icon;
+            analysis._hinterlandLabel = metierKey === "HINTERLAND_IMPORT"
+              ? "Hinterland Import (source dédiée — transit CI → pays enclavés)"
+              : "Hinterland Export (source dédiée — pays enclavés via CI)";
+            analysis._originalCount = analysis.nbBL;
+            analysis._filteredCount = analysis.nbBL;
+          }
+          return { ...prev, [metierKey]: { ...cur, analysis, loading: false, progress: null } };
+        });
+      }, 0));
+    }, 200);
   }, []);
 
   // Hinterland dérivé depuis Maritime (réutilisé pour l'export quand pas de fichier dédié)
