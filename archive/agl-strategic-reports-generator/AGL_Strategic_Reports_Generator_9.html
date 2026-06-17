@@ -315,10 +315,13 @@ function buildAnalysis(rows, schema) {
   // (uniquement pour les maritimes - schema.conditField present)
   // ============================================================
   if (schema.teuField && schema.conditField) {
-    const CONT_CODES_FILTER = new Set(["20F","20S","20TOP","40F","40S","40TOP","FLTANK","TANK"]);
-    const CONV_CODES_FILTER = new Set(["BRBK","SACS","CARS","RORO","VRAC"]);
-    const isConteneuriseRow = (r) => CONT_CODES_FILTER.has(String(r[schema.conditField]||"").trim().toUpperCase());
+    // Regle metier : Conventionnel = BRBK/SACS/VRAC, Conteneurise = tout le reste (code non-vide)
+    const CONV_CODES_FILTER = new Set(["BRBK","SACS","VRAC"]);
     const isConventionnelRow = (r) => CONV_CODES_FILTER.has(String(r[schema.conditField]||"").trim().toUpperCase());
+    const isConteneuriseRow = (r) => {
+      const code = String(r[schema.conditField]||"").trim().toUpperCase();
+      return code !== "" && !CONV_CODES_FILTER.has(code);
+    };
     A.topClientsConteneurise = aggBy(schema.clientField, { sortBy: "teu", filter: isConteneuriseRow }).slice(0, 20);
     A.topClientsConventionnel = aggBy(schema.clientField, { sortBy: "weight", filter: isConventionnelRow }).slice(0, 20);
     A.topPaysOrigineConteneurise = aggBy(schema.paysOrigineField, { sortBy: "teu", filter: isConteneuriseRow }).slice(0, 30);
@@ -341,17 +344,18 @@ function buildAnalysis(rows, schema) {
   // ============================================================
   // SEGMENTATION MARCHANDISES : CONTENEURISÉ (TEU) vs CONVENTIONNEL (TONNES)
   // Règle métier AGL :
-  //   - Conteneurisé : 20F, 20S, 20TOP, 40F, 40S, 40TOP, FLTANK, TANK
-  //   - Conventionnel/Vrac : BRBK, SACS, CARS, RORO, VRAC
+  //   - Conventionnel/Vrac : BRBK, SACS, VRAC (regle metier AGL stricte)
+  //   - Conteneurisé : TOUT LE RESTE (20F, 20S, 40F, 40S, TANK, FLTANK, 20TOP,
+  //                    40TOP, CARS, RORO, et tout autre code non-blank)
   // ============================================================
-  const CONTENEURISE_CODES = new Set(["20F","20S","20TOP","40F","40S","40TOP","FLTANK","TANK"]);
-  const CONVENTIONNEL_CODES = new Set(["BRBK","SACS","CARS","RORO","VRAC"]);
+  const CONVENTIONNEL_CODES = new Set(["BRBK","SACS","VRAC"]);
+  const CONTENEURISE_CODES = null; // non utilise — Conteneurise = tout le reste
   const classifyCondit = (code) => {
     if (!code) return null;
     const s = String(code).trim().toUpperCase();
-    if (CONTENEURISE_CODES.has(s)) return "CONTENEURISE";
+    if (!s) return null;
     if (CONVENTIONNEL_CODES.has(s)) return "CONVENTIONNEL";
-    return "AUTRE";
+    return "CONTENEURISE"; // tout autre code non-vide = conteneurise
   };
 
   if (schema.conditField) {
@@ -500,8 +504,9 @@ function buildAnalysis(rows, schema) {
       for (const r of rs) {
         const code = safeStr(r[schema.conditField]).toUpperCase();
         let bucket = null;
-        if (CONTENEURISE_CODES.has(code)) bucket = seg.conteneurise;
+        if (!code) bucket = null;
         else if (CONVENTIONNEL_CODES.has(code)) bucket = seg.conventionnel;
+        else bucket = seg.conteneurise;
         if (!bucket) continue;
         const bl = safeStr(r[schema.blField]); if (bl) bucket.bl.add(bl);
         if (schema.teuField) bucket.teu += numVal(r[schema.teuField]);
@@ -649,16 +654,19 @@ function buildAnalysis(rows, schema) {
   // Pour chaque segment : volume AGL, PDM AGL, rang, evolution N vs N-1
   // ============================================================
   if (schema.teuField && schema.conditField) {
-    const CONT_FILTER = new Set(["20F","20S","20TOP","40F","40S","40TOP","FLTANK","TANK"]);
-    const CONV_FILTER = new Set(["BRBK","SACS","CARS","RORO","VRAC"]);
-    const buildSegmentTransit = (codeSet) => {
+    // Regle metier : Conventionnel = BRBK/SACS/VRAC. Conteneurise = tout le reste.
+    const CONV_FILTER = new Set(["BRBK","SACS","VRAC"]);
+    const isConvCode = (code) => CONV_FILTER.has(code);
+    const isContCode = (code) => code !== "" && !CONV_FILTER.has(code);
+    const buildSegmentTransit = (segmentKind) => {
+      const matcher = segmentKind === "cont" ? isContCode : isConvCode;
       // Agrege par transitaire sur les rows du segment
       const map = new Map();
       let segTotalTeu = 0, segTotalWeight = 0;
       const blAGL = new Set();
       for (const r of rows) {
         const code = String(r[schema.conditField]||"").trim().toUpperCase();
-        if (!codeSet.has(code)) continue;
+        if (!matcher(code)) continue;
         const trans = safeStr(r[schema.transitaireField]);
         if (!trans) continue;
         const teu = numVal(r[schema.teuField]);
@@ -673,8 +681,8 @@ function buildAnalysis(rows, schema) {
         if (bl) m.blSet.add(bl);
         if (isAGL(trans) && bl) blAGL.add(bl);
       }
-      // Tri par TEU desc (conteneurise) ou Tonnes desc (conventionnel)
-      const sortKey = codeSet === CONT_FILTER ? "teu" : "weight";
+      // Tri par TEU (conteneurise) ou Tonnes (conventionnel)
+      const sortKey = segmentKind === "cont" ? "teu" : "weight";
       const arr = Array.from(map.values())
         .map(m => ({ key: m.key, teu: m.teu, weight: m.weight, bl: m.blSet.size }))
         .sort((a, b) => b[sortKey] - a[sortKey]);
@@ -699,7 +707,7 @@ function buildAnalysis(rows, schema) {
       const aglByYear = new Map();
       for (const r of rows) {
         const code = String(r[schema.conditField]||"").trim().toUpperCase();
-        if (!codeSet.has(code)) continue;
+        if (!matcher(code)) continue;
         if (!isAGL(r[schema.transitaireField])) continue;
         const y = safeStr(r[schema.yearField]); if (!y) continue;
         let t = aglByYear.get(y);
@@ -722,8 +730,8 @@ function buildAnalysis(rows, schema) {
       }
       return result;
     };
-    A.aglTransitConteneurise = buildSegmentTransit(CONT_FILTER);
-    A.aglTransitConventionnel = buildSegmentTransit(CONV_FILTER);
+    A.aglTransitConteneurise = buildSegmentTransit("cont");
+    A.aglTransitConventionnel = buildSegmentTransit("conv");
   } else {
     A.aglTransitConteneurise = null;
     A.aglTransitConventionnel = null;
@@ -851,9 +859,9 @@ function buildAnalysis(rows, schema) {
     A.mainCompByClient = null;
 
     // Pre-calcul segmente : transitaireAgg pour Conteneurise et Conventionnel (uniquement maritime)
+    // Regle : Conventionnel = BRBK/SACS/VRAC. Conteneurise = tout le reste (code non-vide).
     if (schema.teuField && schema.conditField) {
-      const CONT_F = new Set(["20F","20S","20TOP","40F","40S","40TOP","FLTANK","TANK"]);
-      const CONV_F = new Set(["BRBK","SACS","CARS","RORO","VRAC"]);
+      const CONV_F = new Set(["BRBK","SACS","VRAC"]);
       const contMap = new Map();
       const convMap = new Map();
       for (const r of rows) {
@@ -863,7 +871,8 @@ function buildAnalysis(rows, schema) {
         const bucket = y === curYear ? "cur" : (y === prevYear ? "prev" : null);
         if (!bucket) continue;
         const code = String(r[schema.conditField]||"").trim().toUpperCase();
-        const targetMap = CONT_F.has(code) ? contMap : (CONV_F.has(code) ? convMap : null);
+        // Conventionnel = code dans CONV_F ; Conteneurise = code non-vide hors CONV_F
+        const targetMap = !code ? null : (CONV_F.has(code) ? convMap : contMap);
         if (!targetMap) continue;
         const isAglRow = isAGLName(transRaw);
         const tkey = isAglRow ? "AGL" : transRaw;
@@ -4473,8 +4482,9 @@ function MultiMetierAnalysis({ analyses, hinterland }) {
       const s = String(name).toUpperCase();
       return s.includes("AFRICA GLOBAL LOGISTICS") || s.includes("AGL") || s.includes("BOLLORE TRANSPORT") || s.includes("BOLLORÉ TRANSPORT");
     };
-    const CONT = new Set(["20F","20S","20TOP","40F","40S","40TOP","FLTANK","TANK"]);
-    const CONV = new Set(["BRBK","SACS","CARS","RORO","VRAC"]);
+    // Regle metier : Conventionnel = BRBK/SACS/VRAC. Conteneurise = tout le reste (code non-vide).
+    const CONV = new Set(["BRBK","SACS","VRAC"]);
+    const CONT = null; // CONT = code non-blank hors CONV (verifie a la volee)
 
     // L'analyse contient aussi rows si on la passe — mais on a buildAnalysis qui ne stocke pas les rows
     // On va donc devoir reconstruire à partir des données disponibles dans analysis
@@ -5768,7 +5778,7 @@ function App() {
       });
     }
     // Exclusions globales : libelles EXACTS observes dans la base STATCOM
-    // - NON APURE : valeur du champ Qualifie
+    // - NON APURE : valeur du champ Qualifie OU valeur du champ Transitaire
     // - PRODUIT PETROLIER BRUT : libelle marchandise
     // - PETROLE RAFFINES : libelle marchandise
     if (exclusionsSet) {
@@ -5783,7 +5793,11 @@ function App() {
         return n === "PETROLE RAFFINES" || n === "PETROLE RAFFINE" || n.includes("PETROLE RAFFIN") || n.includes("PRODUIT PETROLIER RAFFIN") || n.includes("PRODUITS PETROLIERS RAFFIN");
       };
       allRows = allRows.filter(r => {
-        if (exclusionsSet.nonApure && schema.qualifField && matchNonApure(r[schema.qualifField])) return false;
+        if (exclusionsSet.nonApure) {
+          // Exclut a la fois sur Qualifie (champ statut BL) ET sur Transitaire (libelle entite)
+          if (schema.qualifField && matchNonApure(r[schema.qualifField])) return false;
+          if (schema.transitaireField && matchNonApure(r[schema.transitaireField])) return false;
+        }
         if (schema.marchandiseField) {
           const m = r[schema.marchandiseField];
           if (exclusionsSet.petroleBrut && matchPetroleBrut(m)) return false;
