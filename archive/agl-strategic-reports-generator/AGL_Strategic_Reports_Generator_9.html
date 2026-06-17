@@ -2773,9 +2773,9 @@ function ClientDetailTab({ analyses }) {
   }, [analyses]);
 
   const matches = useMemo(() => {
-    if (!query || query.length < 2) return [];
+    if (!query || query.length < 1) return allClients.slice(0, 100);
     const q = query.toLowerCase();
-    return allClients.filter(n => n.toLowerCase().includes(q)).slice(0, 50);
+    return allClients.filter(n => n.toLowerCase().includes(q)).slice(0, 100);
   }, [query, allClients]);
 
   // Pour le client selectionne : extrait toutes ses donnees par metier
@@ -2788,7 +2788,7 @@ function ClientDetailTab({ analyses }) {
       const info = (A.aglPdmByClient || new Map()).get(selected);
       if (!info) continue;
       for (const y of (info.years || [])) yearSet.add(y);
-      perMetier.push({ schema: sch, info });
+      perMetier.push({ schema: sch, info, A });
     }
     return { perMetier, years: Array.from(yearSet).sort() };
   }, [selected, analyses]);
@@ -2800,35 +2800,40 @@ function ClientDetailTab({ analyses }) {
         🔍 Detail client
       </div>
       <div className="insight-box" style={{marginTop:8}}>
-        Selectionnez un client pour voir tout son historique : volumes par annee, part AGL, evolution, cross-metiers.
-        Tapez au moins 2 caracteres pour filtrer la liste ({allClients.length} clients charges).
+        Selectionnez un client dans la liste pour voir tout son historique : volumes par annee, part AGL, evolution, principal concurrent, cross-metiers.
+        {allClients.length} clients charges au total.
       </div>
 
       <div style={{background:"white", padding:16, borderRadius:8, boxShadow:"0 1px 3px rgba(0,0,0,0.06)", marginBottom:16}}>
-        <input
-          type="text"
-          placeholder="Rechercher un client (nom partiel)..."
-          value={query}
-          onChange={(e) => { setQuery(e.target.value); setSelected(null); }}
-          style={{width:"100%", padding:"8px 12px", border:"1px solid #cbd5e1", borderRadius:6, fontSize:13, outline:"none"}}
-        />
-        {matches.length > 0 && !selected && (
-          <div style={{maxHeight:240, overflowY:"auto", border:"1px solid #e2e8f0", borderRadius:6, marginTop:6}}>
-            {matches.map(name => (
-              <div key={name}
-                onClick={() => { setSelected(name); }}
-                style={{padding:"6px 12px", cursor:"pointer", borderBottom:"1px solid #f1f5f9", fontSize:12, color:"#0a2540"}}
-                onMouseEnter={(e) => e.target.style.background = "#fef9e7"}
-                onMouseLeave={(e) => e.target.style.background = "transparent"}>
-                {name}
-              </div>
-            ))}
+        <div style={{display:"flex", gap:12, alignItems:"flex-start"}}>
+          <div style={{flex:1}}>
+            <label style={{display:"block", fontSize:11, fontWeight:600, color:"#64748b", textTransform:"uppercase", letterSpacing:0.5, marginBottom:4}}>Rechercher</label>
+            <input
+              type="text"
+              placeholder="Tapez une partie du nom..."
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              style={{width:"100%", padding:"8px 12px", border:"1px solid #cbd5e1", borderRadius:6, fontSize:13, outline:"none", boxSizing:"border-box"}}
+            />
           </div>
-        )}
+          <div style={{flex:2}}>
+            <label style={{display:"block", fontSize:11, fontWeight:600, color:"#64748b", textTransform:"uppercase", letterSpacing:0.5, marginBottom:4}}>Selection ({matches.length} resultat{matches.length > 1 ? "s" : ""})</label>
+            <select
+              value={selected || ""}
+              onChange={(e) => setSelected(e.target.value || null)}
+              size={Math.min(8, Math.max(3, matches.length))}
+              style={{width:"100%", padding:"4px", border:"1px solid #cbd5e1", borderRadius:6, fontSize:13, outline:"none", boxSizing:"border-box", fontFamily:"inherit"}}>
+              {matches.length === 0 && <option disabled>Aucun resultat</option>}
+              {matches.map(name => (
+                <option key={name} value={name}>{name}</option>
+              ))}
+            </select>
+          </div>
+        </div>
         {selected && (
-          <div style={{marginTop:8, padding:"6px 10px", background:"#fef9e7", border:"1px solid #c9a14a", borderRadius:6, display:"inline-block", fontSize:13, color:"#0a2540"}}>
+          <div style={{marginTop:10, padding:"6px 10px", background:"#fef9e7", border:"1px solid #c9a14a", borderRadius:6, display:"inline-block", fontSize:13, color:"#0a2540"}}>
             Selection : <strong>{selected}</strong>
-            <span style={{marginLeft:12, fontSize:11, color:"#64748b", cursor:"pointer", textDecoration:"underline"}} onClick={() => { setSelected(null); setQuery(""); }}>changer</span>
+            <span style={{marginLeft:12, fontSize:11, color:"#64748b", cursor:"pointer", textDecoration:"underline"}} onClick={() => { setSelected(null); setQuery(""); }}>effacer</span>
           </div>
         )}
       </div>
@@ -2847,44 +2852,106 @@ function ClientDetailTab({ analyses }) {
 }
 
 function ClientDetailContent({ selected, perMetier, years }) {
-  // Cartes synthese : volume cumule, AGL cumule, PDM moyen ponderee, # metiers
+  // Helper : pour un client donne et une analyse, trouve le principal concurrent
+  // = transitaire NON-AGL qui a traite le plus de volume pour ce client (Tonnes)
+  const isAGLName = (s) => {
+    const u = String(s||"").toUpperCase();
+    return u.includes("AFRICA GLOBAL LOGISTICS") || u.includes("AGL") || u.includes("BOLLORE TRANSPORT") || u.includes("BOLLORÉ TRANSPORT");
+  };
+  function mainCompetitorFor(A, clientName) {
+    const sch = A.schema;
+    const rows = A.rows || [];
+    const map = new Map();
+    for (const r of rows) {
+      if (safeStr(r[sch.clientField]) !== clientName) continue;
+      const trans = safeStr(r[sch.transitaireField]);
+      if (!trans || isAGLName(trans)) continue;
+      const w = numVal(r[sch.weightField]);
+      map.set(trans, (map.get(trans) || 0) + w);
+    }
+    let best = null, bestW = 0, total = 0;
+    for (const [t, w] of map.entries()) {
+      total += w;
+      if (w > bestW) { bestW = w; best = t; }
+    }
+    return best ? { name: best, tons: bestW, share: total > 0 ? (bestW / total * 100) : 0, totalCompetTons: total } : null;
+  }
+
+  // Cartes synthese : volume cumule, AGL cumule, PDM moyen ponderee, # metiers + evolution
   const summary = useMemo(() => {
-    let totTons = 0, aglTons = 0;
+    let totTons = 0;
     const metiersActifs = new Set();
+    // Recalcul precis depuis byYear
+    let aglTonsAll = 0;
+    let totTonsCur = 0, totTonsPrev = 0;
+    let aglTonsCur = 0, aglTonsPrev = 0;
+    // Determine "cur" et "prev" years globalement = derniere et avant-derniere annee
+    const curY = years.length >= 1 ? years[years.length - 1] : null;
+    const prevY = years.length >= 2 ? years[years.length - 2] : null;
     for (const m of perMetier) {
       totTons += m.info.totalTonsAll || 0;
-      aglTons += (m.info.aglTonsCur || 0) + (m.info.aglTonsPrev || 0);
-      // approximation : "all" not exposed in tons, on prend cumul cur+prev pour AGL et all pour total
       metiersActifs.add(m.schema.key);
-    }
-    // Plus precis : recalculer all AGL en sommant byYear
-    let aglTonsAll = 0;
-    for (const m of perMetier) {
       for (const y of Object.keys(m.info.byYear || {})) {
         aglTonsAll += m.info.byYear[y].aglWeight || 0;
+        if (y === curY) { totTonsCur += m.info.byYear[y].totWeight || 0; aglTonsCur += m.info.byYear[y].aglWeight || 0; }
+        if (y === prevY) { totTonsPrev += m.info.byYear[y].totWeight || 0; aglTonsPrev += m.info.byYear[y].aglWeight || 0; }
       }
     }
     const pdmGlobal = totTons > 0 ? (aglTonsAll / totTons * 100) : null;
-    return { totTons, aglTonsAll, pdmGlobal, nbMetiers: metiersActifs.size };
-  }, [perMetier]);
+    const totEvol = totTonsPrev > 0 ? ((totTonsCur - totTonsPrev) / totTonsPrev * 100) : null;
+    const aglEvol = aglTonsPrev > 0 ? ((aglTonsCur - aglTonsPrev) / aglTonsPrev * 100) : null;
+
+    // Principal concurrent global = somme par transitaire concurrent sur tous metiers
+    const globalComp = new Map();
+    for (const m of perMetier) {
+      const c = mainCompetitorFor(m.A, selected);
+      // On va recalculer en agregant directement sur rows pour avoir le top global
+      const sch = m.schema;
+      for (const r of (m.A.rows || [])) {
+        if (safeStr(r[sch.clientField]) !== selected) continue;
+        const trans = safeStr(r[sch.transitaireField]);
+        if (!trans || isAGLName(trans)) continue;
+        const w = numVal(r[sch.weightField]);
+        globalComp.set(trans, (globalComp.get(trans) || 0) + w);
+      }
+    }
+    let bestG = null, bestGW = 0, totalCompG = 0;
+    for (const [t, w] of globalComp.entries()) {
+      totalCompG += w;
+      if (w > bestGW) { bestGW = w; bestG = t; }
+    }
+    const mainCompetitorGlobal = bestG ? { name: bestG, tons: bestGW, share: totalCompG > 0 ? (bestGW / totalCompG * 100) : 0 } : null;
+
+    return { totTons, aglTonsAll, pdmGlobal, nbMetiers: metiersActifs.size, totEvol, aglEvol, mainCompetitorGlobal, curY, prevY };
+  }, [perMetier, selected, years]);
+
+  const evolBadge = (v) => {
+    if (v === null) return <span style={{fontSize:11, opacity:0.7}}>—</span>;
+    const col = v > 5 ? "#86efac" : v < -5 ? "#fca5a5" : "#fde68a";
+    const txt = v > 5 ? "↗ HAUSSE" : v < -5 ? "↘ BAISSE" : "→ STABLE";
+    return <span style={{background:col, color:"#0a2540", padding:"2px 6px", borderRadius:4, fontSize:10, fontWeight:700, marginLeft:6}}>{txt} {(v >= 0 ? "+" : "") + fmt(v, 1)} %</span>;
+  };
 
   return (
     <div>
-      <div style={{display:"grid", gridTemplateColumns:"repeat(4, 1fr)", gap:12, marginBottom:16}}>
+      {/* 1ere ligne : volumes et PDM */}
+      <div style={{display:"grid", gridTemplateColumns:"repeat(4, 1fr)", gap:12, marginBottom:12}}>
         <div style={{background:"#0a2540", color:"white", padding:14, borderRadius:8}}>
           <div style={{fontSize:11, opacity:0.8, textTransform:"uppercase", letterSpacing:0.5}}>Volume total</div>
           <div style={{fontSize:22, fontWeight:700, marginTop:4}}>{fmt(summary.totTons)}</div>
           <div style={{fontSize:11, opacity:0.7}}>Tonnes cumulees (tous metiers)</div>
+          {summary.totEvol !== null && <div style={{marginTop:6}}>{evolBadge(summary.totEvol)}</div>}
         </div>
         <div style={{background:"#c9a14a", color:"#0a2540", padding:14, borderRadius:8}}>
           <div style={{fontSize:11, fontWeight:700, textTransform:"uppercase", letterSpacing:0.5}}>Volume AGL</div>
           <div style={{fontSize:22, fontWeight:700, marginTop:4}}>{fmt(summary.aglTonsAll)}</div>
           <div style={{fontSize:11}}>Tonnes traitees par AGL</div>
+          {summary.aglEvol !== null && <div style={{marginTop:6}}>{evolBadge(summary.aglEvol)}</div>}
         </div>
         <div style={{background:"#15803d", color:"white", padding:14, borderRadius:8}}>
           <div style={{fontSize:11, opacity:0.8, textTransform:"uppercase", letterSpacing:0.5}}>PDM AGL globale</div>
           <div style={{fontSize:22, fontWeight:700, marginTop:4}}>{summary.pdmGlobal === null ? "—" : fmt(summary.pdmGlobal, 1) + " %"}</div>
-          <div style={{fontSize:11, opacity:0.7}}>Part AGL pondereed (Tonnes)</div>
+          <div style={{fontSize:11, opacity:0.7}}>Part AGL ponderee (Tonnes)</div>
         </div>
         <div style={{background:"#1e293b", color:"white", padding:14, borderRadius:8}}>
           <div style={{fontSize:11, opacity:0.8, textTransform:"uppercase", letterSpacing:0.5}}>Metiers actifs</div>
@@ -2893,11 +2960,26 @@ function ClientDetailContent({ selected, perMetier, years }) {
         </div>
       </div>
 
-      {/* Une table par metier : annees en colonnes */}
+      {/* 2eme ligne : principal concurrent global + insight */}
+      <div style={{background:"#fef9e7", border:"1px solid #c9a14a", padding:14, borderRadius:8, marginBottom:16}}>
+        <div style={{fontSize:11, fontWeight:700, textTransform:"uppercase", letterSpacing:0.5, color:"#0a2540", marginBottom:6}}>⚔ Principal concurrent (tous metiers)</div>
+        {summary.mainCompetitorGlobal ? (
+          <div style={{display:"flex", alignItems:"baseline", gap:16, flexWrap:"wrap"}}>
+            <div style={{fontSize:18, fontWeight:700, color:"#0a2540"}}>{summary.mainCompetitorGlobal.name}</div>
+            <div style={{fontSize:13, color:"#475569"}}>Volume capte : <strong>{fmt(summary.mainCompetitorGlobal.tons)} Tonnes</strong></div>
+            <div style={{fontSize:13, color:"#475569"}}>Part de la concurrence : <strong>{fmt(summary.mainCompetitorGlobal.share, 1)} %</strong></div>
+          </div>
+        ) : (
+          <div style={{fontSize:13, color:"#64748b", fontStyle:"italic"}}>Aucun transitaire concurrent identifie (AGL = 100 % de la part, ou aucune donnee).</div>
+        )}
+      </div>
+
+      {/* Une table par metier : annees en colonnes + principal concurrent par metier */}
       {perMetier.map((m, i) => {
         const sch = m.schema;
         const info = m.info;
         const unit = sch.teuField ? "TEU" : "Tonnes";
+        const comp = mainCompetitorFor(m.A, selected);
         return (
           <div key={i} style={{background:"white", padding:16, borderRadius:8, boxShadow:"0 1px 3px rgba(0,0,0,0.06)", marginBottom:16}}>
             <div style={{fontWeight:700, color:"#0a2540", fontSize:14, marginBottom:8}}>
@@ -2905,6 +2987,11 @@ function ClientDetailContent({ selected, perMetier, years }) {
               <span style={{marginLeft:12, fontSize:11, fontWeight:500, color:"#64748b"}}>
                 PDM (toutes annees) : <strong style={{color: info.pdmAll >= 50 ? "#15803d" : info.pdmAll >= 10 ? "#0a2540" : "#dc2626"}}>{fmt(info.pdmAll, 1)} %</strong>
               </span>
+              {comp && (
+                <span style={{marginLeft:12, fontSize:11, fontWeight:500, color:"#64748b"}}>
+                  Principal concurrent : <strong style={{color:"#0a2540"}}>{comp.name}</strong> ({fmt(comp.tons, 0)} T, {fmt(comp.share, 1)} % de la concurrence)
+                </span>
+              )}
             </div>
             <table style={{width:"100%", borderCollapse:"collapse", fontSize:12}}>
               <thead>
@@ -3300,85 +3387,69 @@ function ReportPreview({ analyses, allMetiers }) {
   const showMetierTab = !isMultiTab && !isImpHTab && !isExpHTab && !isAGLTab && !isConcTab && !isClientTab;
   const A = showMetierTab ? (validAnalyses[activeTab] || validAnalyses[0]) : null;
 
+  // Construction de la liste d'onglets pour le sidebar vertical
+  const tabList = [];
+  validAnalyses.forEach((a, i) => tabList.push({ key: `m-${i}`, idx: i, label: `${a.schema.icon} ${a.schema.label}`, section: "Metiers" }));
+  if (hasMultiMetiers) tabList.push({ key: "multi", idx: idxMulti, label: "🔗 Clients multi-metiers", section: "Cross" });
+  if (hasImpHinterland) tabList.push({ key: "impH", idx: idxImpH, label: "🚛 Hinterland Import", section: "Cross" });
+  if (hasExpHinterland) tabList.push({ key: "expH", idx: idxExpH, label: "🚛 Hinterland Export", section: "Cross" });
+  tabList.push({ key: "agl", idx: idxAGL, label: "🎯 Carte AGL", section: "Cartes" });
+  tabList.push({ key: "conc", idx: idxConc, label: "⚔ Carte Concurrence", section: "Cartes" });
+  tabList.push({ key: "client", idx: idxClient, label: "🔍 Detail client", section: "Cartes" });
+
+  // Groupement par section pour le sidebar
+  const sections = ["Metiers", "Cross", "Cartes"];
+
   return (
     <div className="bg-white p-6 rounded-lg shadow-sm">
       <h3 className="font-bold text-lg navy-text mb-4 pb-2" style={{borderBottom: "2px solid #c9a14a"}}>📊 Prévisualisation du rapport</h3>
-      <div className="flex gap-1 mb-4 border-b border-gray-200 flex-wrap">
-        {validAnalyses.map((a, i) => (
-          <button key={i}
-            className="px-4 py-2 text-sm font-semibold transition"
-            style={i === activeTab
-              ? {borderBottom: "3px solid #c9a14a", color: "#0a2540", background: "#fef9e7", marginBottom: "-1px"}
-              : {borderBottom: "3px solid transparent", color: "#64748b", background: "transparent"}}
-            onClick={() => setActiveTab(i)}>
-            {a.schema.icon} {a.schema.label}
-          </button>
-        ))}
-        {hasMultiMetiers && (
-          <button key="multi"
-            className="px-4 py-2 text-sm font-semibold transition"
-            style={isMultiTab
-              ? {borderBottom: "3px solid #c9a14a", color: "#0a2540", background: "#fef9e7", marginBottom: "-1px"}
-              : {borderBottom: "3px solid transparent", color: "#64748b", background: "transparent"}}
-            onClick={() => setActiveTab(idxMulti)}>
-            🔗 Clients multi-métiers
-          </button>
-        )}
-        {hasImpHinterland && (
-          <button key="impH"
-            className="px-4 py-2 text-sm font-semibold transition"
-            style={isImpHTab
-              ? {borderBottom: "3px solid #c9a14a", color: "#0a2540", background: "#fef9e7", marginBottom: "-1px"}
-              : {borderBottom: "3px solid transparent", color: "#64748b", background: "transparent"}}
-            onClick={() => setActiveTab(idxImpH)}>
-            🚛 Hinterland Import
-          </button>
-        )}
-        {hasExpHinterland && (
-          <button key="expH"
-            className="px-4 py-2 text-sm font-semibold transition"
-            style={isExpHTab
-              ? {borderBottom: "3px solid #c9a14a", color: "#0a2540", background: "#fef9e7", marginBottom: "-1px"}
-              : {borderBottom: "3px solid transparent", color: "#64748b", background: "transparent"}}
-            onClick={() => setActiveTab(idxExpH)}>
-            🚛 Hinterland Export
-          </button>
-        )}
-        <button key="agl"
-          className="px-4 py-2 text-sm font-semibold transition"
-          style={isAGLTab
-            ? {borderBottom: "3px solid #c9a14a", color: "#0a2540", background: "#fef9e7", marginBottom: "-1px"}
-            : {borderBottom: "3px solid transparent", color: "#64748b", background: "transparent"}}
-          onClick={() => setActiveTab(idxAGL)}>
-          🎯 Carte AGL
-        </button>
-        <button key="conc"
-          className="px-4 py-2 text-sm font-semibold transition"
-          style={isConcTab
-            ? {borderBottom: "3px solid #c9a14a", color: "#0a2540", background: "#fef9e7", marginBottom: "-1px"}
-            : {borderBottom: "3px solid transparent", color: "#64748b", background: "transparent"}}
-          onClick={() => setActiveTab(idxConc)}>
-          ⚔ Carte Concurrence
-        </button>
-        <button key="client"
-          className="px-4 py-2 text-sm font-semibold transition"
-          style={isClientTab
-            ? {borderBottom: "3px solid #c9a14a", color: "#0a2540", background: "#fef9e7", marginBottom: "-1px"}
-            : {borderBottom: "3px solid transparent", color: "#64748b", background: "transparent"}}
-          onClick={() => setActiveTab(idxClient)}>
-          🔍 Detail client
-        </button>
+      <div style={{display:"flex", gap:16, alignItems:"stretch"}}>
+        {/* Sidebar verticale */}
+        <div style={{width:220, flexShrink:0, borderRight:"1px solid #e2e8f0", paddingRight:12}}>
+          {sections.map(sec => {
+            const items = tabList.filter(t => t.section === sec);
+            if (items.length === 0) return null;
+            return (
+              <div key={sec} style={{marginBottom:14}}>
+                <div style={{fontSize:10, fontWeight:700, textTransform:"uppercase", letterSpacing:0.8, color:"#94a3b8", padding:"4px 8px", marginBottom:4}}>{sec}</div>
+                {items.map(t => {
+                  const active = activeTab === t.idx;
+                  return (
+                    <button key={t.key}
+                      onClick={() => setActiveTab(t.idx)}
+                      style={{
+                        display:"block", width:"100%", textAlign:"left",
+                        padding:"8px 12px", fontSize:13, fontWeight:active ? 700 : 500,
+                        background: active ? "#fef9e7" : "transparent",
+                        color: active ? "#0a2540" : "#475569",
+                        borderLeft: active ? "3px solid #c9a14a" : "3px solid transparent",
+                        borderTop:"none", borderRight:"none", borderBottom:"none",
+                        borderRadius:"0 4px 4px 0",
+                        cursor:"pointer", marginBottom:2, transition:"all 0.1s"
+                      }}
+                      onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = "#f8fafc"; }}
+                      onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = "transparent"; }}>
+                      {t.label}
+                    </button>
+                  );
+                })}
+              </div>
+            );
+          })}
+        </div>
+        {/* Contenu de l'onglet selectionne */}
+        <div style={{flex:1, minWidth:0}}>
+          {isMultiTab ? <MultiMetierAnalysis analyses={validAnalyses} hinterland={hinterland} /> :
+           isImpHTab ? <HinterlandPreviewContent A={hinterland.importHinterland} sens="import" /> :
+           isExpHTab ? <HinterlandPreviewContent A={hinterland.exportHinterland} sens="export" /> :
+           isAGLTab ? <StrategicTab analyses={validAnalyses} mode="agl" /> :
+           isConcTab ? <StrategicTab analyses={validAnalyses} mode="concurrence" /> :
+           isClientTab ? <ClientDetailTab analyses={validAnalyses} /> :
+           (A && (A.schema.key === "HINTERLAND_IMPORT" || A.schema.key === "HINTERLAND_EXPORT"))
+             ? <HinterlandPreviewContent A={A} sens={A.schema.sens} />
+             : <MetierPreviewContent A={A} />}
+        </div>
       </div>
-
-      {isMultiTab ? <MultiMetierAnalysis analyses={validAnalyses} hinterland={hinterland} /> :
-       isImpHTab ? <HinterlandPreviewContent A={hinterland.importHinterland} sens="import" /> :
-       isExpHTab ? <HinterlandPreviewContent A={hinterland.exportHinterland} sens="export" /> :
-       isAGLTab ? <StrategicTab analyses={validAnalyses} mode="agl" /> :
-       isConcTab ? <StrategicTab analyses={validAnalyses} mode="concurrence" /> :
-       isClientTab ? <ClientDetailTab analyses={validAnalyses} /> :
-       (A && (A.schema.key === "HINTERLAND_IMPORT" || A.schema.key === "HINTERLAND_EXPORT"))
-         ? <HinterlandPreviewContent A={A} sens={A.schema.sens} />
-         : <MetierPreviewContent A={A} />}
     </div>
   );
 }
@@ -3525,9 +3596,11 @@ function HinterlandPreviewContent({ A, sens }) {
 // ANALYSE MULTI-MÉTIERS : clients présents dans ≥2 métiers
 // ============================================================
 function MultiMetierAnalysis({ analyses, hinterland }) {
+  const [clientFilter, setClientFilter] = useState("all"); // "all" | "agl" | "marche"
+
   // Pour chaque métier, on récupère le rows brut + schema + segments
   // Puis on agrège par client toutes les métriques par métier
-  const data = useMemo(() => {
+  const dataRaw = useMemo(() => {
     // map[clientName] = { ImpMar:{contTEU, convTon, total, agl, pdm, blsCount}, ExpMar:{...}, ImpAer:{Ton, agl, pdm, bls}, ExpAer:{...} }
     const clientMap = new Map();
     const isAGL = (name) => {
@@ -3588,6 +3661,25 @@ function MultiMetierAnalysis({ analyses, hinterland }) {
     return multi;
   }, [analyses]);
 
+  // Filtre AGL / Marche : un client est "AGL" si AGL traite >0 sur au moins 1 metier ;
+  // "Marche" si AGL ne traite RIEN sur tous ses metiers (concurrence 100 %)
+  const data = useMemo(() => {
+    if (clientFilter === "all") return dataRaw;
+    return dataRaw.filter(c => {
+      const anyAGL = Object.values(c.metiers).some(m => (m.aglVolCur || 0) > 0 || (m.aglVolPrev || 0) > 0 || (m.pdmAll || 0) > 0);
+      return clientFilter === "agl" ? anyAGL : !anyAGL;
+    });
+  }, [dataRaw, clientFilter]);
+
+  const counts = useMemo(() => {
+    let agl = 0, marche = 0;
+    for (const c of dataRaw) {
+      const anyAGL = Object.values(c.metiers).some(m => (m.aglVolCur || 0) > 0 || (m.aglVolPrev || 0) > 0 || (m.pdmAll || 0) > 0);
+      if (anyAGL) agl++; else marche++;
+    }
+    return { all: dataRaw.length, agl, marche };
+  }, [dataRaw]);
+
   const evolFmt = (v) => v === null || isNaN(v) ? "—" : (v >= 0 ? "+" : "") + fmt(v, 1) + " %";
   const pdmFmt = (v) => v === null || isNaN(v) ? "—" : fmt(v, 1) + " %";
   const evolColor = (v) => v === null || isNaN(v) ? "#64748b" : (v >= 0 ? "#16a34a" : "#dc2626");
@@ -3605,6 +3697,32 @@ function MultiMetierAnalysis({ analyses, hinterland }) {
         {data.length} {data.length > 1 ? "clients identifiés" : "client identifié"} sur ≥2 métiers parmi : {metiersPresents.map(k => METIER_SCHEMAS[k].label).join(" · ")}.
         Triés du plus gros marché au plus petit (tonnage cumulé tous métiers). Pour chaque client, la PDM AGL et son évolution N vs N-1 sont calculées par métier.
       </p>
+
+      {/* Filtre Client AGL / Marche */}
+      <div style={{display:"flex", gap:8, marginBottom:12, alignItems:"center", flexWrap:"wrap"}}>
+        <span style={{fontSize:11, fontWeight:700, color:"#64748b", textTransform:"uppercase", letterSpacing:0.5}}>Filtrer :</span>
+        {[
+          { key: "all", label: "Tous", count: counts.all, color: "#0a2540" },
+          { key: "agl", label: "🎯 Clients AGL", count: counts.agl, color: "#c9a14a", hint: "AGL traite au moins une partie de leur volume" },
+          { key: "marche", label: "⚔ Clients marche", count: counts.marche, color: "#dc2626", hint: "AGL ne traite aucun volume pour ces clients (100 % concurrence)" }
+        ].map(f => {
+          const active = clientFilter === f.key;
+          return (
+            <button key={f.key}
+              onClick={() => setClientFilter(f.key)}
+              title={f.hint || ""}
+              style={{
+                padding:"6px 12px", fontSize:12, fontWeight:600,
+                background: active ? f.color : "white",
+                color: active ? "white" : "#475569",
+                border: `1px solid ${active ? f.color : "#cbd5e1"}`,
+                borderRadius: 6, cursor: "pointer"
+              }}>
+              {f.label} <span style={{opacity:0.7, fontSize:11, marginLeft:4}}>({f.count})</span>
+            </button>
+          );
+        })}
+      </div>
 
       {data.length === 0 ? (
         <div style={{background:"#f8fafc", padding:"20px", borderRadius:6, textAlign:"center", color:"#64748b", fontSize:13}}>

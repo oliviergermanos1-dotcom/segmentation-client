@@ -2,7 +2,7 @@ name: Deploy to GitHub Pages
 
 on:
   push:
-    branches: [main, "claude/start-news-project-QeEvW"]
+    branches: [main, "claude/**"]
   workflow_dispatch:
 
 permissions:
@@ -26,9 +26,16 @@ jobs:
       - name: Stage site
         run: |
           mkdir -p _site
-          cp segmentation.html _site/index.html
-          cp segmentation.html _site/segmentation.html
+          # Generateur strategique = page d'accueil (index.html)
+          cp archive/agl-strategic-reports-generator/AGL_Strategic_Reports_Generator_9.html _site/index.html
+          cp archive/agl-strategic-reports-generator/AGL_Strategic_Reports_Generator_9.html _site/generator.html
+          # Anciennes pages : conservees en backup
+          cp segmentation.html _site/segmentation.html 2>/dev/null || true
           cp README.md _site/ 2>/dev/null || true
+          # Inserer un bandeau de version dans le HTML (commit court + date)
+          COMMIT_SHORT="${GITHUB_SHA:0:7}"
+          BUILD_DATE="$(date -u +'%Y-%m-%d %H:%M UTC')"
+          sed -i "s|</body>|<div style=\"position:fixed;bottom:6px;right:8px;font-size:10px;color:#94a3b8;background:rgba(255,255,255,0.85);padding:2px 6px;border-radius:4px;z-index:9999;font-family:monospace\">v${COMMIT_SHORT} · ${BUILD_DATE}</div></body>|" _site/index.html _site/generator.html
 
       - uses: actions/configure-pages@v5
 
