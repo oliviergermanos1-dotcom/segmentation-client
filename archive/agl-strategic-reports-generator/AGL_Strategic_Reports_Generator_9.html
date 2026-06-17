@@ -271,9 +271,11 @@ function buildAnalysis(rows, schema) {
     if (!field) return [];
     const map = new Map();
     const blSeen = new Map();
+    const rowFilter = opts.filter;
     for (const r of rows) {
+      if (rowFilter && !rowFilter(r)) continue;
       const raw = r[field];
-      if (isEmptyValue(raw)) continue;  // ← on saute les vides
+      if (isEmptyValue(raw)) continue;
       const key = safeStr(raw);
       const bl = safeStr(r[schema.blField]);
       let m = map.get(key);
@@ -307,6 +309,34 @@ function buildAnalysis(rows, schema) {
   A.byModeExp = aggBy(schema.modeExpField, { sortBy: "bl" });
   A.byVertical = aggBy(schema.verticalField, { sortBy: primarySort });
   A.byStatut = aggBy(schema.statutField, { sortBy: primarySort });
+
+  // ============================================================
+  // SEGMENTATION CONTENEURISE / CONVENTIONNEL : Top par segment
+  // (uniquement pour les maritimes - schema.conditField present)
+  // ============================================================
+  if (schema.teuField && schema.conditField) {
+    const CONT_CODES_FILTER = new Set(["20F","20S","20TOP","40F","40S","40TOP","FLTANK","TANK"]);
+    const CONV_CODES_FILTER = new Set(["BRBK","SACS","CARS","RORO","VRAC"]);
+    const isConteneuriseRow = (r) => CONT_CODES_FILTER.has(String(r[schema.conditField]||"").trim().toUpperCase());
+    const isConventionnelRow = (r) => CONV_CODES_FILTER.has(String(r[schema.conditField]||"").trim().toUpperCase());
+    A.topClientsConteneurise = aggBy(schema.clientField, { sortBy: "teu", filter: isConteneuriseRow }).slice(0, 20);
+    A.topClientsConventionnel = aggBy(schema.clientField, { sortBy: "weight", filter: isConventionnelRow }).slice(0, 20);
+    A.topPaysOrigineConteneurise = aggBy(schema.paysOrigineField, { sortBy: "teu", filter: isConteneuriseRow }).slice(0, 30);
+    A.topPaysOrigineConventionnel = aggBy(schema.paysOrigineField, { sortBy: "weight", filter: isConventionnelRow }).slice(0, 30);
+    A.topPaysDestConteneurise = aggBy(schema.paysDestField, { sortBy: "teu", filter: isConteneuriseRow }).slice(0, 30);
+    A.topPaysDestConventionnel = aggBy(schema.paysDestField, { sortBy: "weight", filter: isConventionnelRow }).slice(0, 30);
+    A.topTransitairesConteneurise = aggBy(schema.transitaireField, { sortBy: "teu", filter: isConteneuriseRow }).slice(0, 15);
+    A.topTransitairesConventionnel = aggBy(schema.transitaireField, { sortBy: "weight", filter: isConventionnelRow }).slice(0, 15);
+  } else {
+    A.topClientsConteneurise = null;
+    A.topClientsConventionnel = null;
+    A.topPaysOrigineConteneurise = null;
+    A.topPaysOrigineConventionnel = null;
+    A.topPaysDestConteneurise = null;
+    A.topPaysDestConventionnel = null;
+    A.topTransitairesConteneurise = null;
+    A.topTransitairesConventionnel = null;
+  }
 
   // ============================================================
   // SEGMENTATION MARCHANDISES : CONTENEURISÉ (TEU) vs CONVENTIONNEL (TONNES)
@@ -612,6 +642,91 @@ function buildAnalysis(rows, schema) {
     }
   } else {
     A.aglTransit = null;
+  }
+
+  // ============================================================
+  // FOCUS AGL par SEGMENT (Conteneurise / Conventionnel)
+  // Pour chaque segment : volume AGL, PDM AGL, rang, evolution N vs N-1
+  // ============================================================
+  if (schema.teuField && schema.conditField) {
+    const CONT_FILTER = new Set(["20F","20S","20TOP","40F","40S","40TOP","FLTANK","TANK"]);
+    const CONV_FILTER = new Set(["BRBK","SACS","CARS","RORO","VRAC"]);
+    const buildSegmentTransit = (codeSet) => {
+      // Agrege par transitaire sur les rows du segment
+      const map = new Map();
+      let segTotalTeu = 0, segTotalWeight = 0;
+      const blAGL = new Set();
+      for (const r of rows) {
+        const code = String(r[schema.conditField]||"").trim().toUpperCase();
+        if (!codeSet.has(code)) continue;
+        const trans = safeStr(r[schema.transitaireField]);
+        if (!trans) continue;
+        const teu = numVal(r[schema.teuField]);
+        const w = numVal(r[schema.weightField]);
+        segTotalTeu += teu;
+        segTotalWeight += w;
+        let m = map.get(trans);
+        if (!m) { m = { key: trans, teu: 0, weight: 0, blSet: new Set() }; map.set(trans, m); }
+        m.teu += teu;
+        m.weight += w;
+        const bl = safeStr(r[schema.blField]);
+        if (bl) m.blSet.add(bl);
+        if (isAGL(trans) && bl) blAGL.add(bl);
+      }
+      // Tri par TEU desc (conteneurise) ou Tonnes desc (conventionnel)
+      const sortKey = codeSet === CONT_FILTER ? "teu" : "weight";
+      const arr = Array.from(map.values())
+        .map(m => ({ key: m.key, teu: m.teu, weight: m.weight, bl: m.blSet.size }))
+        .sort((a, b) => b[sortKey] - a[sortKey]);
+      const aglEntry = arr.find(t => isAGL(t.key));
+      if (!aglEntry) return null;
+      const aglRank = arr.findIndex(t => isAGL(t.key)) + 1;
+      const aglMetric = sortKey === "teu" ? aglEntry.teu : aglEntry.weight;
+      const segTotal = sortKey === "teu" ? segTotalTeu : segTotalWeight;
+      const result = {
+        name: aglEntry.key,
+        rank: aglRank,
+        bl: aglEntry.bl,
+        teu: aglEntry.teu,
+        weight: aglEntry.weight,
+        pdmMetric: segTotal > 0 ? aglMetric / segTotal * 100 : 0,
+        pdmBL: blAGL.size > 0 && arr.reduce((s,t)=>s+t.bl,0) > 0 ? blAGL.size / arr.reduce((s,t)=>s+t.bl,0) * 100 : 0,
+        totalTransitaires: arr.length,
+        segTotalTeu, segTotalWeight,
+        sortKey
+      };
+      // Evolution N vs N-1 AGL sur le segment
+      const aglByYear = new Map();
+      for (const r of rows) {
+        const code = String(r[schema.conditField]||"").trim().toUpperCase();
+        if (!codeSet.has(code)) continue;
+        if (!isAGL(r[schema.transitaireField])) continue;
+        const y = safeStr(r[schema.yearField]); if (!y) continue;
+        let t = aglByYear.get(y);
+        if (!t) { t = { year: y, teu: 0, weight: 0, blSet: new Set() }; aglByYear.set(y, t); }
+        t.teu += numVal(r[schema.teuField]);
+        t.weight += numVal(r[schema.weightField]);
+        t.blSet.add(safeStr(r[schema.blField]));
+      }
+      const aglYears = Array.from(aglByYear.values()).map(t => ({...t, bl: t.blSet.size, blSet: undefined}))
+        .sort((a,b) => String(a.year).localeCompare(String(b.year)));
+      result.byYear = aglYears;
+      if (aglYears.length >= 2) {
+        const cur = aglYears[aglYears.length-1], prev = aglYears[aglYears.length-2];
+        result.evol = {
+          year: cur.year, prevYear: prev.year,
+          teuEvolPct: prev.teu > 0 ? ((cur.teu - prev.teu)/prev.teu*100) : null,
+          weightEvolPct: prev.weight > 0 ? ((cur.weight - prev.weight)/prev.weight*100) : null,
+          blEvolPct: prev.bl > 0 ? ((cur.bl - prev.bl)/prev.bl*100) : null
+        };
+      }
+      return result;
+    };
+    A.aglTransitConteneurise = buildSegmentTransit(CONT_FILTER);
+    A.aglTransitConventionnel = buildSegmentTransit(CONV_FILTER);
+  } else {
+    A.aglTransitConteneurise = null;
+    A.aglTransitConventionnel = null;
   }
 
   // ============================================================
@@ -5512,19 +5627,20 @@ function App() {
         return yearFilterSet.has(y);
       });
     }
-    // Exclusions globales (non apure, petrole brut, petrole raffine)
+    // Exclusions globales : libelles EXACTS observes dans la base STATCOM
+    // - NON APURE : valeur du champ Qualifie
+    // - PRODUIT PETROLIER BRUT : libelle marchandise
+    // - PETROLE RAFFINES : libelle marchandise
     if (exclusionsSet) {
+      const normalize = (s) => String(s||"").toUpperCase().replace(/É|È|Ê|Ë/g, "E").replace(/À|Â|Ä/g, "A").replace(/Î|Ï/g, "I").replace(/Ô|Ö/g, "O").replace(/Ù|Û|Ü/g, "U").trim();
+      const matchNonApure = (s) => normalize(s) === "NON APURE";
       const matchPetroleBrut = (s) => {
-        const u = String(s||"").toUpperCase();
-        return u.includes("PETROLE BRUT") || u.includes("PÉTROLE BRUT") || u.includes("CRUDE OIL") || u.includes("PETROLEUM CRUDE");
+        const n = normalize(s);
+        return n === "PRODUIT PETROLIER BRUT" || n === "PRODUITS PETROLIERS BRUTS" || n.includes("PETROLIER BRUT") || n.includes("PETROLE BRUT");
       };
       const matchPetroleRaffine = (s) => {
-        const u = String(s||"").toUpperCase();
-        return u.includes("PETROLE RAFFINE") || u.includes("PÉTROLE RAFFINÉ") || u.includes("REFINED") || u.includes("PRODUITS PETROLIERS RAFFINES") || u.includes("HYDROCARBURE") || u.includes("FUEL") || u.includes("GASOIL") || u.includes("ESSENCE") || u.includes("KEROSENE");
-      };
-      const matchNonApure = (s) => {
-        const u = String(s||"").toUpperCase().trim();
-        return u && u !== "APURE" && u !== "APURÉ" && u !== "OUI" && u !== "YES" && u !== "1" && u !== "TRUE";
+        const n = normalize(s);
+        return n === "PETROLE RAFFINES" || n === "PETROLE RAFFINE" || n.includes("PETROLE RAFFIN") || n.includes("PRODUIT PETROLIER RAFFIN") || n.includes("PRODUITS PETROLIERS RAFFIN");
       };
       allRows = allRows.filter(r => {
         if (exclusionsSet.nonApure && schema.qualifField && matchNonApure(r[schema.qualifField])) return false;
@@ -6188,9 +6304,9 @@ function App() {
                 </p>
                 <div className="flex flex-wrap gap-2">
                   {[
-                    { key: "nonApure", label: "🛂 Non apure (BL hors statut 'Apure')", desc: "Exclut les BL dont le champ Qualifie n'est pas a 'Apure/Oui'." },
-                    { key: "petroleBrut", label: "🛢 Petrole brut", desc: "Exclut les BL dont la marchandise est du petrole brut (crude oil)." },
-                    { key: "petroleRaffine", label: "⛽ Petrole raffine / produits petroliers", desc: "Exclut les BL dont la marchandise est petrole raffine, gazole, essence, kerosene, hydrocarbures, etc." }
+                    { key: "nonApure", label: "🛂 NON APURE", desc: "Exclut les BL dont le champ Qualifie = 'NON APURE'." },
+                    { key: "petroleBrut", label: "🛢 PRODUIT PETROLIER BRUT", desc: "Exclut les BL dont la marchandise = 'PRODUIT PETROLIER BRUT' (et variantes pluriel/sans accent)." },
+                    { key: "petroleRaffine", label: "⛽ PETROLE RAFFINES", desc: "Exclut les BL dont la marchandise = 'PETROLE RAFFINES' (et variantes : PETROLE RAFFINE, produits petroliers raffines, etc.)." }
                   ].map(ex => {
                     const active = exclusions[ex.key];
                     return (
@@ -6208,7 +6324,7 @@ function App() {
                 <div className="text-xs text-gray-500 mt-2">
                   {Object.values(exclusions).every(v => !v)
                     ? "Aucune exclusion active — toutes les donnees sont incluses."
-                    : `${Object.values(exclusions).filter(v => v).length} exclusion(s) active(s) : ${Object.entries(exclusions).filter(([_, v]) => v).map(([k]) => ({nonApure:"Non apure", petroleBrut:"Petrole brut", petroleRaffine:"Petrole raffine"}[k])).join(", ")}.`}
+                    : `${Object.values(exclusions).filter(v => v).length} exclusion(s) active(s) : ${Object.entries(exclusions).filter(([_, v]) => v).map(([k]) => ({nonApure:"NON APURE", petroleBrut:"PRODUIT PETROLIER BRUT", petroleRaffine:"PETROLE RAFFINES"}[k])).join(", ")}.`}
                 </div>
               </div>
               <button className="btn-ghost text-sm"
