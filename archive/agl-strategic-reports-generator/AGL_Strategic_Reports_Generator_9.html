@@ -4175,7 +4175,7 @@ function StrategicTab({ analyses, mode }) {
 // ============================================================
 // COMPOSANT : Prévisualisation du rapport
 // ============================================================
-function ReportPreview({ analyses, allMetiers, rowsByMetier, yearFilter, setYearFilter, availableYears }) {
+function ReportPreview({ analyses, allMetiers, rowsByMetier, yearFilter, setYearFilter, availableYears, monthCutoff, setMonthCutoff }) {
   const validAnalyses = analyses.filter(a => !a.empty);
   const [activeTab, setActiveTab] = useState(0);
 
@@ -4288,6 +4288,39 @@ function ReportPreview({ analyses, allMetiers, rowsByMetier, yearFilter, setYear
           })}
           <span style={{fontSize:11, color:"#64748b", marginLeft:"auto", fontStyle:"italic"}}>
             {yearFilter.size === 0 ? `${allAvailableYears.length} annees : ${allAvailableYears.join(" · ")}` : `${yearFilter.size} annee(s) selectionnee(s) : ${Array.from(yearFilter).sort().join(" · ")}`}
+          </span>
+        </div>
+      )}
+
+      {/* Barre de filtre mois YTD comparable */}
+      {setMonthCutoff && (
+        <div style={{display:"flex", gap:6, alignItems:"center", flexWrap:"wrap", padding:"10px 14px", background:"#ecfdf5", border:"1px solid #059669", borderRadius:6, marginBottom:14}}>
+          <span style={{fontSize:11, fontWeight:700, color:"#0a2540", textTransform:"uppercase", letterSpacing:0.5}}>📆 YTD comparable :</span>
+          <button
+            onClick={() => setMonthCutoff(0)}
+            style={{padding:"4px 10px", fontSize:12, fontWeight:600, background: monthCutoff === 0 ? "#0a2540" : "white", color: monthCutoff === 0 ? "white" : "#475569", border:"1px solid #0a2540", borderRadius:6, cursor:"pointer"}}>
+            Annee complete
+          </button>
+          {[
+            {n:1, lbl:"Jan"}, {n:2, lbl:"Fev"}, {n:3, lbl:"Mar"},
+            {n:4, lbl:"Avr"}, {n:5, lbl:"Mai"}, {n:6, lbl:"Juin"},
+            {n:7, lbl:"Jul"}, {n:8, lbl:"Aout"}, {n:9, lbl:"Sep"},
+            {n:10, lbl:"Oct"}, {n:11, lbl:"Nov"}, {n:12, lbl:"Dec"}
+          ].map(m => {
+            const active = monthCutoff === m.n;
+            return (
+              <button key={m.n}
+                onClick={() => setMonthCutoff(m.n)}
+                title={`YTD : Janvier - ${m.lbl} de chaque annee`}
+                style={{padding:"4px 8px", fontSize:11, fontWeight:600, background: active ? "#059669" : "white", color: active ? "white" : "#475569", border:`1px solid ${active ? "#059669" : "#cbd5e1"}`, borderRadius:6, cursor:"pointer"}}>
+                {m.lbl}
+              </button>
+            );
+          })}
+          <span style={{fontSize:11, color:"#64748b", marginLeft:"auto", fontStyle:"italic"}}>
+            {monthCutoff === 0
+              ? "Annee complete"
+              : `Janvier - ${["Jan","Fev","Mar","Avr","Mai","Juin","Jul","Aout","Sep","Oct","Nov","Dec"][monthCutoff-1]} de chaque annee`}
           </span>
         </div>
       )}
@@ -6550,55 +6583,7 @@ function App() {
             </div>
           )}
 
-          {/* PANNEAU FILTRE MOIS YTD (comparable cross-annees) */}
-          <div className="mt-4 bg-gradient-to-r from-emerald-50 to-cyan-50 border border-emerald-200 rounded-lg p-4">
-            <div className="flex items-start justify-between flex-wrap gap-3">
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 mb-1">
-                  <span style={{fontSize:20}}>📆</span>
-                  <h3 className="font-bold navy-text text-sm">Filtre mois — YTD comparable cross-annees</h3>
-                </div>
-                <p className="text-xs text-gray-600 mb-2">
-                  Selectionnez un mois cut-off pour comparer la <strong>meme periode</strong> sur les annees chargees.
-                  Ex : cliquez <strong>Mai</strong> → l etude porte sur <strong>Janvier-Mai 2025 vs Janvier-Mai 2026</strong>.
-                  Utile pour des comparaisons d annees en cours.
-                </p>
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    onClick={() => setMonthCutoff(0)}
-                    style={{padding:"5px 12px", fontSize:12, fontWeight:600, background: monthCutoff === 0 ? "#0a2540" : "white", color: monthCutoff === 0 ? "white" : "#475569", border:"1px solid #0a2540", borderRadius:6, cursor:"pointer"}}>
-                    Annee complete
-                  </button>
-                  {[
-                    {n:1, lbl:"Jan"}, {n:2, lbl:"Fev"}, {n:3, lbl:"Mar"},
-                    {n:4, lbl:"Avr"}, {n:5, lbl:"Mai"}, {n:6, lbl:"Juin"},
-                    {n:7, lbl:"Jul"}, {n:8, lbl:"Aout"}, {n:9, lbl:"Sep"},
-                    {n:10, lbl:"Oct"}, {n:11, lbl:"Nov"}, {n:12, lbl:"Dec"}
-                  ].map(m => {
-                    const active = monthCutoff === m.n;
-                    return (
-                      <button key={m.n}
-                        onClick={() => setMonthCutoff(m.n)}
-                        title={`YTD : Janvier - ${m.lbl} de chaque annee`}
-                        style={{padding:"5px 10px", fontSize:12, fontWeight:600, background: active ? "#059669" : "white", color: active ? "white" : "#475569", border:`1px solid ${active ? "#059669" : "#cbd5e1"}`, borderRadius:6, cursor:"pointer"}}>
-                        {m.lbl}
-                      </button>
-                    );
-                  })}
-                </div>
-                <div className="text-xs text-gray-500 mt-2">
-                  {monthCutoff === 0
-                    ? "Annee complete — pas de cut-off (toutes les donnees des annees selectionnees)."
-                    : `Periode active : <strong>Janvier - ${["Jan","Fev","Mar","Avr","Mai","Juin","Jul","Aout","Sep","Oct","Nov","Dec"][monthCutoff-1]}</strong> de chaque annee selectionnee. Les BL des mois posterieurs sont exclus.`}
-                </div>
-              </div>
-              <button className="btn-ghost text-sm"
-                onClick={() => setMonthCutoff(0)}
-                disabled={monthCutoff === 0}>
-                Réinitialiser
-              </button>
-            </div>
-          </div>
+          {/* Filtre mois YTD : deplace dans la barre de filtre de la previsualisation (ReportPreview) */}
 
           {/* PANNEAU EXCLUSIONS */}
           <div className="mt-4 bg-gradient-to-r from-rose-50 to-orange-50 border border-rose-200 rounded-lg p-4">
@@ -6801,7 +6786,7 @@ function App() {
               <span className="gold-bg text-white rounded-full w-7 h-7 flex items-center justify-center text-sm">📊</span>
               Analyse & Prévisualisation du rapport
             </h2>
-            <ReportPreview analyses={analysesForReport} allMetiers={metiers} rowsByMetier={Object.fromEntries(METIER_KEYS.map(k => [k, metiers[k]?.rows || null]))} yearFilter={yearFilter} setYearFilter={setYearFilter} availableYears={allAvailableYears} />
+            <ReportPreview analyses={analysesForReport} allMetiers={metiers} rowsByMetier={Object.fromEntries(METIER_KEYS.map(k => [k, metiers[k]?.rows || null]))} yearFilter={yearFilter} setYearFilter={setYearFilter} availableYears={allAvailableYears} monthCutoff={monthCutoff} setMonthCutoff={setMonthCutoff} />
           </section>
         )}
 
