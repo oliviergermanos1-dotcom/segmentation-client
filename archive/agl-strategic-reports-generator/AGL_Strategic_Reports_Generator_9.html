@@ -3488,24 +3488,42 @@ function ClientDetailContent({ selected, perMetier, years, rowsByMetier }) {
         </div>
       </div>
 
-      {/* 2eme ligne : principal concurrent global + insight */}
+      {/* 2eme ligne : principal concurrent PAR METIER */}
       <div style={{background:"#fef9e7", border:"1px solid #c9a14a", padding:14, borderRadius:8, marginBottom:16}}>
-        <div style={{fontSize:11, fontWeight:700, textTransform:"uppercase", letterSpacing:0.5, color:"#0a2540", marginBottom:6}}>⚔ Principal concurrent (tous metiers)</div>
-        {summary.mainCompetitorGlobal ? (
-          <div style={{display:"flex", alignItems:"baseline", gap:16, flexWrap:"wrap"}}>
-            <div style={{fontSize:18, fontWeight:700, color:"#0a2540"}}>{summary.mainCompetitorGlobal.name}</div>
-            <div style={{fontSize:13, color:"#475569"}}>Volume capte : <strong>{fmt(summary.mainCompetitorGlobal.tons)} Tonnes</strong></div>
-            <div style={{fontSize:13, color:"#475569"}}>Part de la concurrence : <strong>{fmt(summary.mainCompetitorGlobal.share, 1)} %</strong></div>
-          </div>
-        ) : (
-          <div style={{fontSize:13, color:"#64748b", fontStyle:"italic"}}>
-            {summary.pdmGlobal !== null && summary.pdmGlobal >= 99
-              ? "AGL traite la totalite des volumes (PDM ~100 %) : pas de concurrent identifie sur ces metiers."
-              : summary.pdmGlobal !== null && summary.pdmGlobal < 99
-                ? `Concurrence detectee (${fmt(100 - summary.pdmGlobal, 1)} % du volume hors AGL) mais le detail par transitaire n'a pas pu etre calcule (rows non disponibles).`
-                : "Donnees insuffisantes pour identifier les concurrents."}
-          </div>
-        )}
+        <div style={{fontSize:11, fontWeight:700, textTransform:"uppercase", letterSpacing:0.5, color:"#0a2540", marginBottom:8}}>⚔ Principaux concurrents — Detail par metier</div>
+        <div style={{display:"grid", gridTemplateColumns:`repeat(${Math.min(perMetier.length, 4)}, 1fr)`, gap:10}}>
+          {perMetier.map((m, i) => {
+            const sch = m.schema;
+            const info = m.info;
+            // Volume concurrence sur ce metier = totalTonsAll - aglTonsAll (approx)
+            let aglTons = 0;
+            for (const y of Object.keys(info.byYear || {})) aglTons += info.byYear[y].aglWeight || 0;
+            const totTons = info.totalTonsAll || 0;
+            const concTons = Math.max(0, totTons - aglTons);
+            const pdmAgl = totTons > 0 ? (aglTons / totTons * 100) : 0;
+            const comp = mainCompetitorFor(m.A, selected);
+            return (
+              <div key={i} style={{background:"white", padding:10, borderRadius:6, border:"1px solid #e2e8f0"}}>
+                <div style={{fontSize:11, fontWeight:600, color:"#0a2540", marginBottom:4}}>{sch.icon} {sch.label}</div>
+                {pdmAgl >= 99 ? (
+                  <div style={{fontSize:11, color:"#15803d", fontStyle:"italic"}}>AGL 100 % — aucun concurrent.</div>
+                ) : (
+                  <>
+                    <div style={{fontSize:10, color:"#64748b", marginBottom:2}}>Concurrence : <strong style={{color:"#dc2626"}}>{fmt(100 - pdmAgl, 1)} %</strong> ({fmt(concTons, 0)} T)</div>
+                    {comp ? (
+                      <>
+                        <div style={{fontSize:13, fontWeight:700, color:"#0a2540", marginTop:4}}>{comp.name}</div>
+                        <div style={{fontSize:10, color:"#475569"}}>{fmt(comp.tons, 0)} T · <strong>{fmt(comp.share, 1)} %</strong> de la concurrence</div>
+                      </>
+                    ) : (
+                      <div style={{fontSize:11, color:"#94a3b8", fontStyle:"italic", marginTop:4}}>Detail concurrent non disponible (rows non chargees).</div>
+                    )}
+                  </>
+                )}
+              </div>
+            );
+          })}
+        </div>
       </div>
 
       {/* Radar par metier (volume total vs AGL) */}
@@ -5272,7 +5290,7 @@ function MetierPreviewContent({ A, hideHeader, contextLabel }) {
             const n2 = challengers[0];
             if (n2) {
               const n2Metric = schema.teuField ? n2.teu : n2.weight;
-              asymetrie = { n2name: n2.key, n2metric: n2Metric, ratio: n2Metric > 0 ? aglMetric / n2Metric : null, gapPct: a.pdmMetric - (n2Metric / (schema.teuField ? A.totalTEU : A.totalWeight) * 100) };
+              asymetrie = { n2name: n2.key, n2metric: n2Metric, ratio: n2Metric > 0 ? aglMetric / n2Metric : null, gapPct: a.pdmMetric - (n2Metric / (schema.teuField ? Av.totalTEU : Av.totalWeight) * 100) };
             }
           }
         }
@@ -5465,7 +5483,7 @@ function MetierPreviewContent({ A, hideHeader, contextLabel }) {
             const evolColor = evol === null || evol === undefined || isNaN(evol) ? "#64748b" : (evol >= 0 ? "#16a34a" : "#dc2626");
             const evolTxt = evol === null || evol === undefined || isNaN(evol) ? "—" : (evol >= 0 ? "+" : "") + fmt(evol,1) + " %";
             return (<tr key={i}>
-              <td>{i+1}</td><td>{x.key}</td><td>{fmt(x.bl)}</td><td>{pct(x.bl, A.nbBL)}</td>
+              <td>{i+1}</td><td>{x.key}</td><td>{fmt(x.bl)}</td><td>{pct(x.bl, Av.nbBL)}</td>
               <td style={{fontWeight:600, color:"#b08a3a"}}>{pdmCur === null || pdmCur === undefined || isNaN(pdmCur) ? "—" : fmt(pdmCur,1) + " %"}</td>
               <td style={{fontWeight:600, color: evolColor}}>{evolTxt}</td>
             </tr>);
@@ -5486,7 +5504,7 @@ function MetierPreviewContent({ A, hideHeader, contextLabel }) {
                 {schema.teuField && <div><div style={{color:"#64748b"}}>TEU</div><div style={{fontSize:18, fontWeight:700, color:"#0a2540"}}>{fmt(A.segments.conteneurise.teu)}</div></div>}
                 <div><div style={{color:"#64748b"}}>Tonnes</div><div style={{fontSize:18, fontWeight:700, color:"#0a2540"}}>{fmt(A.segments.conteneurise.weight,0)}</div></div>
               </div>
-              <div style={{fontSize:11, color:"#64748b", marginTop:6}}>{pct(A.segments.conteneurise.bl, A.nbBL)} des {blLabel} totaux</div>
+              <div style={{fontSize:11, color:"#64748b", marginTop:6}}>{pct(A.segments.conteneurise.bl, Av.nbBL)} des {blLabel} totaux</div>
             </div>
             <div style={{background:"#fff7ed", borderLeft:"4px solid #ea580c", padding:"12px 14px", borderRadius:6}}>
               <div style={{fontSize:13, fontWeight:700, color:"#9a3412"}}>⚓ Conventionnel / Vrac (Tonnes)</div>
@@ -5496,7 +5514,7 @@ function MetierPreviewContent({ A, hideHeader, contextLabel }) {
                 {schema.teuField && <div><div style={{color:"#64748b"}}>TEU</div><div style={{fontSize:18, fontWeight:700, color:"#0a2540"}}>{fmt(A.segments.conventionnel.teu)}</div></div>}
                 <div><div style={{color:"#64748b"}}>Tonnes</div><div style={{fontSize:18, fontWeight:700, color:"#0a2540"}}>{fmt(A.segments.conventionnel.weight,0)}</div></div>
               </div>
-              <div style={{fontSize:11, color:"#64748b", marginTop:6}}>{pct(A.segments.conventionnel.bl, A.nbBL)} des {blLabel} totaux</div>
+              <div style={{fontSize:11, color:"#64748b", marginTop:6}}>{pct(A.segments.conventionnel.bl, Av.nbBL)} des {blLabel} totaux</div>
             </div>
           </div>
 
