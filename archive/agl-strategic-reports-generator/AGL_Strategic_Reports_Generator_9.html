@@ -654,7 +654,9 @@ function buildAnalysis(rows, schema) {
       const aglMetricPrev = schema.teuField ? e.agl.prev.teu : e.agl.prev.weight;
       const aglEvolPct = aglMetricPrev > 0 ? ((aglMetricCur - aglMetricPrev) / aglMetricPrev * 100) : (aglMetricCur > 0 ? null : 0);
       result.set(key, { pdmAll, pdmCur, pdmPrev, pdmDelta: (pdmCur !== null && pdmPrev !== null) ? (pdmCur - pdmPrev) : null, aglEvolPct,
-                        aglVolCur: aglMetricCur, aglVolPrev: aglMetricPrev });
+                        aglVolCur: aglMetricCur, aglVolPrev: aglMetricPrev,
+                        totalTonsAll: e.total.all.weight, totalTeuAll: e.total.all.teu,
+                        totalTonsCur: e.total.cur.weight, totalTeuCur: e.total.cur.teu });
     }
     return result;
   }
@@ -2938,19 +2940,19 @@ function MultiMetierAnalysis({ analyses, hinterland }) {
           pdmPrev: pdmInfo.pdmPrev,
           pdmDelta: pdmInfo.pdmDelta,
           aglEvolPct: pdmInfo.aglEvolPct,
-          pdmAll: pdmInfo.pdmAll
+          pdmAll: pdmInfo.pdmAll,
+          totalTonsAll: pdmInfo.totalTonsAll || 0,
+          totalTonsCur: pdmInfo.totalTonsCur || 0
         };
       }
     }
     // Filtrer ceux qui sont dans ≥2 métiers
     const multi = Array.from(clientMap.values()).filter(c => Object.keys(c.metiers).length >= 2);
-    // Trier par nombre de métiers décroissant, puis par PDM AGL moyen décroissant
+    // Trier par taille de marche totale decroissante (tonnage cumule tous metiers)
     multi.sort((a, b) => {
-      const na = Object.keys(a.metiers).length, nb = Object.keys(b.metiers).length;
-      if (nb !== na) return nb - na;
-      const pa = Object.values(a.metiers).reduce((s,m) => s + (m.pdmAll || 0), 0) / na;
-      const pb = Object.values(b.metiers).reduce((s,m) => s + (m.pdmAll || 0), 0) / nb;
-      return pb - pa;
+      const ma = Object.values(a.metiers).reduce((s, m) => s + (m.totalTonsAll || 0), 0);
+      const mb = Object.values(b.metiers).reduce((s, m) => s + (m.totalTonsAll || 0), 0);
+      return mb - ma;
     });
     return multi;
   }, [analyses]);
@@ -2970,7 +2972,7 @@ function MultiMetierAnalysis({ analyses, hinterland }) {
       </div>
       <p style={{fontSize:13, color:"#64748b", marginBottom:12}}>
         {data.length} {data.length > 1 ? "clients identifiés" : "client identifié"} sur ≥2 métiers parmi : {metiersPresents.map(k => METIER_SCHEMAS[k].label).join(" · ")}.
-        Pour chaque client, la PDM AGL et son évolution N vs N-1 sont calculées par métier.
+        Triés du plus gros marché au plus petit (tonnage cumulé tous métiers). Pour chaque client, la PDM AGL et son évolution N vs N-1 sont calculées par métier.
       </p>
 
       {data.length === 0 ? (
@@ -3015,7 +3017,7 @@ function MultiMetierAnalysis({ analyses, hinterland }) {
                 </tr>
               </thead>
               <tbody>
-                {data.slice(0, 30).map((c, i) => (
+                {data.map((c, i) => (
                   <tr key={i}>
                     <td>{i+1}</td>
                     <td style={{fontWeight: 600, fontSize: 12}}>{c.name.substring(0, 45)}</td>
