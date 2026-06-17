@@ -622,7 +622,7 @@ function buildAnalysis(rows, schema) {
   //   - PDM = part AGL / total marché
   //   - PDM N-1, et évolution
   // ============================================================
-  function buildAGLPDMByField(field) {
+  function buildAGLPDMByField(field, withByYear) {
     if (!field) return new Map();
     // map[value] = { total: {prev, cur, all}, agl: {prev, cur, all}, byYear: Map<year, {tot, agl}> }  en TEU ou Tonnes
     const map = new Map();
@@ -638,7 +638,7 @@ function buildAnalysis(rows, schema) {
       if (!entry) {
         entry = { total: { prev: { teu:0, weight:0 }, cur: { teu:0, weight:0 }, all: { teu:0, weight:0 } },
                   agl:   { prev: { teu:0, weight:0 }, cur: { teu:0, weight:0 }, all: { teu:0, weight:0 } },
-                  byYear: new Map() };
+                  byYear: withByYear ? new Map() : null };
         map.set(key, entry);
       }
       const teu = schema.teuField ? numVal(r[schema.teuField]) : 0;
@@ -650,8 +650,8 @@ function buildAnalysis(rows, schema) {
         entry.agl.all.teu += teu; entry.agl.all.weight += w;
         if (bucket) { entry.agl[bucket].teu += teu; entry.agl[bucket].weight += w; }
       }
-      // Par-annee
-      if (y) {
+      // Par-annee : seulement si demande (eviter de gonfler les maps marchandise/pays/armateur)
+      if (withByYear && y) {
         let yb = entry.byYear.get(y);
         if (!yb) { yb = { tot: { teu:0, weight:0 }, agl: { teu:0, weight:0 } }; entry.byYear.set(y, yb); }
         yb.tot.teu += teu; yb.tot.weight += w;
@@ -670,7 +670,7 @@ function buildAnalysis(rows, schema) {
       const aglEvolPct = aglMetricPrev > 0 ? ((aglMetricCur - aglMetricPrev) / aglMetricPrev * 100) : (aglMetricCur > 0 ? null : 0);
       // Serialise byYear en objet (year -> {tot, agl, pdm}) pour usage facile
       const byYearObj = {};
-      const sortedYears = Array.from(e.byYear.keys()).sort();
+      const sortedYears = e.byYear ? Array.from(e.byYear.keys()).sort() : [];
       for (const y of sortedYears) {
         const yb = e.byYear.get(y);
         const totVol = schema.teuField ? yb.tot.teu : yb.tot.weight;
@@ -694,17 +694,20 @@ function buildAnalysis(rows, schema) {
     }
     return result;
   }
-  A.aglPdmByClient = buildAGLPDMByField(schema.clientField);
-  A.aglPdmByMarchandise = buildAGLPDMByField(schema.marchandiseField);
-  A.aglPdmByPays = schema.paysOrigineField ? buildAGLPDMByField(schema.paysOrigineField) : new Map();
-  A.aglPdmByPaysDest = schema.paysDestField ? buildAGLPDMByField(schema.paysDestField) : new Map();
-  A.aglPdmByArmateur = buildAGLPDMByField(schema.armateurField);
+  // byYear active uniquement pour client (utilise par radar + multi-year evolution + Detail client)
+  A.aglPdmByClient = buildAGLPDMByField(schema.clientField, true);
+  A.aglPdmByMarchandise = buildAGLPDMByField(schema.marchandiseField, false);
+  A.aglPdmByPays = schema.paysOrigineField ? buildAGLPDMByField(schema.paysOrigineField, false) : new Map();
+  A.aglPdmByPaysDest = schema.paysDestField ? buildAGLPDMByField(schema.paysDestField, false) : new Map();
+  A.aglPdmByArmateur = buildAGLPDMByField(schema.armateurField, false);
 
   // ============================================================
   // PRE-CALCULS (eviter de garder rows en memoire ensuite)
   // ============================================================
-  // 1) Agregation par TRANSITAIRE (AGL inclus, taggue) : utilise par carte Concurrence
-  // 2) Principal concurrent par CLIENT : utilise par tooltip carte AGL + Detail client
+  // Seulement le pre-calcul LEGER : agregation par TRANSITAIRE (~hundreds d'entries)
+  // Le calcul du principal concurrent par CLIENT (gros consommateur memoire :
+  // jusqu'a Map<client, Map<trans, w>>) est differe — calcule a la demande
+  // dans les composants qui le consomment, avec mise en cache via useMemo.
   {
     const curYear = A.byYear.length >= 2 ? A.byYear[A.byYear.length-1].year : null;
     const prevYear = A.byYear.length >= 2 ? A.byYear[A.byYear.length-2].year : null;
@@ -713,41 +716,27 @@ function buildAnalysis(rows, schema) {
       return u.includes("AFRICA GLOBAL LOGISTICS") || u.includes("AGL") || u.includes("BOLLORE TRANSPORT") || u.includes("BOLLORÉ TRANSPORT");
     };
     const transitMap = new Map(); // trans -> { teuCur, teuPrev, tonsCur, tonsPrev, isAGL }
-    const compByClient = new Map(); // client -> Map<transitaire, tons cumul total>
     for (const r of rows) {
       const transRaw = safeStr(r[schema.transitaireField]);
-      const client = safeStr(r[schema.clientField]);
-      const w = numVal(r[schema.weightField]);
-      const teu = schema.teuField ? numVal(r[schema.teuField]) : 0;
+      if (!transRaw) continue;
       const y = safeStr(r[schema.yearField]);
       const bucket = y === curYear ? "cur" : (y === prevYear ? "prev" : null);
-      if (transRaw && bucket) {
-        const isAglRow = isAGLName(transRaw);
-        const tkey = isAglRow ? "AGL" : transRaw;
-        let e = transitMap.get(tkey);
-        if (!e) { e = { teuCur:0, teuPrev:0, tonsCur:0, tonsPrev:0, isAGL: isAglRow }; transitMap.set(tkey, e); }
-        if (bucket === "cur") { e.teuCur += teu; e.tonsCur += w; }
-        else { e.teuPrev += teu; e.tonsPrev += w; }
-      }
-      if (client && transRaw && !isAGLName(transRaw) && w > 0) {
-        let cm = compByClient.get(client);
-        if (!cm) { cm = new Map(); compByClient.set(client, cm); }
-        cm.set(transRaw, (cm.get(transRaw) || 0) + w);
-      }
+      if (!bucket) continue;
+      const isAglRow = isAGLName(transRaw);
+      const tkey = isAglRow ? "AGL" : transRaw;
+      let e = transitMap.get(tkey);
+      if (!e) { e = { teuCur:0, teuPrev:0, tonsCur:0, tonsPrev:0, isAGL: isAglRow }; transitMap.set(tkey, e); }
+      const teu = schema.teuField ? numVal(r[schema.teuField]) : 0;
+      const w = numVal(r[schema.weightField]);
+      if (bucket === "cur") { e.teuCur += teu; e.tonsCur += w; }
+      else { e.teuPrev += teu; e.tonsPrev += w; }
     }
     A.transitaireAgg = transitMap;
-    // Reduce compByClient to top competitor per client
-    const mainCompByClient = new Map();
-    for (const [client, cm] of compByClient.entries()) {
-      let best = null, bestW = 0, total = 0;
-      for (const [t, w] of cm.entries()) { total += w; if (w > bestW) { bestW = w; best = t; } }
-      if (best) mainCompByClient.set(client, { name: best, tons: bestW, share: total > 0 ? bestW/total*100 : 0 });
-    }
-    A.mainCompByClient = mainCompByClient;
+    // mainCompByClient supprime du pre-calcul (trop memoire) - calcule a la demande
+    A.mainCompByClient = null;
   }
 
   // On supprime la reference aux rows brutes pour liberer la memoire
-  // (toutes les analyses derivees sont maintenant precalculees ci-dessus + buildAGLPDMByField)
   A.rows = null;
   return A;
 }
