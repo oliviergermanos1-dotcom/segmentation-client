@@ -121,6 +121,34 @@ const METIER_SCHEMAS = {
     consignataireField: null, conditField: null, modeExpField: null,
     verticalField: "vertical_chargeur", statutField: "statut_chargeur", commercialField: "commercial_chargeur",
     qualifField: "qualifie", type: "aerien", sens: "export"
+  },
+  HINTERLAND_IMPORT: {
+    key: "HINTERLAND_IMPORT", label: "Hinterland Import", icon: "🚛⬇",
+    clientField: "Destinataire", clientLabel: "Destinataire",
+    counterpartField: "Chargeur", counterpartLabel: "Chargeur",
+    teuField: "NOMBRE_TEU", weightField: "POIDS_MARCHANDISE", blField: "Numéro BL",
+    yearField: "Année escale", monthField: "Mois escale",
+    portChargementField: "Port de chargement", portDechargementField: "Port de déchargement",
+    paysOrigineField: "Pays de prise en charge", paysDestField: "Pays de livraison",
+    lieuLivraisonField: "Lieu de livraison", marchandiseField: "Libellé marchandise",
+    transitaireField: "Transitaire", armateurField: "Armateur escale",
+    consignataireField: "Consignataire", conditField: "CODE_CONDIT", modeExpField: "CODE_MODE_EXPEDITION",
+    verticalField: "vertical_destinataire", statutField: "statut_destinataire", commercialField: "commercial_destinataire",
+    qualifField: "Qualifié?", type: "maritime", sens: "import"
+  },
+  HINTERLAND_EXPORT: {
+    key: "HINTERLAND_EXPORT", label: "Hinterland Export", icon: "🚛⬆",
+    clientField: "Chargeur", clientLabel: "Chargeur",
+    counterpartField: "Destinataire", counterpartLabel: "Destinataire",
+    teuField: "NOMBRE_TEU", weightField: "POIDS_MARCHANDISE", blField: "Numéro BL",
+    yearField: "Année escale", monthField: "Mois escale",
+    portChargementField: "Port de chargement", portDechargementField: "Port de déchargement",
+    paysOrigineField: "Pays de prise en charge", paysDestField: "Pays de livraison",
+    lieuLivraisonField: "Lieu de livraison", marchandiseField: "Libellé marchandise",
+    transitaireField: "Transitaire", armateurField: "Armateur escale",
+    consignataireField: "Consignataire", conditField: "CODE_CONDIT", modeExpField: "CODE_MODE_EXPEDITION",
+    verticalField: "vertical_chargeur", statutField: "statut_chargeur", commercialField: "commercial_chargeur",
+    qualifField: "Qualifié?", type: "maritime", sens: "export"
   }
 };
 const METIER_KEYS = Object.keys(METIER_SCHEMAS);
@@ -689,13 +717,20 @@ function isCoteDIvoire(v) {
 // Pour IMPORT_MARITIME : sélectionne les rows où paysDest ≠ Côte d'Ivoire
 // Pour EXPORT_MARITIME : sélectionne les rows où paysOrigine ≠ Côte d'Ivoire
 // Puis applique buildAnalysis sur ce sous-ensemble pour avoir tops + PDM AGL + YoY
+// Si des fichiers dédiés HINTERLAND_IMPORT / HINTERLAND_EXPORT sont chargés,
+// la dérivation automatique est désactivée (les fichiers dédiés priment).
 // ============================================================
 function buildHinterlandAnalysis(metiersState) {
   const result = { importHinterland: null, exportHinterland: null };
 
-  // IMPORT MARITIME → marchandises destinées hors CI
+  const dedicatedImport = metiersState?.HINTERLAND_IMPORT;
+  const dedicatedExport = metiersState?.HINTERLAND_EXPORT;
+  const hasDedicatedImport = dedicatedImport && Array.isArray(dedicatedImport.rows) && dedicatedImport.rows.length > 0;
+  const hasDedicatedExport = dedicatedExport && Array.isArray(dedicatedExport.rows) && dedicatedExport.rows.length > 0;
+
+  // IMPORT MARITIME → marchandises destinées hors CI (skip si fichier dédié chargé)
   const impMar = metiersState?.IMPORT_MARITIME;
-  if (impMar && Array.isArray(impMar.rows) && impMar.rows.length > 0) {
+  if (!hasDedicatedImport && impMar && Array.isArray(impMar.rows) && impMar.rows.length > 0) {
     const schema = METIER_SCHEMAS.IMPORT_MARITIME;
     const paysDestField = schema.paysDestField || "Pays de livraison";
     const filtered = impMar.rows.filter(r => {
@@ -713,9 +748,9 @@ function buildHinterlandAnalysis(metiersState) {
     }
   }
 
-  // EXPORT MARITIME → marchandises issues hors CI
+  // EXPORT MARITIME → marchandises issues hors CI (skip si fichier dédié chargé)
   const expMar = metiersState?.EXPORT_MARITIME;
-  if (expMar && Array.isArray(expMar.rows) && expMar.rows.length > 0) {
+  if (!hasDedicatedExport && expMar && Array.isArray(expMar.rows) && expMar.rows.length > 0) {
     const schema = METIER_SCHEMAS.EXPORT_MARITIME;
     const paysOrigField = schema.paysOrigineField || "Pays de prise en charge";
     const filtered = expMar.rows.filter(r => {
@@ -4305,7 +4340,7 @@ function App() {
             Chargement des bases STATCOM
           </h2>
           <p className="text-xs text-gray-600 mb-3">Chargez <strong>un ou plusieurs fichiers Excel par métier</strong> (par exemple 1 fichier par année). Les données seront automatiquement consolidées. Vous pourrez ensuite filtrer par année via le panneau "Filtre années" ci-dessous.</p>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
             {METIER_KEYS.map(k => (
               <MetierCard key={k}
                 metierKey={k}
