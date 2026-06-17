@@ -160,6 +160,26 @@ const METIER_SCHEMAS = {
 const METIER_KEYS = Object.keys(METIER_SCHEMAS);
 
 // ============================================================
+// REGLE METIER : SEGMENTATION CONTENEURISE / CONVENTIONNEL
+// - Conventionnel = BRBK, SACS, VRAC uniquement
+// - Conteneurise  = tout autre code non-vide SAUF RORO (RORO totalement exclu)
+// - RORO         = exclu des deux segments
+// Helpers centralises (importes par buildAnalysis, buildIndex, getSegmentView, etc.)
+// ============================================================
+const CONV_CODES = new Set(["BRBK","SACS","VRAC"]);
+const EXCLUDED_FROM_CONT = new Set(["BRBK","SACS","VRAC","RORO"]);
+const normCondit = (v) => String(v||"").trim().toUpperCase();
+const isConvCondit = (v) => CONV_CODES.has(normCondit(v));
+const isContCondit = (v) => { const c = normCondit(v); return c !== "" && !EXCLUDED_FROM_CONT.has(c); };
+const classifyCondit = (v) => {
+  const c = normCondit(v);
+  if (!c) return null;
+  if (CONV_CODES.has(c)) return "CONVENTIONNEL";
+  if (c === "RORO") return null; // RORO exclu
+  return "CONTENEURISE";
+};
+
+// ============================================================
 // HELPERS
 // ============================================================
 const fmt = (n, dec=0) => {
@@ -315,13 +335,9 @@ function buildAnalysis(rows, schema) {
   // (uniquement pour les maritimes - schema.conditField present)
   // ============================================================
   if (schema.teuField && schema.conditField) {
-    // Regle metier : Conventionnel = BRBK/SACS/VRAC, Conteneurise = tout le reste (code non-vide)
-    const CONV_CODES_FILTER = new Set(["BRBK","SACS","VRAC"]);
-    const isConventionnelRow = (r) => CONV_CODES_FILTER.has(String(r[schema.conditField]||"").trim().toUpperCase());
-    const isConteneuriseRow = (r) => {
-      const code = String(r[schema.conditField]||"").trim().toUpperCase();
-      return code !== "" && !CONV_CODES_FILTER.has(code);
-    };
+    // Regle metier : Conventionnel = BRBK/SACS/VRAC ; Conteneurise = tout le reste SAUF RORO ; RORO exclu
+    const isConventionnelRow = (r) => isConvCondit(r[schema.conditField]);
+    const isConteneuriseRow = (r) => isContCondit(r[schema.conditField]);
     A.topClientsConteneurise = aggBy(schema.clientField, { sortBy: "teu", filter: isConteneuriseRow }).slice(0, 20);
     A.topClientsConventionnel = aggBy(schema.clientField, { sortBy: "weight", filter: isConventionnelRow }).slice(0, 20);
     A.topPaysOrigineConteneurise = aggBy(schema.paysOrigineField, { sortBy: "teu", filter: isConteneuriseRow }).slice(0, 30);
@@ -344,19 +360,11 @@ function buildAnalysis(rows, schema) {
   // ============================================================
   // SEGMENTATION MARCHANDISES : CONTENEURISÉ (TEU) vs CONVENTIONNEL (TONNES)
   // Règle métier AGL :
-  //   - Conventionnel/Vrac : BRBK, SACS, VRAC (regle metier AGL stricte)
-  //   - Conteneurisé : TOUT LE RESTE (20F, 20S, 40F, 40S, TANK, FLTANK, 20TOP,
-  //                    40TOP, CARS, RORO, et tout autre code non-blank)
+  //   - Conventionnel/Vrac : BRBK, SACS, VRAC uniquement
+  //   - Conteneurisé : tout autre code non-vide SAUF RORO (20F, 20S, 40F, 40S, TANK,
+  //                    FLTANK, 20TOP, 40TOP, CARS, ... — RORO est exclu)
+  //   - RORO : exclu des deux segments
   // ============================================================
-  const CONVENTIONNEL_CODES = new Set(["BRBK","SACS","VRAC"]);
-  const CONTENEURISE_CODES = null; // non utilise — Conteneurise = tout le reste
-  const classifyCondit = (code) => {
-    if (!code) return null;
-    const s = String(code).trim().toUpperCase();
-    if (!s) return null;
-    if (CONVENTIONNEL_CODES.has(s)) return "CONVENTIONNEL";
-    return "CONTENEURISE"; // tout autre code non-vide = conteneurise
-  };
 
   if (schema.conditField) {
     // Agrégats globaux par segment
@@ -498,16 +506,13 @@ function buildAnalysis(rows, schema) {
       marchandises: cmpRow(cur.marchandises, prev.marchandises)
     };
 
-    // ----- Comparaison par segment (Conteneurisé / Conventionnel) -----
+    // ----- Comparaison par segment (Conteneurisé / Conventionnel) — RORO exclu -----
     const segByYear = (rs) => {
       const seg = { conteneurise: {bl:new Set(), teu:0, weight:0}, conventionnel: {bl:new Set(), teu:0, weight:0} };
       for (const r of rs) {
-        const code = safeStr(r[schema.conditField]).toUpperCase();
-        let bucket = null;
-        if (!code) bucket = null;
-        else if (CONVENTIONNEL_CODES.has(code)) bucket = seg.conventionnel;
-        else bucket = seg.conteneurise;
-        if (!bucket) continue;
+        const cls = classifyCondit(r[schema.conditField]);
+        if (!cls) continue;
+        const bucket = cls === "CONVENTIONNEL" ? seg.conventionnel : seg.conteneurise;
         const bl = safeStr(r[schema.blField]); if (bl) bucket.bl.add(bl);
         if (schema.teuField) bucket.teu += numVal(r[schema.teuField]);
         bucket.weight += numVal(r[schema.weightField]);
@@ -654,19 +659,15 @@ function buildAnalysis(rows, schema) {
   // Pour chaque segment : volume AGL, PDM AGL, rang, evolution N vs N-1
   // ============================================================
   if (schema.teuField && schema.conditField) {
-    // Regle metier : Conventionnel = BRBK/SACS/VRAC. Conteneurise = tout le reste.
-    const CONV_FILTER = new Set(["BRBK","SACS","VRAC"]);
-    const isConvCode = (code) => CONV_FILTER.has(code);
-    const isContCode = (code) => code !== "" && !CONV_FILTER.has(code);
+    // Regle metier : Conventionnel = BRBK/SACS/VRAC ; Conteneurise = tout le reste sauf RORO ; RORO exclu
     const buildSegmentTransit = (segmentKind) => {
-      const matcher = segmentKind === "cont" ? isContCode : isConvCode;
+      const matcher = segmentKind === "cont" ? isContCondit : isConvCondit;
       // Agrege par transitaire sur les rows du segment
       const map = new Map();
       let segTotalTeu = 0, segTotalWeight = 0;
       const blAGL = new Set();
       for (const r of rows) {
-        const code = String(r[schema.conditField]||"").trim().toUpperCase();
-        if (!matcher(code)) continue;
+        if (!matcher(r[schema.conditField])) continue;
         const trans = safeStr(r[schema.transitaireField]);
         if (!trans) continue;
         const teu = numVal(r[schema.teuField]);
@@ -706,8 +707,7 @@ function buildAnalysis(rows, schema) {
       // Evolution N vs N-1 AGL sur le segment
       const aglByYear = new Map();
       for (const r of rows) {
-        const code = String(r[schema.conditField]||"").trim().toUpperCase();
-        if (!matcher(code)) continue;
+        if (!matcher(r[schema.conditField])) continue;
         if (!isAGL(r[schema.transitaireField])) continue;
         const y = safeStr(r[schema.yearField]); if (!y) continue;
         let t = aglByYear.get(y);
@@ -859,9 +859,8 @@ function buildAnalysis(rows, schema) {
     A.mainCompByClient = null;
 
     // Pre-calcul segmente : transitaireAgg pour Conteneurise et Conventionnel (uniquement maritime)
-    // Regle : Conventionnel = BRBK/SACS/VRAC. Conteneurise = tout le reste (code non-vide).
+    // Regle : Conventionnel = BRBK/SACS/VRAC ; Conteneurise = tout le reste sauf RORO ; RORO exclu.
     if (schema.teuField && schema.conditField) {
-      const CONV_F = new Set(["BRBK","SACS","VRAC"]);
       const contMap = new Map();
       const convMap = new Map();
       for (const r of rows) {
@@ -870,9 +869,8 @@ function buildAnalysis(rows, schema) {
         const y = safeStr(r[schema.yearField]);
         const bucket = y === curYear ? "cur" : (y === prevYear ? "prev" : null);
         if (!bucket) continue;
-        const code = String(r[schema.conditField]||"").trim().toUpperCase();
-        // Conventionnel = code dans CONV_F ; Conteneurise = code non-vide hors CONV_F
-        const targetMap = !code ? null : (CONV_F.has(code) ? convMap : contMap);
+        const cls = classifyCondit(r[schema.conditField]);
+        const targetMap = cls === "CONVENTIONNEL" ? convMap : (cls === "CONTENEURISE" ? contMap : null);
         if (!targetMap) continue;
         const isAglRow = isAGLName(transRaw);
         const tkey = isAglRow ? "AGL" : transRaw;
@@ -1330,7 +1328,7 @@ async function generateDOCX(analyses, options) {
       children.push(titleP("5.1. Segmentation conteneurisé vs conventionnel", 2));
       children.push(p(`Règle de classification appliquée (codes CODE_CONDIT) :`));
       children.push(p(`• Conteneurisé (TEU) : 20F, 20S, 20TOP, 40F, 40S, 40TOP, FLTANK, TANK`, { bold: false }));
-      children.push(p(`• Conventionnel / Vrac (Tonnes) : BRBK, SACS, CARS, RORO, VRAC`, { bold: false }));
+      children.push(p(`• Conventionnel / Vrac (Tonnes) : BRBK, SACS, VRAC (RORO exclu)`, { bold: false }));
       const segHeaders = schema.teuField
         ? ["Segment", `Nb ${blLabel}`, "TEU", "Tonnes (kg)", `% ${blLabel}`]
         : ["Segment", `Nb ${blLabel}`, "Tonnes (kg)", `% ${blLabel}`];
@@ -1750,7 +1748,7 @@ function generatePDF(analyses, options) {
 
     if (A.segments) {
       subtitle("5.1. Segmentation conteneurisé vs conventionnel");
-      para("Règle métier — Conteneurisé : 20F/20S/20TOP/40F/40S/40TOP/FLTANK/TANK. Conventionnel/Vrac : BRBK/SACS/CARS/RORO/VRAC.");
+      para("Règle métier — Conteneurisé : 20F/20S/20TOP/40F/40S/40TOP/FLTANK/TANK. Conventionnel/Vrac : BRBK/SACS/VRAC.");
       const segHead = schema.teuField
         ? ["Segment", `Nb ${blLabel}`, "TEU", "Tonnes (kg)", `% ${blLabel}`]
         : ["Segment", `Nb ${blLabel}`, "Tonnes (kg)", `% ${blLabel}`];
@@ -2197,7 +2195,7 @@ function generatePPTX(analyses, options) {
       s4.addShape("rect", { x:6.83, y:1.5, w:6, h:1.8, fill:{color:"FFF7ED"}, line:{color:"EA580C", width:1} });
       s4.addShape("rect", { x:6.83, y:1.5, w:0.08, h:1.8, fill:{color:"EA580C"} });
       s4.addText("⚓ Conventionnel / Vrac (Tonnes)", { x:7.08, y:1.6, w:5.5, h:0.3, fontSize:14, bold:true, color:"9A3412", fontFace:"Calibri" });
-      s4.addText("Codes : BRBK · SACS · CARS · RORO · VRAC", { x:7.08, y:1.92, w:5.5, h:0.3, fontSize:9, italic:true, color:GRAY, fontFace:"Calibri" });
+      s4.addText("Codes : BRBK · SACS · VRAC", { x:7.08, y:1.92, w:5.5, h:0.3, fontSize:9, italic:true, color:GRAY, fontFace:"Calibri" });
       s4.addText([
         { text:"BL : ", options:{bold:true, fontSize:13, color:navy, fontFace:"Calibri"} },
         { text:fmt(A.segments.conventionnel.bl)+"   ", options:{fontSize:13, color:textDark, fontFace:"Calibri"} },
@@ -2509,7 +2507,7 @@ function generateHTML(analyses, options) {
         </div>
         <div class="seg-conv">
           <div class="seg-title-c">⚓ Conventionnel / Vrac (Tonnes)</div>
-          <div class="seg-codes">Codes : BRBK · SACS · CARS · RORO · VRAC</div>
+          <div class="seg-codes">Codes : BRBK · SACS · VRAC</div>
           <div class="seg-stats">
             <div><div class="seg-stat-label">BL</div><div class="seg-stat-val">${fmt(A.segments.conventionnel.bl)}</div></div>
             ${schema.teuField?`<div><div class="seg-stat-label">TEU</div><div class="seg-stat-val">${fmt(A.segments.conventionnel.teu)}</div></div>`:''}
@@ -4139,7 +4137,7 @@ function StrategicTab({ analyses, mode }) {
                       growthLabel="Croissance transitaire" />
                     <StrategicMap
                       title={`${m.schema.icon} ${m.schema.label} — ⚓ Conventionnel`}
-                      subtitle={`X = volume en Tonnes (echelle log) · Y = croissance % N vs N-1 · Taille du rond ∝ volume · BL conventionnels uniquement (BRBK/SACS/CARS/RORO/VRAC)`}
+                      subtitle={`X = volume en Tonnes (echelle log) · Y = croissance % N vs N-1 · Taille du rond ∝ volume · BL conventionnels uniquement (BRBK/SACS/VRAC)`}
                       points={sliceTop(m.segmentedPoints.conventionnel.points)}
                       xUnit="Tonnes"
                       entityLabel={entityLabel}
@@ -4537,9 +4535,7 @@ function MultiMetierAnalysis({ analyses, hinterland }) {
       const s = String(name).toUpperCase();
       return s.includes("AFRICA GLOBAL LOGISTICS") || s.includes("AGL") || s.includes("BOLLORE TRANSPORT") || s.includes("BOLLORÉ TRANSPORT");
     };
-    // Regle metier : Conventionnel = BRBK/SACS/VRAC. Conteneurise = tout le reste (code non-vide).
-    const CONV = new Set(["BRBK","SACS","VRAC"]);
-    const CONT = null; // CONT = code non-blank hors CONV (verifie a la volee)
+    // Regle metier : Conventionnel = BRBK/SACS/VRAC ; Conteneurise = tout le reste sauf RORO ; RORO exclu
 
     // L'analyse contient aussi rows si on la passe — mais on a buildAnalysis qui ne stocke pas les rows
     // On va donc devoir reconstruire à partir des données disponibles dans analysis
@@ -5059,7 +5055,7 @@ function MetierPreviewContent({ A, hideHeader, contextLabel }) {
           {[
             { key: "total", label: "📊 Total", desc: "Toutes les marchandises (conteneurise + conventionnel + autre)" },
             { key: "conteneurise", label: "📦 Conteneurise", desc: "BL conteneurises uniquement (codes 20F/20S/40F/40S/TANK/...). Tri TEU." },
-            { key: "conventionnel", label: "⚓ Conventionnel", desc: "BL conventionnels / vrac (codes BRBK/SACS/CARS/RORO/VRAC). Tri Tonnes." }
+            { key: "conventionnel", label: "⚓ Conventionnel", desc: "BL conventionnels / vrac (codes BRBK/SACS/VRAC). Tri Tonnes." }
           ].map(s => {
             const active = segmentView === s.key;
             return (
@@ -5541,7 +5537,7 @@ function MetierPreviewContent({ A, hideHeader, contextLabel }) {
             </div>
             <div style={{background:"#fff7ed", borderLeft:"4px solid #ea580c", padding:"12px 14px", borderRadius:6}}>
               <div style={{fontSize:13, fontWeight:700, color:"#9a3412"}}>⚓ Conventionnel / Vrac (Tonnes)</div>
-              <div style={{fontSize:11, color:"#64748b", marginBottom:8}}>Codes : BRBK · SACS · CARS · RORO · VRAC</div>
+              <div style={{fontSize:11, color:"#64748b", marginBottom:8}}>Codes : BRBK · SACS · VRAC</div>
               <div style={{display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6, fontSize:12}}>
                 <div><div style={{color:"#64748b"}}>BL</div><div style={{fontSize:18, fontWeight:700, color:"#0a2540"}}>{fmt(A.segments.conventionnel.bl)}</div></div>
                 {schema.teuField && <div><div style={{color:"#64748b"}}>TEU</div><div style={{fontSize:18, fontWeight:700, color:"#0a2540"}}>{fmt(A.segments.conventionnel.teu)}</div></div>}
@@ -5890,29 +5886,49 @@ function App() {
     // Filtre YTD comparable : si monthCutoff > 0, ne garde que les rows dont le
     // mois <= monthCutoff (permet de comparer Jan-Mai 2025 vs Jan-Mai 2026)
     if (monthCutoffNum && monthCutoffNum > 0 && schema.monthField) {
+      const FR_MONTHS = {
+        "JANVIER":1, "JAN":1, "JANV":1,
+        "FEVRIER":2, "FÉVRIER":2, "FEV":2, "FÉV":2, "FEVR":2,
+        "MARS":3, "MAR":3,
+        "AVRIL":4, "AVR":4,
+        "MAI":5,
+        "JUIN":6, "JUN":6,
+        "JUILLET":7, "JUIL":7, "JUL":7,
+        "AOUT":8, "AOÛT":8,
+        "SEPTEMBRE":9, "SEPT":9, "SEP":9,
+        "OCTOBRE":10, "OCT":10,
+        "NOVEMBRE":11, "NOV":11,
+        "DECEMBRE":12, "DÉCEMBRE":12, "DEC":12, "DÉC":12
+      };
       const parseMonth = (v) => {
-        const s = String(v||"").trim().toUpperCase();
+        if (v === null || v === undefined) return null;
+        // Excel serial date (number > 12) → convertit en mois
+        if (typeof v === "number" && v > 12) {
+          const d = new Date(Date.UTC(1899, 11, 30) + v * 86400000);
+          if (!isNaN(d.getTime())) return d.getUTCMonth() + 1;
+          return null;
+        }
+        const s = String(v).trim().toUpperCase();
         if (!s) return null;
-        // Numerique direct (1-12 ou "01"-"12")
-        const n = parseInt(s, 10);
-        if (!isNaN(n) && n >= 1 && n <= 12) return n;
-        // Libelle FR
-        const map = {
-          "JANVIER":1, "JAN":1, "JANV":1,
-          "FEVRIER":2, "FÉVRIER":2, "FEV":2, "FÉV":2, "FEVR":2,
-          "MARS":3, "MAR":3,
-          "AVRIL":4, "AVR":4,
-          "MAI":5,
-          "JUIN":6, "JUN":6,
-          "JUILLET":7, "JUIL":7, "JUL":7,
-          "AOUT":8, "AOÛT":8,
-          "SEPTEMBRE":9, "SEPT":9, "SEP":9,
-          "OCTOBRE":10, "OCT":10,
-          "NOVEMBRE":11, "NOV":11,
-          "DECEMBRE":12, "DÉCEMBRE":12, "DEC":12, "DÉC":12
-        };
-        // Match prefix sur les libelles
-        for (const k of Object.keys(map)) { if (s.startsWith(k)) return map[k]; }
+        // 1) Entier seul 1..12
+        if (/^\d{1,2}$/.test(s)) {
+          const n = parseInt(s, 10);
+          if (n >= 1 && n <= 12) return n;
+        }
+        // 2) Format "YYYY-MM" ou "YYYY/MM" ou "YYYY.MM"
+        let m = s.match(/^(\d{4})[-\/.](\d{1,2})$/);
+        if (m) { const n = parseInt(m[2], 10); if (n >= 1 && n <= 12) return n; }
+        // 3) Format "MM-YYYY" ou "MM/YYYY"
+        m = s.match(/^(\d{1,2})[-\/.](\d{4})$/);
+        if (m) { const n = parseInt(m[1], 10); if (n >= 1 && n <= 12) return n; }
+        // 4) Format ISO date "YYYY-MM-DD..." → on prend le mois en position 2
+        m = s.match(/^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})/);
+        if (m) { const n = parseInt(m[2], 10); if (n >= 1 && n <= 12) return n; }
+        // 5) Format "DD/MM/YYYY" → mois en position 2
+        m = s.match(/^(\d{1,2})[\/.](\d{1,2})[\/.](\d{4})/);
+        if (m) { const n = parseInt(m[2], 10); if (n >= 1 && n <= 12) return n; }
+        // 6) Libelle FR (prefix)
+        for (const k of Object.keys(FR_MONTHS)) { if (s.startsWith(k)) return FR_MONTHS[k]; }
         return null;
       };
       allRows = allRows.filter(r => {
@@ -6168,41 +6184,28 @@ function App() {
   // ----- Sync metiersRef avec metiers state -----
   useEffect(() => { metiersRef.current = metiers; }, [metiers]);
 
-  // ----- Filtre annees / exclusions : recompute UN METIER A LA FOIS avec yield pour ne pas bloquer le main thread -----
-  const yearFilterDebounceRef = useRef(null);
+  // ----- Filtre annees / mois YTD / exclusions : recompute SYNCHRONE et immediat -----
+  // On lit l'etat le plus a jour via le callback `prev` de setMetiers (evite tout
+  // probleme de stale metiersRef vu lors de clics rapides). Une seule passe React
+  // qui recalcule TOUS les metiers ayant des fichiers, en utilisant les filtres frais.
   const yearFilterIsInitial = useRef(true);
   useEffect(() => {
     if (yearFilterIsInitial.current) { yearFilterIsInitial.current = false; return; }
-    // Flag loading immediat
     setMetiers(prev => {
       const next = { ...prev };
       for (const k of METIER_KEYS) {
         const cur = next[k];
-        if (cur && cur.files && cur.files.length > 0) {
-          next[k] = { ...cur, loading: true, progress: "Application des filtres…" };
+        if (!cur || !cur.files || cur.files.length === 0) continue;
+        try {
+          const { rows, analysis, index } = recomputeFromFiles(k, cur.files, yearFilter, exclusions, monthCutoff);
+          next[k] = { ...cur, rows, analysis, index, loading: false, progress: null, error: null };
+        } catch (err) {
+          console.error("Recompute failed for", k, err);
+          next[k] = { ...cur, loading: false, progress: null, error: err.message || "Erreur recompute" };
         }
       }
       return next;
     });
-    if (yearFilterDebounceRef.current) clearTimeout(yearFilterDebounceRef.current);
-    yearFilterDebounceRef.current = setTimeout(async () => {
-      // Recompute un metier a la fois avec yield au browser entre chaque
-      for (const k of METIER_KEYS) {
-        const cur = metiersRef.current[k];
-        if (!cur || !cur.files || cur.files.length === 0) continue;
-        // Yield au browser (laisse rendre le loading state)
-        await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
-        try {
-          const { rows, analysis, index } = recomputeFromFiles(k, cur.files, yearFilter, exclusions, monthCutoff);
-          setMetiers(prev => ({ ...prev, [k]: { ...prev[k], rows, analysis, index, loading: false, progress: null, error: null } }));
-        } catch (err) {
-          console.error("Recompute failed for", k, err);
-          setMetiers(prev => ({ ...prev, [k]: { ...prev[k], loading: false, progress: null, error: err.message || "Erreur recompute" } }));
-        }
-        // Petit delai apres chaque metier pour que le browser puisse respirer / repondre aux events
-        await new Promise(r => setTimeout(r, 15));
-      }
-    }, 250);
   }, [yearFilter, exclusions, monthCutoff, recomputeFromFiles]);
 
   // ----- Mémorisation manuelle (sauvegarde tous les fichiers actuels) -----
