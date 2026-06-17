@@ -4157,7 +4157,7 @@ function StrategicTab({ analyses, mode }) {
 // ============================================================
 // COMPOSANT : Prévisualisation du rapport
 // ============================================================
-function ReportPreview({ analyses, allMetiers, rowsByMetier, yearFilter, setYearFilter }) {
+function ReportPreview({ analyses, allMetiers, rowsByMetier, yearFilter, setYearFilter, availableYears }) {
   const validAnalyses = analyses.filter(a => !a.empty);
   const [activeTab, setActiveTab] = useState(0);
 
@@ -4225,14 +4225,18 @@ function ReportPreview({ analyses, allMetiers, rowsByMetier, yearFilter, setYear
   // Groupement par section pour le sidebar
   const sections = ["Metiers", "Cross", "Cartes"];
 
-  // Filtre annee/mois rapide (recoltage des annees et mois presents dans les analyses)
+  // Filtre annee/mois rapide
+  // Prioritize les annees fournies par le parent (stables, basees sur yearsInFile)
+  // pour eviter que la liste se reduise quand on filtre.
   const allAvailableYears = useMemo(() => {
+    if (availableYears && availableYears.length > 0) return availableYears;
+    // Fallback : derive depuis analyses (cas ou le prop n est pas fourni)
     const set = new Set();
     for (const A of validAnalyses) {
       for (const y of (A.byYear || [])) set.add(y.year);
     }
     return Array.from(set).sort();
-  }, [validAnalyses]);
+  }, [availableYears, validAnalyses]);
   const allAvailableMonths = useMemo(() => {
     const set = new Set();
     for (const A of validAnalyses) {
@@ -6646,7 +6650,7 @@ function App() {
               <span className="gold-bg text-white rounded-full w-7 h-7 flex items-center justify-center text-sm">📊</span>
               Analyse & Prévisualisation du rapport
             </h2>
-            <ReportPreview analyses={analysesForReport} allMetiers={metiers} rowsByMetier={Object.fromEntries(METIER_KEYS.map(k => [k, metiers[k]?.rows || null]))} yearFilter={yearFilter} setYearFilter={setYearFilter} />
+            <ReportPreview analyses={analysesForReport} allMetiers={metiers} rowsByMetier={Object.fromEntries(METIER_KEYS.map(k => [k, metiers[k]?.rows || null]))} yearFilter={yearFilter} setYearFilter={setYearFilter} availableYears={allAvailableYears} />
           </section>
         )}
 
