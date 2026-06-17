@@ -4936,6 +4936,9 @@ function getSegmentView(A, segment) {
   const seg = segment === "conteneurise" ? A.segments.conteneurise : A.segments.conventionnel;
   if (!seg) return A;
   const topClients = (segment === "conteneurise" ? A.topClientsConteneurise : A.topClientsConventionnel) || [];
+  const topPaysOrigine = (segment === "conteneurise" ? A.topPaysOrigineConteneurise : A.topPaysOrigineConventionnel) || [];
+  const topPaysDest = (segment === "conteneurise" ? A.topPaysDestConteneurise : A.topPaysDestConventionnel) || [];
+  const topTransitaires = (segment === "conteneurise" ? A.topTransitairesConteneurise : A.topTransitairesConventionnel) || [];
   // Recalcul pareto pour le segment selon la metrique primaire
   const primaryKey = segment === "conteneurise" ? "teu" : "weight";
   const totalPrim = topClients.reduce((s, c) => s + (c[primaryKey] || 0), 0);
@@ -4944,6 +4947,32 @@ function getSegmentView(A, segment) {
     cum += (c[primaryKey] || 0);
     return { ...c, cumPct: totalPrim > 0 ? cum / totalPrim * 100 : 0 };
   });
+  // ========= YoY segmente =========
+  // On filtre les listes top* du yoy global pour ne garder que les entites presentes
+  // dans la version segmentee (par nom). Plus les indicateurs globaux remplaces par
+  // ceux du segment quand disponibles via A.yoy.segments.
+  let segYoy = null;
+  if (A.yoy) {
+    const segClientNames = new Set(topClients.map(c => c.key));
+    const segPaysOrigineNames = new Set(topPaysOrigine.map(p => p.key));
+    const segPaysDestNames = new Set(topPaysDest.map(p => p.key));
+    const segTransitNames = new Set(topTransitaires.map(t => t.key));
+    const ySeg = A.yoy.segments ? A.yoy.segments[segment] : null;
+    segYoy = {
+      ...A.yoy,
+      // Indicateurs globaux remplaces par valeurs du segment (si dispo)
+      bl: ySeg && ySeg.bl ? ySeg.bl : A.yoy.bl,
+      teu: ySeg && ySeg.teu ? ySeg.teu : (segment === "conventionnel" ? null : A.yoy.teu),
+      weight: ySeg && ySeg.weight ? ySeg.weight : A.yoy.weight,
+      // top* filtres par nom
+      topClients: (A.yoy.topClients || []).filter(c => segClientNames.has(c.key)),
+      topPaysOrigine: (A.yoy.topPaysOrigine || []).filter(p => segPaysOrigineNames.has(p.key)),
+      topPaysDest: (A.yoy.topPaysDest || []).filter(p => segPaysDestNames.has(p.key)),
+      topTransitaires: (A.yoy.topTransitaires || []).filter(t => segTransitNames.has(t.key)),
+      // topMarchandises : filtre par codes de conditionnement non disponible — on garde la liste mais en flag segmente
+      _segmented: true
+    };
+  }
   return {
     ...A,
     nbBL: seg.bl,
@@ -4951,10 +4980,11 @@ function getSegmentView(A, segment) {
     totalWeight: seg.weight,
     topClients,
     paretoClients,
-    topPaysOrigine: (segment === "conteneurise" ? A.topPaysOrigineConteneurise : A.topPaysOrigineConventionnel) || [],
-    topPaysDest: (segment === "conteneurise" ? A.topPaysDestConteneurise : A.topPaysDestConventionnel) || [],
-    topTransitaires: (segment === "conteneurise" ? A.topTransitairesConteneurise : A.topTransitairesConventionnel) || [],
+    topPaysOrigine,
+    topPaysDest,
+    topTransitaires,
     aglTransit: segment === "conteneurise" ? A.aglTransitConteneurise : A.aglTransitConventionnel,
+    yoy: segYoy,
     _segmentLabel: segment === "conteneurise" ? "Conteneurisé" : "Conventionnel",
     _segmentIcon: segment === "conteneurise" ? "📦" : "⚓"
   };
@@ -5014,31 +5044,31 @@ function MetierPreviewContent({ A, hideHeader, contextLabel }) {
       <ExecutiveSummary A={Av} schema={schema} />
 
       {/* ============ COMPARAISON N vs N-1 ============ */}
-      {A.yoy && (
+      {Av.yoy && (
         <div className="mt-6">
           <div className="section-h" style={{display:"flex", alignItems:"center", gap:8, borderBottom:"2px solid #0a2540"}}>
             <span style={{background:"#0a2540", color:"#c9a14a", padding:"3px 10px", borderRadius:6, fontSize:11, fontWeight:700}}>YoY</span>
-            Comparaison {A.yoy.curYear} vs {A.yoy.prevYear}
+            Comparaison {Av.yoy.curYear} vs {Av.yoy.prevYear}
           </div>
 
           {/* Tableau global */}
           <div className="text-xs font-semibold navy-text mb-1 mt-3">Synthèse globale</div>
           <table className="report-table mb-3">
-            <thead><tr><th>Indicateur</th><th>{A.yoy.prevYear}</th><th>{A.yoy.curYear}</th><th>Δ Valeur</th><th>Δ %</th></tr></thead>
+            <thead><tr><th>Indicateur</th><th>{Av.yoy.prevYear}</th><th>{Av.yoy.curYear}</th><th>Δ Valeur</th><th>Δ %</th></tr></thead>
             <tbody>
               {(() => {
                 const evolColor = (v) => v === null || isNaN(v) ? "#64748b" : (v >= 0 ? "#16a34a" : "#dc2626");
                 const evolFmt = (v) => v === null || isNaN(v) ? "—" : (v >= 0 ? "+" : "") + fmt(v, 1) + " %";
                 const deltaFmt = (d, dec=0) => (d >= 0 ? "+" : "") + fmt(d, dec);
                 const rows = [
-                  { lbl: `${blLabel} qualifiés`, d: A.yoy.bl, dec: 0 },
-                  ...(A.yoy.teu ? [{ lbl: "TEU", d: A.yoy.teu, dec: 0 }] : []),
-                  { lbl: "Tonnage (kg)", d: A.yoy.weight, dec: 0 },
-                  { lbl: `${schema.clientLabel}s uniques`, d: A.yoy.clients, dec: 0 },
-                  { lbl: "Transitaires actifs", d: A.yoy.transitaires, dec: 0 },
-                  { lbl: schema.type==="maritime" ? "Armateurs actifs" : "Compagnies actives", d: A.yoy.armateurs, dec: 0 },
-                  ...(A.yoy.paysOrigine ? [{ lbl: "Pays d'origine", d: A.yoy.paysOrigine, dec: 0 }] : []),
-                  { lbl: "Marchandises distinctes", d: A.yoy.marchandises, dec: 0 }
+                  { lbl: `${blLabel} qualifiés`, d: Av.yoy.bl, dec: 0 },
+                  ...(Av.yoy.teu ? [{ lbl: "TEU", d: Av.yoy.teu, dec: 0 }] : []),
+                  { lbl: "Tonnage (kg)", d: Av.yoy.weight, dec: 0 },
+                  { lbl: `${schema.clientLabel}s uniques`, d: Av.yoy.clients, dec: 0 },
+                  { lbl: "Transitaires actifs", d: Av.yoy.transitaires, dec: 0 },
+                  { lbl: schema.type==="maritime" ? "Armateurs actifs" : "Compagnies actives", d: Av.yoy.armateurs, dec: 0 },
+                  ...(Av.yoy.paysOrigine ? [{ lbl: "Pays d'origine", d: Av.yoy.paysOrigine, dec: 0 }] : []),
+                  { lbl: "Marchandises distinctes", d: Av.yoy.marchandises, dec: 0 }
                 ];
                 return rows.map((r, i) => (
                   <tr key={i}>
@@ -5054,22 +5084,22 @@ function MetierPreviewContent({ A, hideHeader, contextLabel }) {
           </table>
 
           {/* YoY par segment */}
-          {A.yoy.segments && (
+          {Av.yoy.segments && (
             <>
               <div className="text-xs font-semibold navy-text mb-1 mt-3">Évolution par segment marchandises</div>
               <table className="report-table mb-3">
-                <thead><tr><th>Segment</th><th>Indicateur</th><th>{A.yoy.prevYear}</th><th>{A.yoy.curYear}</th><th>Δ %</th></tr></thead>
+                <thead><tr><th>Segment</th><th>Indicateur</th><th>{Av.yoy.prevYear}</th><th>{Av.yoy.curYear}</th><th>Δ %</th></tr></thead>
                 <tbody>
                   {(() => {
                     const evolColor = (v) => v === null || isNaN(v) ? "#64748b" : (v >= 0 ? "#16a34a" : "#dc2626");
                     const evolFmt = (v) => v === null || isNaN(v) ? "—" : (v >= 0 ? "+" : "") + fmt(v, 1) + " %";
                     const out = [];
-                    out.push(<tr key="c-bl" style={{background:"#eff6ff"}}><td rowSpan={schema.teuField?3:2}><strong style={{color:"#1e3a8a"}}>📦 Conteneurisé</strong></td><td>{blLabel}</td><td>{fmt(A.yoy.segments.conteneurise.bl.prev)}</td><td>{fmt(A.yoy.segments.conteneurise.bl.cur)}</td><td style={{color:evolColor(A.yoy.segments.conteneurise.bl.deltaPct), fontWeight:600}}>{evolFmt(A.yoy.segments.conteneurise.bl.deltaPct)}</td></tr>);
-                    if (schema.teuField) out.push(<tr key="c-teu" style={{background:"#eff6ff"}}><td>TEU</td><td>{fmt(A.yoy.segments.conteneurise.teu.prev)}</td><td>{fmt(A.yoy.segments.conteneurise.teu.cur)}</td><td style={{color:evolColor(A.yoy.segments.conteneurise.teu.deltaPct), fontWeight:600}}>{evolFmt(A.yoy.segments.conteneurise.teu.deltaPct)}</td></tr>);
-                    out.push(<tr key="c-w" style={{background:"#eff6ff"}}><td>Tonnes (kg)</td><td>{fmt(A.yoy.segments.conteneurise.weight.prev,0)}</td><td>{fmt(A.yoy.segments.conteneurise.weight.cur,0)}</td><td style={{color:evolColor(A.yoy.segments.conteneurise.weight.deltaPct), fontWeight:600}}>{evolFmt(A.yoy.segments.conteneurise.weight.deltaPct)}</td></tr>);
-                    out.push(<tr key="v-bl" style={{background:"#fff7ed"}}><td rowSpan={schema.teuField?3:2}><strong style={{color:"#9a3412"}}>⚓ Conventionnel</strong></td><td>{blLabel}</td><td>{fmt(A.yoy.segments.conventionnel.bl.prev)}</td><td>{fmt(A.yoy.segments.conventionnel.bl.cur)}</td><td style={{color:evolColor(A.yoy.segments.conventionnel.bl.deltaPct), fontWeight:600}}>{evolFmt(A.yoy.segments.conventionnel.bl.deltaPct)}</td></tr>);
-                    if (schema.teuField) out.push(<tr key="v-teu" style={{background:"#fff7ed"}}><td>TEU</td><td>{fmt(A.yoy.segments.conventionnel.teu.prev)}</td><td>{fmt(A.yoy.segments.conventionnel.teu.cur)}</td><td style={{color:evolColor(A.yoy.segments.conventionnel.teu.deltaPct), fontWeight:600}}>{evolFmt(A.yoy.segments.conventionnel.teu.deltaPct)}</td></tr>);
-                    out.push(<tr key="v-w" style={{background:"#fff7ed"}}><td>Tonnes (kg)</td><td>{fmt(A.yoy.segments.conventionnel.weight.prev,0)}</td><td>{fmt(A.yoy.segments.conventionnel.weight.cur,0)}</td><td style={{color:evolColor(A.yoy.segments.conventionnel.weight.deltaPct), fontWeight:600}}>{evolFmt(A.yoy.segments.conventionnel.weight.deltaPct)}</td></tr>);
+                    out.push(<tr key="c-bl" style={{background:"#eff6ff"}}><td rowSpan={schema.teuField?3:2}><strong style={{color:"#1e3a8a"}}>📦 Conteneurisé</strong></td><td>{blLabel}</td><td>{fmt(Av.yoy.segments.conteneurise.bl.prev)}</td><td>{fmt(Av.yoy.segments.conteneurise.bl.cur)}</td><td style={{color:evolColor(Av.yoy.segments.conteneurise.bl.deltaPct), fontWeight:600}}>{evolFmt(Av.yoy.segments.conteneurise.bl.deltaPct)}</td></tr>);
+                    if (schema.teuField) out.push(<tr key="c-teu" style={{background:"#eff6ff"}}><td>TEU</td><td>{fmt(Av.yoy.segments.conteneurise.teu.prev)}</td><td>{fmt(Av.yoy.segments.conteneurise.teu.cur)}</td><td style={{color:evolColor(Av.yoy.segments.conteneurise.teu.deltaPct), fontWeight:600}}>{evolFmt(Av.yoy.segments.conteneurise.teu.deltaPct)}</td></tr>);
+                    out.push(<tr key="c-w" style={{background:"#eff6ff"}}><td>Tonnes (kg)</td><td>{fmt(Av.yoy.segments.conteneurise.weight.prev,0)}</td><td>{fmt(Av.yoy.segments.conteneurise.weight.cur,0)}</td><td style={{color:evolColor(Av.yoy.segments.conteneurise.weight.deltaPct), fontWeight:600}}>{evolFmt(Av.yoy.segments.conteneurise.weight.deltaPct)}</td></tr>);
+                    out.push(<tr key="v-bl" style={{background:"#fff7ed"}}><td rowSpan={schema.teuField?3:2}><strong style={{color:"#9a3412"}}>⚓ Conventionnel</strong></td><td>{blLabel}</td><td>{fmt(Av.yoy.segments.conventionnel.bl.prev)}</td><td>{fmt(Av.yoy.segments.conventionnel.bl.cur)}</td><td style={{color:evolColor(Av.yoy.segments.conventionnel.bl.deltaPct), fontWeight:600}}>{evolFmt(Av.yoy.segments.conventionnel.bl.deltaPct)}</td></tr>);
+                    if (schema.teuField) out.push(<tr key="v-teu" style={{background:"#fff7ed"}}><td>TEU</td><td>{fmt(Av.yoy.segments.conventionnel.teu.prev)}</td><td>{fmt(Av.yoy.segments.conventionnel.teu.cur)}</td><td style={{color:evolColor(Av.yoy.segments.conventionnel.teu.deltaPct), fontWeight:600}}>{evolFmt(Av.yoy.segments.conventionnel.teu.deltaPct)}</td></tr>);
+                    out.push(<tr key="v-w" style={{background:"#fff7ed"}}><td>Tonnes (kg)</td><td>{fmt(Av.yoy.segments.conventionnel.weight.prev,0)}</td><td>{fmt(Av.yoy.segments.conventionnel.weight.cur,0)}</td><td style={{color:evolColor(Av.yoy.segments.conventionnel.weight.deltaPct), fontWeight:600}}>{evolFmt(Av.yoy.segments.conventionnel.weight.deltaPct)}</td></tr>);
                     return out;
                   })()}
                 </tbody>
@@ -5078,12 +5108,12 @@ function MetierPreviewContent({ A, hideHeader, contextLabel }) {
           )}
 
           {/* Top clients YoY */}
-          {A.yoy.topClients.length > 0 && (
+          {Av.yoy.topClients.length > 0 && (
             <>
               <div className="text-xs font-semibold navy-text mb-1 mt-3">Top {schema.clientLabel}s — Évolution</div>
               <table className="report-table mb-3">
-                <thead><tr><th>#</th><th>{schema.clientLabel}</th><th>{A.yoy.prevYear}</th><th>{A.yoy.curYear}</th><th>Δ %</th></tr></thead>
-                <tbody>{A.yoy.topClients.slice(0,10).map((c, i) => {
+                <thead><tr><th>#</th><th>{schema.clientLabel}</th><th>{Av.yoy.prevYear}</th><th>{Av.yoy.curYear}</th><th>Δ %</th></tr></thead>
+                <tbody>{Av.yoy.topClients.slice(0,10).map((c, i) => {
                   const evolColor = c.deltaPct === null || isNaN(c.deltaPct) ? "#7c3aed" : (c.deltaPct >= 0 ? "#16a34a" : "#dc2626");
                   const evolTxt = c.deltaPct === null || isNaN(c.deltaPct) ? "NEW" : (c.deltaPct >= 0 ? "+" : "") + fmt(c.deltaPct,1) + " %";
                   return (<tr key={i}>
@@ -5098,12 +5128,12 @@ function MetierPreviewContent({ A, hideHeader, contextLabel }) {
           )}
 
           {/* Gagnants / Perdants */}
-          {(A.yoy.gagnantsPct.length > 0 || A.yoy.perdantsPct.length > 0) && (
+          {(Av.yoy.gagnantsPct.length > 0 || Av.yoy.perdantsPct.length > 0) && (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3 mt-3">
-              {A.yoy.gagnantsPct.length > 0 && (
+              {Av.yoy.gagnantsPct.length > 0 && (
                 <div style={{background:"#f0fdf4", borderLeft:"4px solid #16a34a", padding:"10px 12px", borderRadius:6}}>
                   <div style={{fontSize:12, fontWeight:700, color:"#15803d", marginBottom:6}}>🚀 Top 5 gagnants (Δ % {schema.teuField?"TEU":"Tonnes"})</div>
-                  {A.yoy.gagnantsPct.map((c,i) => (
+                  {Av.yoy.gagnantsPct.map((c,i) => (
                     <div key={i} style={{fontSize:12, padding:"3px 0", display:"flex", justifyContent:"space-between"}}>
                       <span>{c.key.substring(0,40)}</span>
                       <strong style={{color:"#16a34a"}}>+{fmt(c.deltaPct,1)} %</strong>
@@ -5111,10 +5141,10 @@ function MetierPreviewContent({ A, hideHeader, contextLabel }) {
                   ))}
                 </div>
               )}
-              {A.yoy.perdantsPct.length > 0 && (
+              {Av.yoy.perdantsPct.length > 0 && (
                 <div style={{background:"#fef2f2", borderLeft:"4px solid #dc2626", padding:"10px 12px", borderRadius:6}}>
                   <div style={{fontSize:12, fontWeight:700, color:"#991b1b", marginBottom:6}}>📉 Top 5 perdants (Δ % {schema.teuField?"TEU":"Tonnes"})</div>
-                  {A.yoy.perdantsPct.map((c,i) => (
+                  {Av.yoy.perdantsPct.map((c,i) => (
                     <div key={i} style={{fontSize:12, padding:"3px 0", display:"flex", justifyContent:"space-between"}}>
                       <span>{c.key.substring(0,40)}</span>
                       <strong style={{color:"#dc2626"}}>{fmt(c.deltaPct,1)} %</strong>
@@ -5126,12 +5156,12 @@ function MetierPreviewContent({ A, hideHeader, contextLabel }) {
           )}
 
           {/* Top pays origine YoY */}
-          {A.yoy.topPaysOrigine.length > 0 && (
+          {Av.yoy.topPaysOrigine.length > 0 && (
             <>
               <div className="text-xs font-semibold navy-text mb-1 mt-3">Top pays d'origine — Évolution (en {blLabel})</div>
               <table className="report-table mb-3">
-                <thead><tr><th>#</th><th>Pays</th><th>{A.yoy.prevYear}</th><th>{A.yoy.curYear}</th><th>Δ %</th></tr></thead>
-                <tbody>{A.yoy.topPaysOrigine.slice(0,10).map((c, i) => {
+                <thead><tr><th>#</th><th>Pays</th><th>{Av.yoy.prevYear}</th><th>{Av.yoy.curYear}</th><th>Δ %</th></tr></thead>
+                <tbody>{Av.yoy.topPaysOrigine.slice(0,10).map((c, i) => {
                   const evolColor = c.deltaPct === null || isNaN(c.deltaPct) ? "#7c3aed" : (c.deltaPct >= 0 ? "#16a34a" : "#dc2626");
                   const evolTxt = c.deltaPct === null || isNaN(c.deltaPct) ? "NEW" : (c.deltaPct >= 0 ? "+" : "") + fmt(c.deltaPct,1) + " %";
                   return (<tr key={i}>
@@ -5145,12 +5175,12 @@ function MetierPreviewContent({ A, hideHeader, contextLabel }) {
           )}
 
           {/* Top marchandises YoY */}
-          {A.yoy.topMarchandises.length > 0 && (
+          {Av.yoy.topMarchandises.length > 0 && (
             <>
               <div className="text-xs font-semibold navy-text mb-1 mt-3">Top marchandises — Évolution (en {schema.teuField?"TEU":"Tonnes"})</div>
               <table className="report-table mb-3">
-                <thead><tr><th>#</th><th>Marchandise</th><th>{A.yoy.prevYear}</th><th>{A.yoy.curYear}</th><th>Δ %</th></tr></thead>
-                <tbody>{A.yoy.topMarchandises.slice(0,10).map((c, i) => {
+                <thead><tr><th>#</th><th>Marchandise</th><th>{Av.yoy.prevYear}</th><th>{Av.yoy.curYear}</th><th>Δ %</th></tr></thead>
+                <tbody>{Av.yoy.topMarchandises.slice(0,10).map((c, i) => {
                   const evolColor = c.deltaPct === null || isNaN(c.deltaPct) ? "#7c3aed" : (c.deltaPct >= 0 ? "#16a34a" : "#dc2626");
                   const evolTxt = c.deltaPct === null || isNaN(c.deltaPct) ? "NEW" : (c.deltaPct >= 0 ? "+" : "") + fmt(c.deltaPct,1) + " %";
                   return (<tr key={i}>
@@ -5165,12 +5195,12 @@ function MetierPreviewContent({ A, hideHeader, contextLabel }) {
           )}
 
           {/* Top transitaires YoY (avec AGL surligné) */}
-          {A.yoy.topTransitaires.length > 0 && (
+          {Av.yoy.topTransitaires.length > 0 && (
             <>
               <div className="text-xs font-semibold navy-text mb-1 mt-3">Top transitaires — Évolution (en {schema.teuField?"TEU":"Tonnes"})</div>
               <table className="report-table mb-3">
-                <thead><tr><th>#</th><th>Transitaire</th><th>{A.yoy.prevYear}</th><th>{A.yoy.curYear}</th><th>Δ %</th></tr></thead>
-                <tbody>{A.yoy.topTransitaires.slice(0,10).map((c, i) => {
+                <thead><tr><th>#</th><th>Transitaire</th><th>{Av.yoy.prevYear}</th><th>{Av.yoy.curYear}</th><th>Δ %</th></tr></thead>
+                <tbody>{Av.yoy.topTransitaires.slice(0,10).map((c, i) => {
                   const evolColor = c.deltaPct === null || isNaN(c.deltaPct) ? "#7c3aed" : (c.deltaPct >= 0 ? "#16a34a" : "#dc2626");
                   const evolTxt = c.deltaPct === null || isNaN(c.deltaPct) ? "NEW" : (c.deltaPct >= 0 ? "+" : "") + fmt(c.deltaPct,1) + " %";
                   const upper = (c.key || "").toUpperCase();
@@ -5284,7 +5314,7 @@ function MetierPreviewContent({ A, hideHeader, contextLabel }) {
           if (evolV >= 30) {
             insights.push(`**Trajectoire d'accélération** : croissance volume AGL de ${evolV >= 0 ? "+" : ""}${fmt(evolV, 1)} % entre ${a.evol.prevYear} et ${a.evol.year}. Inflexion à pérenniser — vérifier la robustesse du pipeline commercial 2026.`);
           } else if (evolV >= 10) {
-            insights.push(`**Croissance saine** : volume AGL en progression de +${fmt(evolV, 1)} % vs ${a.evol.prevYear}. Trajectoire alignée avec la dynamique de marché global (${A.yoy && (schema.teuField ? A.yoy.teu : A.yoy.weight) ? `${fmt((schema.teuField ? A.yoy.teu.deltaPct : A.yoy.weight.deltaPct) || 0, 1)} %` : "à vérifier"}).`);
+            insights.push(`**Croissance saine** : volume AGL en progression de +${fmt(evolV, 1)} % vs ${a.evol.prevYear}. Trajectoire alignée avec la dynamique de marché global (${Av.yoy && (schema.teuField ? Av.yoy.teu : Av.yoy.weight) ? `${fmt((schema.teuField ? Av.yoy.teu.deltaPct : Av.yoy.weight.deltaPct) || 0, 1)} %` : "à vérifier"}).`);
           } else if (evolV >= 0) {
             insights.push(`**Trajectoire stable** : croissance volume AGL de +${fmt(evolV, 1)} % vs ${a.evol.prevYear}. Performance modeste — diagnostic recommandé sur la trajectoire commerciale.`);
           } else {
@@ -5528,16 +5558,16 @@ function MetierPreviewContent({ A, hideHeader, contextLabel }) {
         <table className="report-table"><thead><tr>
           <th>#</th><th>Transitaire</th><th>Nb {blLabel}</th>
           {schema.teuField && <th>TEU</th>}<th>% marché</th>
-          {A.yoy && <th>{A.yoy.prevYear}</th>}
-          {A.yoy && <th>{A.yoy.curYear}</th>}
-          {A.yoy && <th>Δ YoY</th>}
+          {Av.yoy && <th>{Av.yoy.prevYear}</th>}
+          {Av.yoy && <th>{Av.yoy.curYear}</th>}
+          {Av.yoy && <th>Δ YoY</th>}
         </tr></thead>
           <tbody>{Av.topTransitaires.slice(0, 10).map((x, i) => {
             const metric = schema.teuField ? x.teu : x.weight;
             const upper = (x.key || "").toUpperCase();
             const isAGLrow = upper.includes("AFRICA GLOBAL LOGISTICS") || upper.includes("BOLLORÉ") || upper.includes("BOLLORE");
             // Récup YoY par clé exacte
-            const yoyEntry = A.yoy?.topTransitaires?.find(t => t.key === x.key);
+            const yoyEntry = Av.yoy?.topTransitaires?.find(t => t.key === x.key);
             const evol = yoyEntry?.deltaPct;
             const evolColor = evol === null || evol === undefined || isNaN(evol) ? "#7c3aed" : (evol >= 0 ? "#16a34a" : "#dc2626");
             const evolTxt = evol === null || evol === undefined || isNaN(evol) ? (yoyEntry?.prevMetric === 0 ? "NEW" : "—") : (evol >= 0 ? "+" : "") + fmt(evol,1) + " %";
@@ -5547,9 +5577,9 @@ function MetierPreviewContent({ A, hideHeader, contextLabel }) {
               <td>{fmt(x.bl)}</td>
               {schema.teuField && <td>{fmt(x.teu)}</td>}
               <td>{pct(metric, totalMet)}</td>
-              {A.yoy && <td>{yoyEntry ? fmt(yoyEntry.prevMetric, 0) : "—"}</td>}
-              {A.yoy && <td>{yoyEntry ? fmt(yoyEntry.curMetric, 0) : "—"}</td>}
-              {A.yoy && <td style={{fontWeight:600, color: evolColor}}>{evolTxt}</td>}
+              {Av.yoy && <td>{yoyEntry ? fmt(yoyEntry.prevMetric, 0) : "—"}</td>}
+              {Av.yoy && <td>{yoyEntry ? fmt(yoyEntry.curMetric, 0) : "—"}</td>}
+              {Av.yoy && <td style={{fontWeight:600, color: evolColor}}>{evolTxt}</td>}
             </tr>);
           })}</tbody>
         </table>
@@ -5730,6 +5760,7 @@ async function idbDeleteMetier(metierKey) {
 function App() {
   // metiers[metierKey] = { files: [{fileId, fileName, rows, yearsInFile, rowCount}], rows: concat, analysis, index, filters, loading, error, progress }
   const [metiers, setMetiers] = useState(() => Object.fromEntries(METIER_KEYS.map(k => [k, null])));
+  const metiersRef = useRef({}); // miroir de metiers pour acces synchrone dans les boucles async
   const [activeMetier, setActiveMetier] = useState(null);
   const [mode, setMode] = useState("multi");
   const [selectedForReport, setSelectedForReport] = useState(new Set(METIER_KEYS));
@@ -6026,11 +6057,15 @@ function App() {
     return Array.from(set).sort();
   }, [metiers]);
 
-  // ----- Quand le filtre années OU les exclusions changent : flag loading + recompute asynchrone -----
+  // ----- Sync metiersRef avec metiers state -----
+  useEffect(() => { metiersRef.current = metiers; }, [metiers]);
+
+  // ----- Filtre annees / exclusions : recompute UN METIER A LA FOIS avec yield pour ne pas bloquer le main thread -----
   const yearFilterDebounceRef = useRef(null);
   const yearFilterIsInitial = useRef(true);
   useEffect(() => {
     if (yearFilterIsInitial.current) { yearFilterIsInitial.current = false; return; }
+    // Flag loading immediat
     setMetiers(prev => {
       const next = { ...prev };
       for (const k of METIER_KEYS) {
@@ -6042,21 +6077,24 @@ function App() {
       return next;
     });
     if (yearFilterDebounceRef.current) clearTimeout(yearFilterDebounceRef.current);
-    yearFilterDebounceRef.current = setTimeout(() => {
-      requestAnimationFrame(() => setTimeout(() => {
-        setMetiers(prev => {
-          const next = { ...prev };
-          for (const k of METIER_KEYS) {
-            const cur = next[k];
-            if (cur && cur.files && cur.files.length > 0) {
-              const { rows, analysis, index } = recomputeFromFiles(k, cur.files, yearFilter, exclusions);
-              next[k] = { ...cur, rows, analysis, index, loading: false, progress: null };
-            }
-          }
-          return next;
-        });
-      }, 0));
-    }, 300);
+    yearFilterDebounceRef.current = setTimeout(async () => {
+      // Recompute un metier a la fois avec yield au browser entre chaque
+      for (const k of METIER_KEYS) {
+        const cur = metiersRef.current[k];
+        if (!cur || !cur.files || cur.files.length === 0) continue;
+        // Yield au browser (laisse rendre le loading state)
+        await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
+        try {
+          const { rows, analysis, index } = recomputeFromFiles(k, cur.files, yearFilter, exclusions);
+          setMetiers(prev => ({ ...prev, [k]: { ...prev[k], rows, analysis, index, loading: false, progress: null, error: null } }));
+        } catch (err) {
+          console.error("Recompute failed for", k, err);
+          setMetiers(prev => ({ ...prev, [k]: { ...prev[k], loading: false, progress: null, error: err.message || "Erreur recompute" } }));
+        }
+        // Petit delai apres chaque metier pour que le browser puisse respirer / repondre aux events
+        await new Promise(r => setTimeout(r, 15));
+      }
+    }, 250);
   }, [yearFilter, exclusions, recomputeFromFiles]);
 
   // ----- Mémorisation manuelle (sauvegarde tous les fichiers actuels) -----
@@ -6101,9 +6139,15 @@ function App() {
     try {
       const data = await idbLoadAll();
       let restoredFiles = 0;
+      // Restauration UN METIER A LA FOIS avec yield pour ne pas bloquer
       for (const k of METIER_KEYS) {
         const arr = data[k];
-        if (Array.isArray(arr) && arr.length > 0) {
+        if (!Array.isArray(arr) || arr.length === 0) continue;
+        // Signal de progression
+        setGlobalMsg({ type:"info", text:`Restauration : ${METIER_SCHEMAS[k].label}…` });
+        // Yield au browser pour que le message s affiche
+        await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
+        try {
           // Reconstruit rawFilesRef et files
           rawFilesRef.current[k] = arr.map(e => ({ fileId: e.fileId, rows: e.rows }));
           const filesList = arr.map(e => ({ fileId: e.fileId, fileName: e.fileName, rowCount: (e.rows || []).length, yearsInFile: e.yearsInFile || [] }));
@@ -6111,7 +6155,12 @@ function App() {
           setMetiers(prev => ({ ...prev, [k]: { files: filesList, rows, analysis, index, filters: {}, loading: false, error: null } }));
           setSelectedForReport(prev => { const s = new Set(prev); s.add(k); return s; });
           restoredFiles += arr.length;
+        } catch (err) {
+          console.error("Restore failed for", k, err);
+          setMetiers(prev => ({ ...prev, [k]: { ...prev[k], loading: false, error: err.message || "Erreur restauration" } }));
         }
+        // Yield apres chaque metier pour laisser browser respirer
+        await new Promise(r => setTimeout(r, 20));
       }
       if (data.__meta?.savedAt) setMemLastSave(data.__meta.savedAt);
       if (restoredFiles > 0) {
@@ -6127,7 +6176,7 @@ function App() {
       setGlobalMsg({ type:"error", text:`✗ ${e.message}` });
       setTimeout(()=>setGlobalMsg(null), 6000);
     } finally { setMemSaving(false); }
-  }, [activeMetier, yearFilter, recomputeFromFiles]);
+  }, [activeMetier, yearFilter, exclusions, recomputeFromFiles]);
 
   const clearMemory = useCallback(async () => {
     if (!confirm("Effacer définitivement toutes les données mémorisées ?")) return;
