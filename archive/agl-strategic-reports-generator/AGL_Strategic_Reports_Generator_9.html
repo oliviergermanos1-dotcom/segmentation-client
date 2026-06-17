@@ -3178,7 +3178,15 @@ function StrategicMap({ title, subtitle, points, xUnit, height = 460, entityLabe
               <div>Croissance volume <strong>total</strong> client : <strong>{valid[hovered].totalEvol >= 0 ? "+" : ""}{fmt(valid[hovered].totalEvol, 1)} %</strong></div>
             )}
             {valid[hovered].pdm !== undefined && valid[hovered].pdm !== null && (
-              <div>PDM AGL : <strong>{fmt(valid[hovered].pdm, 1)} %</strong></div>
+              <div style={{marginTop:4, paddingTop:4, borderTop:"1px solid rgba(255,255,255,0.15)"}}>
+                <div style={{fontSize:10, opacity:0.7, textTransform:"uppercase", letterSpacing:0.5}}>PDM AGL</div>
+                <div>N-1 : <strong>{valid[hovered].pdmPrev === null || valid[hovered].pdmPrev === undefined ? "—" : fmt(valid[hovered].pdmPrev, 1) + " %"}</strong></div>
+                <div>N : <strong>{fmt(valid[hovered].pdm, 1)} %</strong>
+                  {valid[hovered].pdmDelta !== null && valid[hovered].pdmDelta !== undefined && (
+                    <span style={{marginLeft:6, fontSize:11, opacity:0.85}}>({valid[hovered].pdmDelta >= 0 ? "+" : ""}{fmt(valid[hovered].pdmDelta, 1)} pp)</span>
+                  )}
+                </div>
+              </div>
             )}
             {valid[hovered].mainComp && (
               <div style={{marginTop:6, paddingTop:6, borderTop:"1px solid rgba(255,255,255,0.2)"}}>
@@ -3294,6 +3302,8 @@ function StrategicTab({ analyses, mode }) {
             name, x, y,
             totalEvol: totEvol,
             pdm: info.pdmCur !== undefined && info.pdmCur !== null ? info.pdmCur : info.pdmAll,
+            pdmPrev: info.pdmPrev,
+            pdmDelta: info.pdmDelta,
             mainComp: compMap.get(name) || null
           });
         }
@@ -3365,6 +3375,8 @@ function StrategicTab({ analyses, mode }) {
     if (isAGL) {
       pt.totalEvol = c.totalPrev > 0 ? ((c.totalCur - c.totalPrev) / c.totalPrev * 100) : null;
       pt.pdm = c.totalCur > 0 ? (c.tonsCur / c.totalCur * 100) : null;
+      pt.pdmPrev = c.totalPrev > 0 ? (c.tonsPrev / c.totalPrev * 100) : null;
+      pt.pdmDelta = (pt.pdm !== null && pt.pdmPrev !== null) ? (pt.pdm - pt.pdmPrev) : null;
       // Principal concurrent global = top transitaire dans compTotals
       if (c.compTotals && c.compTotals.size > 0) {
         let best = null, bestW = 0, total = 0;
