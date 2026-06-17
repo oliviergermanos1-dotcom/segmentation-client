@@ -5833,21 +5833,36 @@ function App() {
   const metiersRef = useRef({}); // miroir de metiers pour acces synchrone dans les boucles async
   const [activeMetier, setActiveMetier] = useState(null);
   const [mode, setMode] = useState("multi");
-  const [selectedForReport, setSelectedForReport] = useState(new Set(METIER_KEYS));
-  const [reportTitle, setReportTitle] = useState("Analyse des flux STATCOM");
-  const [reportSubtitle, setReportSubtitle] = useState(`Périmètre Janvier — Mars 2025/2026 · Source STATCOM`);
+  const [selectedForReport, setSelectedForReport] = useState(() => {
+    const emb = typeof window !== "undefined" && window.__AGL_EMBED__;
+    if (emb && Array.isArray(emb.selectedForReport)) return new Set(emb.selectedForReport);
+    return new Set(METIER_KEYS);
+  });
+  const [reportTitle, setReportTitle] = useState(() => (typeof window !== "undefined" && window.__AGL_EMBED__ && window.__AGL_EMBED__.reportTitle) || "Analyse des flux STATCOM");
+  const [reportSubtitle, setReportSubtitle] = useState(() => (typeof window !== "undefined" && window.__AGL_EMBED__ && window.__AGL_EMBED__.reportSubtitle) || `Périmètre Janvier — Mars 2025/2026 · Source STATCOM`);
   const [generating, setGenerating] = useState(null);
   const [globalMsg, setGlobalMsg] = useState(null);
-  const [activeView, setActiveView] = useState("config");
+  const [activeView, setActiveView] = useState(() => (typeof window !== "undefined" && window.__AGL_EMBED__) ? "preview" : "config");
   // Mémoire / persistance
   const [memSaving, setMemSaving] = useState(false);
   const [memLastSave, setMemLastSave] = useState(null);
   const [memAvailable, setMemAvailable] = useState({}); // {metierKey: [{fileId,fileName,nbRows,savedAt,yearsInFile}]}
   const [autoSave, setAutoSave] = useState(true);
   // Filtre années globaux (cases à cocher)
-  const [yearFilter, setYearFilter] = useState(new Set()); // Set des années sélectionnées; vide = TOUTES
-  const [exclusions, setExclusions] = useState({ nonApure: false, petroleBrut: false, petroleRaffine: false }); // exclusions globales sur les BL
-  const [monthCutoff, setMonthCutoff] = useState(0); // 0 = aucun filtre, 1-12 = inclure mois <= cutoff (YTD comparable cross-annees)
+  const [yearFilter, setYearFilter] = useState(() => {
+    const emb = typeof window !== "undefined" && window.__AGL_EMBED__;
+    if (emb && Array.isArray(emb.yearFilter)) return new Set(emb.yearFilter);
+    return new Set();
+  });
+  const [exclusions, setExclusions] = useState(() => {
+    const emb = typeof window !== "undefined" && window.__AGL_EMBED__;
+    if (emb && emb.exclusions) return { ...{ nonApure:false, petroleBrut:false, petroleRaffine:false }, ...emb.exclusions };
+    return { nonApure: false, petroleBrut: false, petroleRaffine: false };
+  });
+  const [monthCutoff, setMonthCutoff] = useState(() => {
+    const emb = typeof window !== "undefined" && window.__AGL_EMBED__;
+    return (emb && typeof emb.monthCutoff === "number") ? emb.monthCutoff : 0;
+  });
   // Storage hors-state pour les rows brutes par fichier
   const rawFilesRef = useRef({}); // { metierKey: [{fileId, rows}, ...] }
 
@@ -5979,6 +5994,49 @@ function App() {
     const index = buildIndex(allRows, schema);
     return { rows: allRows, analysis, index };
   }, []);
+
+  // ----- Hydratation depuis un HTML autoporteur (window.__AGL_EMBED__) -----
+  // Au montage, si l app a ete ouverte via un HTML expose, on recupere les rows
+  // embarques, on reconstruit rawFilesRef + metiers, et on atterit directement
+  // dans la vue Prévisualisation avec les memes filtres/segments interactifs.
+  const embedHydratedRef = useRef(false);
+  useEffect(() => {
+    if (embedHydratedRef.current) return;
+    const emb = typeof window !== "undefined" ? window.__AGL_EMBED__ : null;
+    if (!emb || !emb.metiers) return;
+    embedHydratedRef.current = true;
+    const yfSet = yearFilter;
+    const exSet = exclusions;
+    const mc = monthCutoff;
+    const nextMetiers = {};
+    let firstK = null;
+    for (const k of METIER_KEYS) {
+      const mEmb = emb.metiers[k];
+      if (!mEmb || !Array.isArray(mEmb.files) || mEmb.files.length === 0) continue;
+      // Hydrate rawFilesRef avec les rows embarquees
+      rawFilesRef.current[k] = mEmb.files.map(f => ({ fileId: f.fileId, rows: f.rows || [] }));
+      const filesList = mEmb.files.map(f => ({
+        fileId: f.fileId,
+        fileName: f.fileName || "(embed)",
+        rowCount: (f.rows || []).length,
+        yearsInFile: f.yearsInFile || []
+      }));
+      try {
+        const { rows, analysis, index } = recomputeFromFiles(k, filesList, yfSet, exSet, mc);
+        nextMetiers[k] = { files: filesList, rows, analysis, index, filters: {}, loading: false, error: null };
+        if (!firstK) firstK = k;
+      } catch (err) {
+        console.error("Hydration recompute failed for", k, err);
+        nextMetiers[k] = { files: filesList, rows: [], analysis: null, index: {}, filters: {}, loading: false, error: err.message };
+      }
+    }
+    if (Object.keys(nextMetiers).length > 0) {
+      setMetiers(prev => ({ ...prev, ...nextMetiers }));
+      if (firstK) setActiveMetier(firstK);
+      setGlobalMsg({ type: "success", text: `✓ Rapport autoporteur charge : ${Object.keys(nextMetiers).length} metier(s) hydrate(s).` });
+      setTimeout(() => setGlobalMsg(null), 4000);
+    }
+  }, [recomputeFromFiles]);
 
   // ----- handleUpload : ajoute un fichier à un métier (concaténation) -----
   const handleUpload = useCallback(async (metierKey, file) => {
@@ -6470,15 +6528,57 @@ function App() {
     }
   };
 
-  // Génération HTML autoporteur
+  // Génération HTML autoporteur — copie EXACTE et INTERACTIVE de la prévisualisation
+  // Strategie : on clone le HTML de la page courante (l app elle-meme) et on injecte
+  // les rows brutes de chaque metier dans window.__AGL_EMBED__. Au chargement du
+  // fichier expose, l App detecte l embed, hydrate metiers + rawFilesRef et atterit
+  // directement dans la vue Prévisualisation avec TOUS les controles interactifs
+  // (filtres annees, YTD, onglets metiers/cross/cartes, sous-onglets Total/Cont/Conv,
+  // exclusions, generation DOCX/PDF/PPTX, etc.).
   const generateHTMLReport = async (sendEmail = false) => {
     if (!canGenerate) return;
     const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0,16);
     const filename = `AGL_Rapport_STATCOM_${ts}`;
-    const opts = { title: reportTitle, subtitle: reportSubtitle, filename };
     try {
-      setGenerating("html"); setGlobalMsg({ type:"info", text:"Génération HTML autoporteur…" });
-      const htmlContent = generateHTML(analysesForReport, opts);
+      setGenerating("html"); setGlobalMsg({ type:"info", text:"Génération HTML autoporteur (embed des donnees)…" });
+      // 1) Construire le payload embarque : pour chaque metier charge, copier la
+      //    metadata des fichiers + leurs rows brutes (depuis rawFilesRef)
+      const embedMetiers = {};
+      let totalRows = 0;
+      for (const k of METIER_KEYS) {
+        const m = metiers[k];
+        if (!m || !m.files || m.files.length === 0) continue;
+        const filesRam = rawFilesRef.current[k] || [];
+        const files = m.files.map(f => {
+          const entry = filesRam.find(x => x.fileId === f.fileId);
+          const rows = entry ? entry.rows : [];
+          totalRows += rows.length;
+          return { fileId: f.fileId, fileName: f.fileName, yearsInFile: f.yearsInFile || [], rows };
+        });
+        embedMetiers[k] = { files };
+      }
+      const embedData = {
+        version: 1,
+        generatedAt: new Date().toISOString(),
+        reportTitle, reportSubtitle,
+        yearFilter: Array.from(yearFilter),
+        monthCutoff,
+        exclusions: { ...exclusions },
+        selectedForReport: Array.from(selectedForReport),
+        metiers: embedMetiers
+      };
+      // 2) Serialiser de facon safe (echapper toute fermeture de balise script ou
+      //    style dans la chaine JSON) puis injecter dans une copie du HTML de la
+      //    page courante, juste apres l ouverture du head.
+      const embedJson = JSON.stringify(embedData).replace(/<\/(script|style)/gi, "<\\/$1");
+      const embedScript = '<scr' + 'ipt>window.__AGL_EMBED__ = ' + embedJson + ';</scr' + 'ipt>\n';
+      const pageHtml = document.documentElement.outerHTML;
+      // On nettoie : retire le contenu deja monte dans #root (sera reconstruit par React)
+      // et injecte l embed script tout en haut du head.
+      let cloned = pageHtml
+        .replace(/<div id="root">[\s\S]*?<\/div>/, '<div id="root"></div>')
+        .replace(/<head([^>]*)>/i, (m) => m + "\n" + embedScript);
+      const htmlContent = "<!DOCTYPE html>\n" + cloned;
       const blob = new Blob([htmlContent], { type: "text/html;charset=utf-8" });
       saveAs(blob, filename + ".html");
       const sizeKo = (blob.size / 1024).toFixed(1);
@@ -6795,7 +6895,7 @@ function App() {
                   </button>
                 </div>
                 <div className="text-xs text-gray-500 italic">
-                  Le HTML autoporteur contient tout le rapport (KPI, YoY, PDM AGL, segmentation) et s'ouvre sur n'importe quel ordinateur sans installation.
+                  Le HTML autoporteur est une copie EXACTE et INTERACTIVE de cette vue Prévisualisation : tous les onglets (métiers, cross, cartes), filtres (années, YTD, exclusions) et sous-onglets (Total/Conteneurisé/Conventionnel) restent cliquables. S'ouvre sur n'importe quel ordinateur (connexion internet requise pour les CDN React/Tailwind).
                   L'option "Ouvrir client mail" pré-remplit un message avec la synthèse — le fichier HTML, téléchargé en parallèle, est à attacher manuellement (limitation universelle des navigateurs).
                 </div>
               </div>
