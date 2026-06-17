@@ -4841,23 +4841,88 @@ function ExecutiveSummary({ A, schema }) {
   );
 }
 
+// Helper : retourne une vue de A focalisee sur un segment (total / conteneurise / conventionnel)
+function getSegmentView(A, segment) {
+  if (!A || segment === "total" || !A.segments) return A;
+  const seg = segment === "conteneurise" ? A.segments.conteneurise : A.segments.conventionnel;
+  if (!seg) return A;
+  const topClients = (segment === "conteneurise" ? A.topClientsConteneurise : A.topClientsConventionnel) || [];
+  // Recalcul pareto pour le segment selon la metrique primaire
+  const primaryKey = segment === "conteneurise" ? "teu" : "weight";
+  const totalPrim = topClients.reduce((s, c) => s + (c[primaryKey] || 0), 0);
+  let cum = 0;
+  const paretoClients = topClients.map(c => {
+    cum += (c[primaryKey] || 0);
+    return { ...c, cumPct: totalPrim > 0 ? cum / totalPrim * 100 : 0 };
+  });
+  return {
+    ...A,
+    nbBL: seg.bl,
+    totalTEU: seg.teu,
+    totalWeight: seg.weight,
+    topClients,
+    paretoClients,
+    topPaysOrigine: (segment === "conteneurise" ? A.topPaysOrigineConteneurise : A.topPaysOrigineConventionnel) || [],
+    topPaysDest: (segment === "conteneurise" ? A.topPaysDestConteneurise : A.topPaysDestConventionnel) || [],
+    topTransitaires: (segment === "conteneurise" ? A.topTransitairesConteneurise : A.topTransitairesConventionnel) || [],
+    aglTransit: segment === "conteneurise" ? A.aglTransitConteneurise : A.aglTransitConventionnel,
+    _segmentLabel: segment === "conteneurise" ? "Conteneurisé" : "Conventionnel",
+    _segmentIcon: segment === "conteneurise" ? "📦" : "⚓"
+  };
+}
+
 function MetierPreviewContent({ A, hideHeader, contextLabel }) {
   const schema = A.schema;
   const blLabel = schema.type === "maritime" ? "BL" : "LTA";
-  const totalMet = schema.teuField ? A.totalTEU : A.totalWeight;
+  // Sous-onglet de segmentation (uniquement pour maritime avec conditField)
+  const hasSegmentation = !!(schema.teuField && schema.conditField && A.segments);
+  const [segmentView, setSegmentView] = useState("total");
+  const effectiveSegment = hasSegmentation ? segmentView : "total";
+  const Av = getSegmentView(A, effectiveSegment); // vue A focalisee sur le segment
+  const totalMet = schema.teuField ? Av.totalTEU : Av.totalWeight;
 
   return (
     <div>
-      {/* KPIs principaux */}
+      {/* Sous-onglets de segmentation pour maritime */}
+      {hasSegmentation && (
+        <div style={{display:"flex", gap:6, marginBottom:12, borderBottom:"1px solid #e2e8f0", paddingBottom:4}}>
+          {[
+            { key: "total", label: "📊 Total", desc: "Toutes les marchandises (conteneurise + conventionnel + autre)" },
+            { key: "conteneurise", label: "📦 Conteneurise", desc: "BL conteneurises uniquement (codes 20F/20S/40F/40S/TANK/...). Tri TEU." },
+            { key: "conventionnel", label: "⚓ Conventionnel", desc: "BL conventionnels / vrac (codes BRBK/SACS/CARS/RORO/VRAC). Tri Tonnes." }
+          ].map(s => {
+            const active = segmentView === s.key;
+            return (
+              <button key={s.key}
+                onClick={() => setSegmentView(s.key)}
+                title={s.desc}
+                style={{
+                  padding:"7px 14px", fontSize:13, fontWeight:active ? 700 : 600,
+                  background: active ? "#0a2540" : "white",
+                  color: active ? "white" : "#475569",
+                  border: `1px solid ${active ? "#0a2540" : "#cbd5e1"}`,
+                  borderRadius: "6px 6px 0 0", cursor: "pointer",
+                  marginBottom: -1
+                }}>
+                {s.label}
+              </button>
+            );
+          })}
+          <div style={{flex:1, textAlign:"right", fontSize:11, color:"#64748b", alignSelf:"center", paddingRight:8}}>
+            {effectiveSegment !== "total" && <span style={{background:"#fef9e7", border:"1px solid #c9a14a", padding:"3px 8px", borderRadius:4, color:"#0a2540", fontWeight:600}}>Vue focalisee : {Av._segmentIcon} {Av._segmentLabel}</span>}
+          </div>
+        </div>
+      )}
+      {/* KPIs principaux (utilise la vue segmentee Av) */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-        <div className="kpi-card"><div className="kpi-value">{fmt(A.nbBL)}</div><div className="kpi-label">{blLabel} qualifiés</div></div>
-        {schema.teuField && <div className="kpi-card"><div className="kpi-value">{fmt(A.totalTEU)}</div><div className="kpi-label">TEU totaux</div></div>}
-        <div className="kpi-card"><div className="kpi-value">{fmt(A.totalWeight,0)}</div><div className="kpi-label">Kg de marchandise</div></div>
+        <div className="kpi-card"><div className="kpi-value">{fmt(Av.nbBL)}</div><div className="kpi-label">{blLabel} qualifiés</div></div>
+        {schema.teuField && <div className="kpi-card"><div className="kpi-value">{fmt(Av.totalTEU)}</div><div className="kpi-label">TEU totaux</div></div>}
+        <div className="kpi-card"><div className="kpi-value">{fmt(Av.totalWeight,0)}</div><div className="kpi-label">Kg de marchandise</div></div>
         <div className="kpi-card"><div className="kpi-value">{fmt(A.nbClients)}</div><div className="kpi-label">{schema.clientLabel}s uniques</div></div>
       </div>
 
-      {/* Executive Summary consolide (style EY/McKinsey/Bloomberg) */}
-      <ExecutiveSummary A={A} schema={schema} />
+      {/* Executive Summary consolide (style EY/McKinsey/Bloomberg) - utilise la vue segmentee */}
+      <ExecutiveSummary A={Av} schema={schema} />
 
       {/* ============ COMPARAISON N vs N-1 ============ */}
       {A.yoy && (
@@ -5036,8 +5101,8 @@ function MetierPreviewContent({ A, hideHeader, contextLabel }) {
       )}
 
       {/* ============ ZOOM AGL — ANALYSE STRATÉGIQUE McKINSEY ============ */}
-      {A.aglTransit && (() => {
-        const a = A.aglTransit;
+      {Av.aglTransit && (() => {
+        const a = Av.aglTransit;
         const evolV = a.evol ? (schema.teuField ? a.evol.teuEvolPct : a.evol.weightEvolPct) : null;
 
         // ---- Calculs stratégiques McKinsey-style ----
@@ -5078,9 +5143,9 @@ function MetierPreviewContent({ A, hideHeader, contextLabel }) {
 
         // 4. Asymétrie concurrentielle : écart entre AGL et le n°2
         let asymetrie = null;
-        if (A.topTransitaires && A.topTransitaires.length >= 2) {
+        if (Av.topTransitaires && Av.topTransitaires.length >= 2) {
           const isAGL = (n) => { const s = String(n||"").toUpperCase(); return s.includes("AFRICA GLOBAL LOGISTICS") || s.includes("BOLLOR"); };
-          const sortedByMetric = [...A.topTransitaires].sort((x, y) => (schema.teuField ? y.teu : y.weight) - (schema.teuField ? x.teu : x.weight));
+          const sortedByMetric = [...Av.topTransitaires].sort((x, y) => (schema.teuField ? y.teu : y.weight) - (schema.teuField ? x.teu : x.weight));
           const aglIdx = sortedByMetric.findIndex(t => isAGL(t.key));
           if (aglIdx >= 0) {
             const aglMetric = schema.teuField ? sortedByMetric[aglIdx].teu : sortedByMetric[aglIdx].weight;
@@ -5266,7 +5331,7 @@ function MetierPreviewContent({ A, hideHeader, contextLabel }) {
       </>)}
 
       {/* Top pays origine avec PDM AGL */}
-      {A.topPaysOrigine.length > 0 && (<>
+      {Av.topPaysOrigine.length > 0 && (<>
         <div className="section-h">3. Top pays d'origine (avec PDM AGL)</div>
         <table className="report-table">
           <thead><tr>
@@ -5274,7 +5339,7 @@ function MetierPreviewContent({ A, hideHeader, contextLabel }) {
             <th style={{background:"#c9a14a", color:"#0a2540"}}>PDM AGL</th>
             <th style={{background:"#c9a14a", color:"#0a2540"}}>Δ AGL YoY</th>
           </tr></thead>
-          <tbody>{A.topPaysOrigine.slice(0, 10).map((x, i) => {
+          <tbody>{Av.topPaysOrigine.slice(0, 10).map((x, i) => {
             const pdm = A.aglPdmByPays?.get(x.key);
             const pdmCur = pdm?.pdmCur;
             const evol = pdm?.aglEvolPct;
@@ -5369,7 +5434,7 @@ function MetierPreviewContent({ A, hideHeader, contextLabel }) {
       )}
 
       {/* Top transitaires (avec AGL surligné) + Δ YoY */}
-      {A.topTransitaires.length > 0 && (<>
+      {Av.topTransitaires.length > 0 && (<>
         <div className="section-h">6. Top transitaires (avec évolution N vs N-1)</div>
         <table className="report-table"><thead><tr>
           <th>#</th><th>Transitaire</th><th>Nb {blLabel}</th>
@@ -5378,7 +5443,7 @@ function MetierPreviewContent({ A, hideHeader, contextLabel }) {
           {A.yoy && <th>{A.yoy.curYear}</th>}
           {A.yoy && <th>Δ YoY</th>}
         </tr></thead>
-          <tbody>{A.topTransitaires.slice(0, 10).map((x, i) => {
+          <tbody>{Av.topTransitaires.slice(0, 10).map((x, i) => {
             const metric = schema.teuField ? x.teu : x.weight;
             const upper = (x.key || "").toUpperCase();
             const isAGLrow = upper.includes("AFRICA GLOBAL LOGISTICS") || upper.includes("BOLLORÉ") || upper.includes("BOLLORE");
@@ -5402,7 +5467,7 @@ function MetierPreviewContent({ A, hideHeader, contextLabel }) {
       </>)}
 
       {/* Top clients Pareto avec PDM AGL */}
-      {A.paretoClients.length > 0 && (<>
+      {Av.paretoClients.length > 0 && (<>
         <div className="section-h">7. Top {schema.clientLabel}s (Pareto + PDM AGL)</div>
         <table className="report-table">
           <thead><tr>
@@ -5411,7 +5476,7 @@ function MetierPreviewContent({ A, hideHeader, contextLabel }) {
             <th style={{background:"#c9a14a", color:"#0a2540"}}>PDM AGL</th>
             <th style={{background:"#c9a14a", color:"#0a2540"}}>Δ AGL YoY</th>
           </tr></thead>
-          <tbody>{A.paretoClients.slice(0, 10).map((x, i) => {
+          <tbody>{Av.paretoClients.slice(0, 10).map((x, i) => {
             const pdm = A.aglPdmByClient?.get(x.key);
             const pdmCur = pdm?.pdmCur;
             const evol = pdm?.aglEvolPct;
