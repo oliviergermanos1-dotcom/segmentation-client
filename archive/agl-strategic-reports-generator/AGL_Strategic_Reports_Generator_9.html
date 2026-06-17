@@ -5764,6 +5764,29 @@ async function idbLoadMetadataOnly() {
   });
 }
 
+// Charge UNIQUEMENT les fichiers d UN metier (streaming par metier, evite OOM)
+async function idbLoadMetier(metierKey) {
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([IDB_STORE], "readonly");
+    const result = [];
+    const store = tx.objectStore(IDB_STORE);
+    const req = store.openCursor();
+    req.onsuccess = (e) => {
+      const cursor = e.target.result;
+      if (cursor) {
+        const v = cursor.value;
+        if (v && v.metierKey === metierKey) {
+          result.push(v);
+        }
+        cursor.continue();
+      }
+    };
+    tx.oncomplete = () => { db.close(); resolve(result); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
+  });
+}
+
 async function idbClearAll() {
   const db = await idbOpen();
   return new Promise((resolve, reject) => {
@@ -6221,33 +6244,72 @@ function App() {
   const restoreMemory = useCallback(async () => {
     setMemSaving(true);
     setGlobalMsg({ type:"info", text:"Restauration en cours…" });
+    let restoredFiles = 0;
     try {
-      const data = await idbLoadAll();
-      let restoredFiles = 0;
-      // Restauration UN METIER A LA FOIS avec yield pour ne pas bloquer
+      // Charge UN metier a la fois (idbLoadMetier au lieu de idbLoadAll qui charge tout en RAM)
+      // + projette les rows en SLIM (uniquement les colonnes utiles du schema) au restore
+      // -> evite OOM si les saves ont ete faits avec l ancien code (toutes colonnes)
       for (const k of METIER_KEYS) {
-        const arr = data[k];
-        if (!Array.isArray(arr) || arr.length === 0) continue;
-        // Signal de progression
+        // Skip si pas de saves pour ce metier (lookup metadata via memAvailable)
+        if (!memAvailable[k] || memAvailable[k].length === 0) continue;
         setGlobalMsg({ type:"info", text:`Restauration : ${METIER_SCHEMAS[k].label}…` });
-        // Yield au browser pour que le message s affiche
+        // Yield au browser pour render le message
         await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
         try {
-          // Reconstruit rawFilesRef et files
+          // Charge UNIQUEMENT les fichiers de ce metier
+          const arr = await idbLoadMetier(k);
+          if (!arr || arr.length === 0) continue;
+          // Yield avant projection
+          await new Promise(r => setTimeout(r, 0));
+          // Schema pour determiner les colonnes utiles
+          const schema = METIER_SCHEMAS[k];
+          const keepFields = new Set([
+            schema.clientField, schema.counterpartField, schema.teuField, schema.weightField,
+            schema.blField, schema.yearField, schema.monthField,
+            schema.portChargementField, schema.portDechargementField,
+            schema.paysOrigineField, schema.paysDestField, schema.lieuLivraisonField,
+            schema.marchandiseField, schema.transitaireField, schema.armateurField,
+            schema.consignataireField, schema.conditField, schema.modeExpField,
+            schema.verticalField, schema.statutField, schema.commercialField, schema.qualifField
+          ].filter(Boolean));
+          // Projette les rows en slim (en place) pour reduire la memoire
+          for (const e of arr) {
+            if (!Array.isArray(e.rows)) continue;
+            // Detecte si deja slim (taille comparable aux keepFields)
+            const sample = e.rows[0];
+            const sampleKeys = sample ? Object.keys(sample) : [];
+            const alreadySlim = sampleKeys.length <= keepFields.size + 3;
+            if (alreadySlim) continue;
+            // Projette en place pour eviter une copie complete
+            for (let i = 0; i < e.rows.length; i++) {
+              const row = e.rows[i];
+              const slim = {};
+              for (const f of keepFields) {
+                if (row[f] !== undefined) slim[f] = row[f];
+              }
+              e.rows[i] = slim;
+            }
+            // Yield apres chaque fichier de projection (gros fichiers)
+            await new Promise(r => setTimeout(r, 0));
+          }
+          // Reconstruit rawFilesRef
           rawFilesRef.current[k] = arr.map(e => ({ fileId: e.fileId, rows: e.rows }));
           const filesList = arr.map(e => ({ fileId: e.fileId, fileName: e.fileName, rowCount: (e.rows || []).length, yearsInFile: e.yearsInFile || [] }));
+          // Yield avant recompute
+          await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
           const { rows, analysis, index } = recomputeFromFiles(k, filesList, yearFilter, exclusions, monthCutoff);
           setMetiers(prev => ({ ...prev, [k]: { files: filesList, rows, analysis, index, filters: {}, loading: false, error: null } }));
           setSelectedForReport(prev => { const s = new Set(prev); s.add(k); return s; });
           restoredFiles += arr.length;
         } catch (err) {
           console.error("Restore failed for", k, err);
-          setMetiers(prev => ({ ...prev, [k]: { ...prev[k], loading: false, error: err.message || "Erreur restauration" } }));
+          setMetiers(prev => ({ ...prev, [k]: { ...(prev[k]||{}), loading: false, error: err.message || "Erreur restauration" } }));
+          setGlobalMsg({ type:"warning", text:`⚠ Echec restauration ${METIER_SCHEMAS[k].label} : ${err.message || "memoire insuffisante"}` });
+          await new Promise(r => setTimeout(r, 1000));
         }
-        // Yield apres chaque metier pour laisser browser respirer
-        await new Promise(r => setTimeout(r, 20));
+        // Yield long entre metiers (laisse browser respirer + GC)
+        await new Promise(r => setTimeout(r, 30));
       }
-      if (data.__meta?.savedAt) setMemLastSave(data.__meta.savedAt);
       if (restoredFiles > 0) {
         const firstK = METIER_KEYS.find(k => rawFilesRef.current[k]);
         if (firstK && !activeMetier) setActiveMetier(firstK);
@@ -6261,7 +6323,7 @@ function App() {
       setGlobalMsg({ type:"error", text:`✗ ${e.message}` });
       setTimeout(()=>setGlobalMsg(null), 6000);
     } finally { setMemSaving(false); }
-  }, [activeMetier, yearFilter, exclusions, monthCutoff, recomputeFromFiles]);
+  }, [activeMetier, yearFilter, exclusions, monthCutoff, memAvailable, recomputeFromFiles]);
 
   const clearMemory = useCallback(async () => {
     if (!confirm("Effacer définitivement toutes les données mémorisées ?")) return;
@@ -6543,45 +6605,8 @@ function App() {
             ))}
           </div>
 
-          {/* PANNEAU FILTRE ANNÉES */}
-          {allAvailableYears.length > 0 && (
-            <div className="mt-4 bg-gradient-to-r from-blue-50 to-cyan-50 border border-blue-200 rounded-lg p-4">
-              <div className="flex items-start justify-between flex-wrap gap-3">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span style={{fontSize:20}}>📅</span>
-                    <h3 className="font-bold navy-text text-sm">Filtre années — Périmètre temporel d'analyse</h3>
-                  </div>
-                  <p className="text-xs text-gray-600 mb-2">
-                    Cochez les années à inclure dans toutes les analyses et rapports. Si rien n'est coché, <strong>toutes les années sont incluses</strong>.
-                  </p>
-                  <div className="flex flex-wrap gap-2">
-                    {allAvailableYears.map(y => (
-                      <label key={y} className="cursor-pointer flex items-center gap-2 bg-white border border-gray-200 hover:border-blue-400 rounded-md px-3 py-1 text-sm">
-                        <input type="checkbox" checked={yearFilter.has(y)} onChange={e => {
-                          setYearFilter(prev => {
-                            const s = new Set(prev);
-                            if (e.target.checked) s.add(y);
-                            else s.delete(y);
-                            return s;
-                          });
-                        }} />
-                        <span className={yearFilter.has(y) ? "font-bold navy-text" : "text-gray-700"}>{y}</span>
-                      </label>
-                    ))}
-                  </div>
-                  <div className="text-xs text-gray-500 mt-2">
-                    {yearFilter.size === 0
-                      ? `Toutes les années incluses (${allAvailableYears.length} années : ${allAvailableYears.join(", ")})`
-                      : `${yearFilter.size} année(s) sélectionnée(s) sur ${allAvailableYears.length} : ${Array.from(yearFilter).sort().join(", ")}`}
-                  </div>
-                </div>
-                <button className="btn-ghost text-sm" onClick={() => setYearFilter(new Set())} disabled={yearFilter.size === 0}>
-                  Réinitialiser
-                </button>
-              </div>
-            </div>
-          )}
+          {/* Filtre annees ET filtre mois YTD : tous deux deplaces dans la prévisualisation (ReportPreview).
+              Plus visibles, interactifs et accessibles sur tous les onglets d analyse. */}
 
           {/* Filtre mois YTD : deplace dans la barre de filtre de la previsualisation (ReportPreview) */}
 
