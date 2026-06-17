@@ -5476,6 +5476,7 @@ function App() {
   const [autoSave, setAutoSave] = useState(true);
   // Filtre années globaux (cases à cocher)
   const [yearFilter, setYearFilter] = useState(new Set()); // Set des années sélectionnées; vide = TOUTES
+  const [exclusions, setExclusions] = useState({ nonApure: false, petroleBrut: false, petroleRaffine: false }); // exclusions globales sur les BL
   // Storage hors-state pour les rows brutes par fichier
   const rawFilesRef = useRef({}); // { metierKey: [{fileId, rows}, ...] }
 
@@ -5494,8 +5495,8 @@ function App() {
     return Array.from(years).sort();
   }, []);
 
-  // ----- Helper : recalcule analysis + index à partir des fichiers actifs (filtre années) -----
-  const recomputeFromFiles = useCallback((metierKey, filesList, yearFilterSet) => {
+  // ----- Helper : recalcule analysis + index à partir des fichiers actifs (filtre années + exclusions) -----
+  const recomputeFromFiles = useCallback((metierKey, filesList, yearFilterSet, exclusionsSet) => {
     const schema = METIER_SCHEMAS[metierKey];
     // Concaténation des rows des fichiers
     let allRows = [];
@@ -5509,6 +5510,30 @@ function App() {
       allRows = allRows.filter(r => {
         const y = String(r[schema.yearField] || "").trim();
         return yearFilterSet.has(y);
+      });
+    }
+    // Exclusions globales (non apure, petrole brut, petrole raffine)
+    if (exclusionsSet) {
+      const matchPetroleBrut = (s) => {
+        const u = String(s||"").toUpperCase();
+        return u.includes("PETROLE BRUT") || u.includes("PÉTROLE BRUT") || u.includes("CRUDE OIL") || u.includes("PETROLEUM CRUDE");
+      };
+      const matchPetroleRaffine = (s) => {
+        const u = String(s||"").toUpperCase();
+        return u.includes("PETROLE RAFFINE") || u.includes("PÉTROLE RAFFINÉ") || u.includes("REFINED") || u.includes("PRODUITS PETROLIERS RAFFINES") || u.includes("HYDROCARBURE") || u.includes("FUEL") || u.includes("GASOIL") || u.includes("ESSENCE") || u.includes("KEROSENE");
+      };
+      const matchNonApure = (s) => {
+        const u = String(s||"").toUpperCase().trim();
+        return u && u !== "APURE" && u !== "APURÉ" && u !== "OUI" && u !== "YES" && u !== "1" && u !== "TRUE";
+      };
+      allRows = allRows.filter(r => {
+        if (exclusionsSet.nonApure && schema.qualifField && matchNonApure(r[schema.qualifField])) return false;
+        if (schema.marchandiseField) {
+          const m = r[schema.marchandiseField];
+          if (exclusionsSet.petroleBrut && matchPetroleBrut(m)) return false;
+          if (exclusionsSet.petroleRaffine && matchPetroleRaffine(m)) return false;
+        }
+        return true;
       });
     }
     if (allRows.length === 0) return { rows: [], analysis: null, index: {} };
@@ -5643,7 +5668,7 @@ function App() {
       setMetiers(prev => ({ ...prev, [metierKey]: { ...(prev[metierKey] || { files: [] }), progress: "Indexation & calculs…", loading: true } }));
 
       const updatedFiles = [ ...((metiers[metierKey] && metiers[metierKey].files) || []), newFileEntry ];
-      const { rows: allRows, analysis, index } = recomputeFromFiles(metierKey, updatedFiles, yearFilter);
+      const { rows: allRows, analysis, index } = recomputeFromFiles(metierKey, updatedFiles, yearFilter, exclusions);
 
       setMetiers(prev => ({ ...prev, [metierKey]: { files: updatedFiles, rows: allRows, analysis, index, filters: (prev[metierKey] && prev[metierKey].filters) || {}, loading: false, error: null } }));
       if (!activeMetier) setActiveMetier(metierKey);
@@ -5688,7 +5713,7 @@ function App() {
         delete rawFilesRef.current[metierKey];
         return { ...prev, [metierKey]: null };
       }
-      const { rows, analysis, index } = recomputeFromFiles(metierKey, updatedFiles, yearFilter);
+      const { rows, analysis, index } = recomputeFromFiles(metierKey, updatedFiles, yearFilter, exclusions);
       return { ...prev, [metierKey]: { ...cur, files: updatedFiles, rows, analysis, index } };
     });
     idbDeleteFile(metierKey, fileId).catch(e => console.warn("idbDeleteFile:", e));
@@ -5727,34 +5752,30 @@ function App() {
     return Array.from(set).sort();
   }, [metiers]);
 
-  // ----- Quand le filtre années change : flag loading immediat + recompute asynchrone debounced -----
+  // ----- Quand le filtre années OU les exclusions changent : flag loading + recompute asynchrone -----
   const yearFilterDebounceRef = useRef(null);
   const yearFilterIsInitial = useRef(true);
   useEffect(() => {
-    // Skip le premier appel (mount initial)
     if (yearFilterIsInitial.current) { yearFilterIsInitial.current = false; return; }
-    // 1. Flag loading immediat
     setMetiers(prev => {
       const next = { ...prev };
       for (const k of METIER_KEYS) {
         const cur = next[k];
         if (cur && cur.files && cur.files.length > 0) {
-          next[k] = { ...cur, loading: true, progress: "Application du filtre années…" };
+          next[k] = { ...cur, loading: true, progress: "Application des filtres…" };
         }
       }
       return next;
     });
-    // 2. Recompute deferre (debounce 300ms pour clics rapides)
     if (yearFilterDebounceRef.current) clearTimeout(yearFilterDebounceRef.current);
     yearFilterDebounceRef.current = setTimeout(() => {
       requestAnimationFrame(() => setTimeout(() => {
         setMetiers(prev => {
           const next = { ...prev };
-          // Recompute par metier (cher mais on yield via setMetiers individuels serait plus complexe)
           for (const k of METIER_KEYS) {
             const cur = next[k];
             if (cur && cur.files && cur.files.length > 0) {
-              const { rows, analysis, index } = recomputeFromFiles(k, cur.files, yearFilter);
+              const { rows, analysis, index } = recomputeFromFiles(k, cur.files, yearFilter, exclusions);
               next[k] = { ...cur, rows, analysis, index, loading: false, progress: null };
             }
           }
@@ -5762,7 +5783,7 @@ function App() {
         });
       }, 0));
     }, 300);
-  }, [yearFilter, recomputeFromFiles]);
+  }, [yearFilter, exclusions, recomputeFromFiles]);
 
   // ----- Mémorisation manuelle (sauvegarde tous les fichiers actuels) -----
   const saveMemory = useCallback(async (silent = false) => {
@@ -5812,7 +5833,7 @@ function App() {
           // Reconstruit rawFilesRef et files
           rawFilesRef.current[k] = arr.map(e => ({ fileId: e.fileId, rows: e.rows }));
           const filesList = arr.map(e => ({ fileId: e.fileId, fileName: e.fileName, rowCount: (e.rows || []).length, yearsInFile: e.yearsInFile || [] }));
-          const { rows, analysis, index } = recomputeFromFiles(k, filesList, yearFilter);
+          const { rows, analysis, index } = recomputeFromFiles(k, filesList, yearFilter, exclusions);
           setMetiers(prev => ({ ...prev, [k]: { files: filesList, rows, analysis, index, filters: {}, loading: false, error: null } }));
           setSelectedForReport(prev => { const s = new Set(prev); s.add(k); return s; });
           restoredFiles += arr.length;
@@ -6153,6 +6174,50 @@ function App() {
               </div>
             </div>
           )}
+
+          {/* PANNEAU EXCLUSIONS */}
+          <div className="mt-4 bg-gradient-to-r from-rose-50 to-orange-50 border border-rose-200 rounded-lg p-4">
+            <div className="flex items-start justify-between flex-wrap gap-3">
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 mb-1">
+                  <span style={{fontSize:20}}>🚫</span>
+                  <h3 className="font-bold navy-text text-sm">Exclusions — Elements a retirer de l'analyse</h3>
+                </div>
+                <p className="text-xs text-gray-600 mb-2">
+                  Cochez les categories a exclure systematiquement de toutes les analyses et rapports. Utile pour neutraliser des flux specifiques (hydrocarbures, BL non apures, etc.).
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {[
+                    { key: "nonApure", label: "🛂 Non apure (BL hors statut 'Apure')", desc: "Exclut les BL dont le champ Qualifie n'est pas a 'Apure/Oui'." },
+                    { key: "petroleBrut", label: "🛢 Petrole brut", desc: "Exclut les BL dont la marchandise est du petrole brut (crude oil)." },
+                    { key: "petroleRaffine", label: "⛽ Petrole raffine / produits petroliers", desc: "Exclut les BL dont la marchandise est petrole raffine, gazole, essence, kerosene, hydrocarbures, etc." }
+                  ].map(ex => {
+                    const active = exclusions[ex.key];
+                    return (
+                      <label key={ex.key} title={ex.desc}
+                        className="cursor-pointer flex items-center gap-2 bg-white border rounded-md px-3 py-1 text-sm"
+                        style={{borderColor: active ? "#dc2626" : "#e2e8f0"}}>
+                        <input type="checkbox" checked={active} onChange={e => {
+                          setExclusions(prev => ({ ...prev, [ex.key]: e.target.checked }));
+                        }} />
+                        <span className={active ? "font-bold" : "text-gray-700"} style={{color: active ? "#dc2626" : undefined}}>{ex.label}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+                <div className="text-xs text-gray-500 mt-2">
+                  {Object.values(exclusions).every(v => !v)
+                    ? "Aucune exclusion active — toutes les donnees sont incluses."
+                    : `${Object.values(exclusions).filter(v => v).length} exclusion(s) active(s) : ${Object.entries(exclusions).filter(([_, v]) => v).map(([k]) => ({nonApure:"Non apure", petroleBrut:"Petrole brut", petroleRaffine:"Petrole raffine"}[k])).join(", ")}.`}
+                </div>
+              </div>
+              <button className="btn-ghost text-sm"
+                onClick={() => setExclusions({ nonApure: false, petroleBrut: false, petroleRaffine: false })}
+                disabled={Object.values(exclusions).every(v => !v)}>
+                Réinitialiser
+              </button>
+            </div>
+          </div>
 
           {/* PANNEAU MÉMORISATION */}
           <div className="mt-4 bg-gradient-to-r from-blue-50 to-amber-50 border border-amber-200 rounded-lg p-4">
