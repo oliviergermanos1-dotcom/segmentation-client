@@ -3170,10 +3170,22 @@ function StrategicMap({ title, subtitle, points, xUnit, height = 460, entityLabe
           ))}
         </svg>
         {hovered !== null && valid[hovered] && (
-          <div style={{position:"absolute", top:8, right:8, background:"#0a2540", color:"white", padding:"10px 14px", borderRadius:6, fontSize:12, maxWidth:340, pointerEvents:"none", boxShadow:"0 4px 12px rgba(0,0,0,0.2)"}}>
+          <div style={{position:"absolute", top:8, right:8, background:"#0a2540", color:"white", padding:"10px 14px", borderRadius:6, fontSize:12, maxWidth:360, pointerEvents:"none", boxShadow:"0 4px 12px rgba(0,0,0,0.2)"}}>
             <div style={{fontWeight:700, marginBottom:4, fontSize:13}}>{valid[hovered].name}</div>
             <div>Volume : <strong>{fmt(valid[hovered].x)} {xUnit}</strong></div>
-            <div>Croissance : <strong>{valid[hovered].y >= 0 ? "+" : ""}{fmt(valid[hovered].y, 1)} %</strong></div>
+            <div>Croissance (entite) : <strong>{valid[hovered].y >= 0 ? "+" : ""}{fmt(valid[hovered].y, 1)} %</strong></div>
+            {valid[hovered].totalEvol !== null && valid[hovered].totalEvol !== undefined && (
+              <div>Croissance volume <strong>total</strong> client : <strong>{valid[hovered].totalEvol >= 0 ? "+" : ""}{fmt(valid[hovered].totalEvol, 1)} %</strong></div>
+            )}
+            {valid[hovered].pdm !== undefined && valid[hovered].pdm !== null && (
+              <div>PDM AGL : <strong>{fmt(valid[hovered].pdm, 1)} %</strong></div>
+            )}
+            {valid[hovered].mainComp && (
+              <div style={{marginTop:6, paddingTop:6, borderTop:"1px solid rgba(255,255,255,0.2)"}}>
+                <div style={{fontSize:10, opacity:0.7, textTransform:"uppercase", letterSpacing:0.5, marginBottom:2}}>Principal concurrent</div>
+                <div><strong>{valid[hovered].mainComp.name}</strong> · {fmt(valid[hovered].mainComp.tons)} T ({fmt(valid[hovered].mainComp.share, 0)} % de la conc.)</div>
+              </div>
+            )}
             {valid[hovered].breakdown && valid[hovered].breakdown.length > 0 && (
               <div style={{marginTop:6, paddingTop:6, borderTop:"1px solid rgba(255,255,255,0.2)"}}>
                 <div style={{fontSize:10, opacity:0.7, textTransform:"uppercase", letterSpacing:0.5, marginBottom:2}}>Repartition par metier</div>
@@ -3238,19 +3250,52 @@ function StrategicTab({ analyses, mode }) {
     return map;
   }
 
+  // Pre-calcul : principal concurrent par client, par analyse (utilise pour tooltip AGL)
+  const compMaps = useMemo(() => {
+    return analyses.map(A => {
+      const sch = A.schema;
+      const map = new Map(); // client -> { best, total }
+      for (const r of (A.rows || [])) {
+        const client = safeStr(r[sch.clientField]);
+        const trans = safeStr(r[sch.transitaireField]);
+        if (!client || !trans || isAGLName(trans)) continue;
+        const w = numVal(r[sch.weightField]);
+        let cm = map.get(client);
+        if (!cm) { cm = new Map(); map.set(client, cm); }
+        cm.set(trans, (cm.get(trans) || 0) + w);
+      }
+      const result = new Map();
+      for (const [client, cm] of map.entries()) {
+        let best = null, bestW = 0, total = 0;
+        for (const [t, w] of cm.entries()) { total += w; if (w > bestW) { bestW = w; best = t; } }
+        if (best) result.set(client, { name: best, tons: bestW, share: total > 0 ? bestW/total*100 : 0 });
+      }
+      return result;
+    });
+  }, [analyses]);
+
   // Per-metier points
-  const perMetier = analyses.map(A => {
+  const perMetier = analyses.map((A, idx) => {
     const sch = A.schema;
     const xUnit = sch.teuField ? "TEU" : "Tonnes";
     const points = [];
     if (isAGL) {
       const pdmMap = A.aglPdmByClient || new Map();
+      const compMap = compMaps[idx] || new Map();
       for (const [name, info] of pdmMap.entries()) {
         if ((info.aglVolCur || 0) > 0) {
           const x = info.aglVolCur;
           const prev = info.aglVolPrev || 0;
           const y = prev > 0 ? ((info.aglVolCur - prev) / prev * 100) : 300;
-          points.push({ name, x, y });
+          const totEvol = (info.totalVolPrev || 0) > 0
+            ? ((info.totalVolCur - info.totalVolPrev) / info.totalVolPrev * 100)
+            : null;
+          points.push({
+            name, x, y,
+            totalEvol: totEvol,
+            pdm: info.pdmCur !== undefined && info.pdmCur !== null ? info.pdmCur : info.pdmAll,
+            mainComp: compMap.get(name) || null
+          });
         }
       }
     } else {
@@ -3267,21 +3312,36 @@ function StrategicTab({ analyses, mode }) {
     return { schema: sch, points, xUnit };
   });
 
-  // Multi-metier : agregation Tonnes + breakdown par metier
-  // multiMap[name] = { tonsCur, tonsPrev, perMetier: { [metierKey]: { tons, schema } } }
+  // Multi-metier : agregation Tonnes + breakdown par metier + (mode AGL : total client + main comp global)
   const multiMap = new Map();
-  for (const A of analyses) {
+  for (let aIdx = 0; aIdx < analyses.length; aIdx++) {
+    const A = analyses[aIdx];
     const sch = A.schema;
     if (isAGL) {
       const pdmMap = A.aglPdmByClient || new Map();
       for (const [name, info] of pdmMap.entries()) {
-        if (!multiMap.has(name)) multiMap.set(name, { tonsCur:0, tonsPrev:0, perMetier: {} });
+        if (!multiMap.has(name)) multiMap.set(name, { tonsCur:0, tonsPrev:0, totalCur:0, totalPrev:0, perMetier: {}, compTotals: new Map() });
         const c = multiMap.get(name);
         const tonsCur = info.aglTonsCur || 0;
         const tonsPrev = info.aglTonsPrev || 0;
         c.tonsCur += tonsCur;
         c.tonsPrev += tonsPrev;
+        c.totalCur += info.totalTonsCur || 0;
+        c.totalPrev += info.totalTonsPrev || 0;
         if (tonsCur > 0) c.perMetier[sch.key] = { tons: tonsCur, schema: sch };
+        // Cumul concurrents (tous metiers) - on aggrege depuis rows
+        // (deja fait dans compMaps mais en Tonnes pondereés sur l'ensemble)
+      }
+      // Cumul concurrents tous metiers : iteration sur compMaps[aIdx] qui est par-metier
+      // On va recalculer plus precisement en parcourant A.rows
+      for (const r of (A.rows || [])) {
+        const client = safeStr(r[sch.clientField]);
+        if (!client || !multiMap.has(client)) continue;
+        const trans = safeStr(r[sch.transitaireField]);
+        if (!trans || isAGLName(trans)) continue;
+        const w = numVal(r[sch.weightField]);
+        const c = multiMap.get(client);
+        c.compTotals.set(trans, (c.compTotals.get(trans) || 0) + w);
       }
     } else {
       const tMap = accumByTransitaire(A);
@@ -3301,7 +3361,18 @@ function StrategicTab({ analyses, mode }) {
     const breakdown = Object.values(c.perMetier)
       .sort((a, b) => b.tons - a.tons)
       .map(m => ({ icon: m.schema.icon, label: m.schema.label, vol: m.tons, unit: "Tonnes", pct: c.tonsCur > 0 ? (m.tons / c.tonsCur * 100) : 0 }));
-    multiPoints.push({ name, x: c.tonsCur, y, breakdown });
+    const pt = { name, x: c.tonsCur, y, breakdown };
+    if (isAGL) {
+      pt.totalEvol = c.totalPrev > 0 ? ((c.totalCur - c.totalPrev) / c.totalPrev * 100) : null;
+      pt.pdm = c.totalCur > 0 ? (c.tonsCur / c.totalCur * 100) : null;
+      // Principal concurrent global = top transitaire dans compTotals
+      if (c.compTotals && c.compTotals.size > 0) {
+        let best = null, bestW = 0, total = 0;
+        for (const [t, w] of c.compTotals.entries()) { total += w; if (w > bestW) { bestW = w; best = t; } }
+        if (best) pt.mainComp = { name: best, tons: bestW, share: total > 0 ? bestW/total*100 : 0 };
+      }
+    }
+    multiPoints.push(pt);
   }
 
   return (
