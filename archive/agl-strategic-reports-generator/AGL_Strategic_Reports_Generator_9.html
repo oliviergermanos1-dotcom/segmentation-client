@@ -4351,11 +4351,11 @@ function App() {
           <div className="flex justify-between items-start flex-wrap gap-3">
             <div>
               <h1 className="text-2xl font-bold flex items-center gap-2">🏢 AGL Strategic Reports Generator</h1>
-              <div className="text-xs text-gray-300 mt-1">Direction Marketing — Division Stratégie · Source STATCOM · 4 métiers couverts</div>
+              <div className="text-xs text-gray-300 mt-1">Direction Marketing — Division Stratégie · Source STATCOM · {METIER_KEYS.length} métiers couverts</div>
             </div>
             <div className="text-xs text-gray-300 text-right">
               <div>🔒 Traitement 100 % local — aucune donnée n'est envoyée sur Internet</div>
-              <div className="mt-1">{loadedCount}/4 métiers chargés · {fmt(totalLines)} lignes en mémoire</div>
+              <div className="mt-1">{loadedCount}/{METIER_KEYS.length} métiers chargés · {fmt(totalLines)} lignes en mémoire</div>
             </div>
           </div>
         </div>
@@ -4397,7 +4397,7 @@ function App() {
 
         {/* ===== VUE 1 : CONFIGURATION (étapes 1-4) ===== */}
         {activeView === "config" && (<>
-        {/* ÉTAPE 1 : CHARGEMENT DES 4 MÉTIERS */}
+        {/* ÉTAPE 1 : CHARGEMENT DES 6 MÉTIERS */}
         <section>
           <h2 className="text-lg font-bold navy-text mb-3 flex items-center gap-2">
             <span className="gold-bg text-white rounded-full w-7 h-7 flex items-center justify-center text-sm">1</span>
@@ -4623,7 +4623,7 @@ function App() {
           <div className="bg-white p-10 rounded-lg shadow-sm text-center">
             <div className="text-5xl mb-4">📊</div>
             <h3 className="text-xl font-bold navy-text mb-2">Bienvenue dans le générateur de rapports stratégiques AGL</h3>
-            <p className="text-gray-600 text-sm max-w-2xl mx-auto">Chargez de 1 à 4 fichiers Excel STATCOM (Import Maritime, Export Maritime, Import Aérien, Export Aérien). L'application détecte automatiquement le métier, applique vos filtres, et génère un dossier complet en DOCX, PDF et PowerPoint conforme au format Direction Stratégie.</p>
+            <p className="text-gray-600 text-sm max-w-2xl mx-auto">Chargez de 1 à 6 fichiers Excel STATCOM (Import Maritime, Export Maritime, Import Aérien, Export Aérien, Hinterland Import, Hinterland Export). L'application détecte automatiquement le métier, applique vos filtres, et génère un dossier complet en DOCX, PDF et PowerPoint conforme au format Direction Stratégie.</p>
             {Object.keys(memAvailable).length > 0 && (
               <div className="mt-6 inline-block bg-gradient-to-r from-amber-50 to-blue-50 border border-amber-300 rounded-lg p-4 max-w-2xl">
                 <div className="text-sm font-bold navy-text mb-2">💾 Données mémorisées disponibles</div>
