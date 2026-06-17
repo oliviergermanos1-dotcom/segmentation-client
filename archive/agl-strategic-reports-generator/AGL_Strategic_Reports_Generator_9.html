@@ -3088,8 +3088,9 @@ function StrategicMap({ title, subtitle, points, xUnit, height = 460, entityLabe
     return rMin + t * (rMax - rMin);
   };
 
-  // Couleur par quadrant (taille n'influence plus la couleur — la couleur ne code que la croissance)
+  // Couleur : AGL en bleu (toujours), sinon code par croissance
   const colorFor = (p) => {
+    if (p.isAGL) return "#1d4ed8";
     if (p.y > 50) return "#15803d";
     if (p.y > 10) return "#22c55e";
     if (p.y > -10) return "#eab308";
@@ -3222,7 +3223,7 @@ function StrategicTab({ analyses, mode }) {
   const entityLabel = isAGL ? "client" : "transitaire concurrent";
   const definition = isAGL
     ? "Périmètre : CLIENTS que AGL traite (PDM > 0). Chaque point = 1 client. X = volume traité par AGL pour ce client (échelle log), Y = croissance N vs N-1. Taille du rond proportionnelle au volume."
-    : "Périmètre : TRANSITAIRES concurrents (hors AGL). Chaque point = 1 transitaire concurrent. X = volume total qu'il a traité (échelle log), Y = croissance N vs N-1. Taille du rond proportionnelle au volume.";
+    : "Périmètre : tous les TRANSITAIRES (concurrents + AGL). Chaque point = 1 transitaire. X = volume total qu'il a traité (échelle log), Y = croissance N vs N-1. Taille ∝ volume. AGL est représenté en BLEU pour comparer sa position aux concurrents.";
 
   // Detection AGL (memoisable)
   const isAGLName = (s) => {
@@ -3230,26 +3231,26 @@ function StrategicTab({ analyses, mode }) {
     return u.includes("AFRICA GLOBAL LOGISTICS") || u.includes("AGL") || u.includes("BOLLORE TRANSPORT") || u.includes("BOLLORÉ TRANSPORT");
   };
 
-  // Helper : par-metier accumulation par TRANSITAIRE (exclu AGL)
-  // retourne Map<transitaire, { volCur, volPrev, tonsCur, tonsPrev, teuCur, teuPrev }>
+  // Helper : par-metier accumulation par TRANSITAIRE (AGL INCLUS, taggue)
+  // retourne Map<transitaire, { volCur, volPrev, tonsCur, tonsPrev, teuCur, teuPrev, isAGL }>
   function accumByTransitaire(A) {
     const sch = A.schema;
     const rows = A.rows || [];
     const map = new Map();
-    if (A.byYear.length < 2) {
-      // Pas assez d'annees pour cur/prev
-      return map;
-    }
+    if (A.byYear.length < 2) return map;
     const curYear = A.byYear[A.byYear.length-1].year;
     const prevYear = A.byYear[A.byYear.length-2].year;
+    // On agrege TOUS les transitaires (AGL inclus). Pour AGL on consolide sous une cle unique "AGL"
     for (const r of rows) {
-      const trans = safeStr(r[sch.transitaireField]);
-      if (!trans || isAGLName(trans)) continue;
+      const transRaw = safeStr(r[sch.transitaireField]);
+      if (!transRaw) continue;
+      const isAGLrow = isAGLName(transRaw);
+      const trans = isAGLrow ? "AGL" : transRaw;
       const y = safeStr(r[sch.yearField]);
       const bucket = y === curYear ? "cur" : (y === prevYear ? "prev" : null);
       if (!bucket) continue;
       let e = map.get(trans);
-      if (!e) { e = { teuCur:0, teuPrev:0, tonsCur:0, tonsPrev:0 }; map.set(trans, e); }
+      if (!e) { e = { teuCur:0, teuPrev:0, tonsCur:0, tonsPrev:0, isAGL: isAGLrow }; map.set(trans, e); }
       const teu = sch.teuField ? numVal(r[sch.teuField]) : 0;
       const w = numVal(r[sch.weightField]);
       if (bucket === "cur") { e.teuCur += teu; e.tonsCur += w; }
@@ -3315,7 +3316,7 @@ function StrategicTab({ analyses, mode }) {
         const prev = sch.teuField ? e.teuPrev : e.tonsPrev;
         if (cur > 0) {
           const y = prev > 0 ? ((cur - prev) / prev * 100) : 300;
-          points.push({ name: trans, x: cur, y });
+          points.push({ name: trans, x: cur, y, isAGL: !!e.isAGL });
         }
       }
     }
@@ -3356,10 +3357,11 @@ function StrategicTab({ analyses, mode }) {
     } else {
       const tMap = accumByTransitaire(A);
       for (const [trans, e] of tMap.entries()) {
-        if (!multiMap.has(trans)) multiMap.set(trans, { tonsCur:0, tonsPrev:0, perMetier: {} });
+        if (!multiMap.has(trans)) multiMap.set(trans, { tonsCur:0, tonsPrev:0, perMetier: {}, isAGL: !!e.isAGL });
         const c = multiMap.get(trans);
         c.tonsCur += e.tonsCur;
         c.tonsPrev += e.tonsPrev;
+        if (e.isAGL) c.isAGL = true;
         if (e.tonsCur > 0) c.perMetier[sch.key] = { tons: e.tonsCur, schema: sch };
       }
     }
@@ -3371,7 +3373,7 @@ function StrategicTab({ analyses, mode }) {
     const breakdown = Object.values(c.perMetier)
       .sort((a, b) => b.tons - a.tons)
       .map(m => ({ icon: m.schema.icon, label: m.schema.label, vol: m.tons, unit: "Tonnes", pct: c.tonsCur > 0 ? (m.tons / c.tonsCur * 100) : 0 }));
-    const pt = { name, x: c.tonsCur, y, breakdown };
+    const pt = { name, x: c.tonsCur, y, breakdown, isAGL: !!c.isAGL };
     if (isAGL) {
       pt.totalEvol = c.totalPrev > 0 ? ((c.totalCur - c.totalPrev) / c.totalPrev * 100) : null;
       pt.pdm = c.totalCur > 0 ? (c.tonsCur / c.totalCur * 100) : null;
