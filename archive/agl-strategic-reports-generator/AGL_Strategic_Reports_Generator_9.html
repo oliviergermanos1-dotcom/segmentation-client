@@ -214,7 +214,7 @@ function getFilterableColumns(schema) {
 // MOTEUR D'ANALYSE — calcule tous les agrégats du rapport
 // ============================================================
 function buildAnalysis(rows, schema) {
-  const A = { schema };
+  const A = { schema, rows };
   if (!rows.length) {
     return { ...A, empty: true, nbBL: 0, nbRows: 0, totalTEU: 0, totalWeight: 0,
       nbClients: 0, nbTransitaires: 0, nbArmateurs: 0, nbPaysOrigine: 0, nbPaysDest: 0, nbMarchandises: 0,
@@ -618,7 +618,7 @@ function buildAnalysis(rows, schema) {
   // ============================================================
   function buildAGLPDMByField(field) {
     if (!field) return new Map();
-    // map[value] = { total: {prev, cur}, agl: {prev, cur} }  en TEU ou Tonnes
+    // map[value] = { total: {prev, cur, all}, agl: {prev, cur, all}, byYear: Map<year, {tot, agl}> }  en TEU ou Tonnes
     const map = new Map();
     const curYear = A.byYear.length >= 2 ? A.byYear[A.byYear.length-1].year : null;
     const prevYear = A.byYear.length >= 2 ? A.byYear[A.byYear.length-2].year : null;
@@ -627,20 +627,29 @@ function buildAnalysis(rows, schema) {
       const key = safeStr(r[field]);
       const y = safeStr(r[schema.yearField]);
       const bucket = y === curYear ? "cur" : (y === prevYear ? "prev" : null);
-      if (!bucket && (curYear || prevYear)) continue;
+      // NB : on n'exclut PLUS les rows hors cur/prev, pour permettre l'evolution multi-annees
       let entry = map.get(key);
       if (!entry) {
         entry = { total: { prev: { teu:0, weight:0 }, cur: { teu:0, weight:0 }, all: { teu:0, weight:0 } },
-                  agl:   { prev: { teu:0, weight:0 }, cur: { teu:0, weight:0 }, all: { teu:0, weight:0 } } };
+                  agl:   { prev: { teu:0, weight:0 }, cur: { teu:0, weight:0 }, all: { teu:0, weight:0 } },
+                  byYear: new Map() };
         map.set(key, entry);
       }
       const teu = schema.teuField ? numVal(r[schema.teuField]) : 0;
       const w = numVal(r[schema.weightField]);
       entry.total.all.teu += teu; entry.total.all.weight += w;
       if (bucket) { entry.total[bucket].teu += teu; entry.total[bucket].weight += w; }
-      if (isAGL(r[schema.transitaireField])) {
+      const isAglRow = isAGL(r[schema.transitaireField]);
+      if (isAglRow) {
         entry.agl.all.teu += teu; entry.agl.all.weight += w;
         if (bucket) { entry.agl[bucket].teu += teu; entry.agl[bucket].weight += w; }
+      }
+      // Par-annee
+      if (y) {
+        let yb = entry.byYear.get(y);
+        if (!yb) { yb = { tot: { teu:0, weight:0 }, agl: { teu:0, weight:0 } }; entry.byYear.set(y, yb); }
+        yb.tot.teu += teu; yb.tot.weight += w;
+        if (isAglRow) { yb.agl.teu += teu; yb.agl.weight += w; }
       }
     }
     // Convertit en PDM%
@@ -653,6 +662,20 @@ function buildAnalysis(rows, schema) {
       const aglMetricCur = schema.teuField ? e.agl.cur.teu : e.agl.cur.weight;
       const aglMetricPrev = schema.teuField ? e.agl.prev.teu : e.agl.prev.weight;
       const aglEvolPct = aglMetricPrev > 0 ? ((aglMetricCur - aglMetricPrev) / aglMetricPrev * 100) : (aglMetricCur > 0 ? null : 0);
+      // Serialise byYear en objet (year -> {tot, agl, pdm}) pour usage facile
+      const byYearObj = {};
+      const sortedYears = Array.from(e.byYear.keys()).sort();
+      for (const y of sortedYears) {
+        const yb = e.byYear.get(y);
+        const totVol = schema.teuField ? yb.tot.teu : yb.tot.weight;
+        const aglVol = schema.teuField ? yb.agl.teu : yb.agl.weight;
+        byYearObj[y] = {
+          totTeu: yb.tot.teu, totWeight: yb.tot.weight,
+          aglTeu: yb.agl.teu, aglWeight: yb.agl.weight,
+          totVol, aglVol,
+          pdm: totVol > 0 ? (aglVol / totVol * 100) : null
+        };
+      }
       result.set(key, { pdmAll, pdmCur, pdmPrev, pdmDelta: (pdmCur !== null && pdmPrev !== null) ? (pdmCur - pdmPrev) : null, aglEvolPct,
                         aglVolCur: aglMetricCur, aglVolPrev: aglMetricPrev,
                         totalVolCur: schema.teuField ? e.total.cur.teu : e.total.cur.weight,
@@ -660,7 +683,8 @@ function buildAnalysis(rows, schema) {
                         aglTonsCur: e.agl.cur.weight, aglTonsPrev: e.agl.prev.weight,
                         totalTonsAll: e.total.all.weight, totalTeuAll: e.total.all.teu,
                         totalTonsCur: e.total.cur.weight, totalTeuCur: e.total.cur.teu,
-                        totalTonsPrev: e.total.prev.weight, totalTeuPrev: e.total.prev.teu });
+                        totalTonsPrev: e.total.prev.weight, totalTeuPrev: e.total.prev.teu,
+                        byYear: byYearObj, years: sortedYears });
     }
     return result;
   }
@@ -2648,9 +2672,295 @@ function FiltersPanel({ schema, index, filters, setFilters }) {
 }
 
 // ============================================================
+// COMPOSANT : Tableau multi-annees (clients x annees) pour un metier
+// Affiche les top clients en lignes, les annees en colonnes (Total / AGL / PDM)
+// ============================================================
+function MultiYearEvolutionTable({ A, topN = 25 }) {
+  const sch = A.schema;
+  const unit = sch.teuField ? "TEU" : "Tonnes";
+  const pdmMap = A.aglPdmByClient || new Map();
+  // Union des annees presentes dans les donnees clients
+  const yearSet = new Set();
+  for (const info of pdmMap.values()) {
+    for (const y of (info.years || [])) yearSet.add(y);
+  }
+  const years = Array.from(yearSet).sort();
+  if (years.length < 3) return null;
+
+  // Top N par volume total cumule (toutes annees, en native)
+  const rowsArr = [];
+  for (const [name, info] of pdmMap.entries()) {
+    let totAll = 0;
+    for (const y of years) totAll += (info.byYear?.[y]?.totVol || 0);
+    if (totAll > 0) rowsArr.push({ name, totAll, info });
+  }
+  rowsArr.sort((a,b) => b.totAll - a.totAll);
+  const top = rowsArr.slice(0, topN);
+
+  return (
+    <div style={{background:"white", padding:16, borderRadius:8, boxShadow:"0 1px 3px rgba(0,0,0,0.06)", marginBottom:16, overflowX:"auto"}}>
+      <div style={{fontWeight:700, color:"#0a2540", fontSize:14, marginBottom:6, textTransform:"uppercase", letterSpacing:0.5}}>
+        📅 Évolution multi-annees — Top {top.length} clients ({unit})
+      </div>
+      <div style={{fontSize:11, color:"#64748b", marginBottom:8}}>
+        Volume total / volume AGL / PDM AGL pour chaque annee chargee. Tri par volume total cumule decroissant.
+      </div>
+      <table style={{width:"100%", borderCollapse:"collapse", fontSize:11}}>
+        <thead>
+          <tr style={{background:"#0a2540", color:"white"}}>
+            <th rowSpan={2} style={{padding:"6px 8px", textAlign:"left", borderRight:"1px solid rgba(255,255,255,0.2)"}}>Client</th>
+            {years.map(y => (
+              <th key={y} colSpan={3} style={{padding:"6px 8px", textAlign:"center", borderLeft:"1px solid rgba(255,255,255,0.2)"}}>{y}</th>
+            ))}
+          </tr>
+          <tr style={{background:"#1e3a5f", color:"white"}}>
+            {years.map(y => (
+              <React.Fragment key={y}>
+                <th style={{padding:"4px 6px", textAlign:"right", fontWeight:500, fontSize:10, borderLeft:"1px solid rgba(255,255,255,0.2)"}}>Total {unit}</th>
+                <th style={{padding:"4px 6px", textAlign:"right", fontWeight:500, fontSize:10}}>AGL {unit}</th>
+                <th style={{padding:"4px 6px", textAlign:"right", fontWeight:500, fontSize:10}}>PDM</th>
+              </React.Fragment>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {top.map((row, idx) => (
+            <tr key={row.name} style={{background: idx % 2 === 0 ? "#f8fafc" : "white"}}>
+              <td style={{padding:"4px 8px", fontWeight:600, color:"#0a2540", borderRight:"1px solid #e2e8f0", whiteSpace:"nowrap", maxWidth:240, overflow:"hidden", textOverflow:"ellipsis"}} title={row.name}>{row.name}</td>
+              {years.map(y => {
+                const yb = row.info.byYear?.[y];
+                if (!yb || yb.totVol === 0) {
+                  return (
+                    <React.Fragment key={y}>
+                      <td style={{padding:"4px 6px", textAlign:"right", color:"#cbd5e1", borderLeft:"1px solid #e2e8f0"}}>—</td>
+                      <td style={{padding:"4px 6px", textAlign:"right", color:"#cbd5e1"}}>—</td>
+                      <td style={{padding:"4px 6px", textAlign:"right", color:"#cbd5e1"}}>—</td>
+                    </React.Fragment>
+                  );
+                }
+                const pdmCol = yb.pdm === null ? "#94a3b8" : (yb.pdm >= 50 ? "#15803d" : (yb.pdm >= 10 ? "#0a2540" : "#dc2626"));
+                return (
+                  <React.Fragment key={y}>
+                    <td style={{padding:"4px 6px", textAlign:"right", color:"#475569", borderLeft:"1px solid #e2e8f0"}}>{fmt(yb.totVol)}</td>
+                    <td style={{padding:"4px 6px", textAlign:"right", color:"#0a2540"}}>{fmt(yb.aglVol)}</td>
+                    <td style={{padding:"4px 6px", textAlign:"right", color:pdmCol, fontWeight:600}}>{yb.pdm === null ? "—" : fmt(yb.pdm, 1) + " %"}</td>
+                  </React.Fragment>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ============================================================
+// COMPOSANT : Detail d'un client (recherche + drill cross-metiers et cross-annees)
+// ============================================================
+function ClientDetailTab({ analyses }) {
+  const [query, setQuery] = useState("");
+  const [selected, setSelected] = useState(null);
+
+  // Union des noms de clients sur tous les metiers
+  const allClients = useMemo(() => {
+    const set = new Set();
+    for (const A of analyses) {
+      const pdmMap = A.aglPdmByClient || new Map();
+      for (const name of pdmMap.keys()) set.add(name);
+    }
+    return Array.from(set).sort();
+  }, [analyses]);
+
+  const matches = useMemo(() => {
+    if (!query || query.length < 2) return [];
+    const q = query.toLowerCase();
+    return allClients.filter(n => n.toLowerCase().includes(q)).slice(0, 50);
+  }, [query, allClients]);
+
+  // Pour le client selectionne : extrait toutes ses donnees par metier
+  const detail = useMemo(() => {
+    if (!selected) return null;
+    const perMetier = [];
+    const yearSet = new Set();
+    for (const A of analyses) {
+      const sch = A.schema;
+      const info = (A.aglPdmByClient || new Map()).get(selected);
+      if (!info) continue;
+      for (const y of (info.years || [])) yearSet.add(y);
+      perMetier.push({ schema: sch, info });
+    }
+    return { perMetier, years: Array.from(yearSet).sort() };
+  }, [selected, analyses]);
+
+  return (
+    <div>
+      <div className="section-h" style={{display:"flex", alignItems:"center", gap:8, borderBottom:"2px solid #0a2540"}}>
+        <span style={{background:"#0a2540", color:"#c9a14a", padding:"3px 10px", borderRadius:6, fontSize:11, fontWeight:700}}>CLIENT</span>
+        🔍 Detail client
+      </div>
+      <div className="insight-box" style={{marginTop:8}}>
+        Selectionnez un client pour voir tout son historique : volumes par annee, part AGL, evolution, cross-metiers.
+        Tapez au moins 2 caracteres pour filtrer la liste ({allClients.length} clients charges).
+      </div>
+
+      <div style={{background:"white", padding:16, borderRadius:8, boxShadow:"0 1px 3px rgba(0,0,0,0.06)", marginBottom:16}}>
+        <input
+          type="text"
+          placeholder="Rechercher un client (nom partiel)..."
+          value={query}
+          onChange={(e) => { setQuery(e.target.value); setSelected(null); }}
+          style={{width:"100%", padding:"8px 12px", border:"1px solid #cbd5e1", borderRadius:6, fontSize:13, outline:"none"}}
+        />
+        {matches.length > 0 && !selected && (
+          <div style={{maxHeight:240, overflowY:"auto", border:"1px solid #e2e8f0", borderRadius:6, marginTop:6}}>
+            {matches.map(name => (
+              <div key={name}
+                onClick={() => { setSelected(name); }}
+                style={{padding:"6px 12px", cursor:"pointer", borderBottom:"1px solid #f1f5f9", fontSize:12, color:"#0a2540"}}
+                onMouseEnter={(e) => e.target.style.background = "#fef9e7"}
+                onMouseLeave={(e) => e.target.style.background = "transparent"}>
+                {name}
+              </div>
+            ))}
+          </div>
+        )}
+        {selected && (
+          <div style={{marginTop:8, padding:"6px 10px", background:"#fef9e7", border:"1px solid #c9a14a", borderRadius:6, display:"inline-block", fontSize:13, color:"#0a2540"}}>
+            Selection : <strong>{selected}</strong>
+            <span style={{marginLeft:12, fontSize:11, color:"#64748b", cursor:"pointer", textDecoration:"underline"}} onClick={() => { setSelected(null); setQuery(""); }}>changer</span>
+          </div>
+        )}
+      </div>
+
+      {detail && detail.perMetier.length === 0 && (
+        <div style={{background:"#fef3c7", border:"1px solid #fde68a", padding:12, borderRadius:6, color:"#92400e", fontSize:13}}>
+          Aucune donnee pour ce client dans les metiers charges.
+        </div>
+      )}
+
+      {detail && detail.perMetier.length > 0 && (
+        <ClientDetailContent selected={selected} perMetier={detail.perMetier} years={detail.years} />
+      )}
+    </div>
+  );
+}
+
+function ClientDetailContent({ selected, perMetier, years }) {
+  // Cartes synthese : volume cumule, AGL cumule, PDM moyen ponderee, # metiers
+  const summary = useMemo(() => {
+    let totTons = 0, aglTons = 0;
+    const metiersActifs = new Set();
+    for (const m of perMetier) {
+      totTons += m.info.totalTonsAll || 0;
+      aglTons += (m.info.aglTonsCur || 0) + (m.info.aglTonsPrev || 0);
+      // approximation : "all" not exposed in tons, on prend cumul cur+prev pour AGL et all pour total
+      metiersActifs.add(m.schema.key);
+    }
+    // Plus precis : recalculer all AGL en sommant byYear
+    let aglTonsAll = 0;
+    for (const m of perMetier) {
+      for (const y of Object.keys(m.info.byYear || {})) {
+        aglTonsAll += m.info.byYear[y].aglWeight || 0;
+      }
+    }
+    const pdmGlobal = totTons > 0 ? (aglTonsAll / totTons * 100) : null;
+    return { totTons, aglTonsAll, pdmGlobal, nbMetiers: metiersActifs.size };
+  }, [perMetier]);
+
+  return (
+    <div>
+      <div style={{display:"grid", gridTemplateColumns:"repeat(4, 1fr)", gap:12, marginBottom:16}}>
+        <div style={{background:"#0a2540", color:"white", padding:14, borderRadius:8}}>
+          <div style={{fontSize:11, opacity:0.8, textTransform:"uppercase", letterSpacing:0.5}}>Volume total</div>
+          <div style={{fontSize:22, fontWeight:700, marginTop:4}}>{fmt(summary.totTons)}</div>
+          <div style={{fontSize:11, opacity:0.7}}>Tonnes cumulees (tous metiers)</div>
+        </div>
+        <div style={{background:"#c9a14a", color:"#0a2540", padding:14, borderRadius:8}}>
+          <div style={{fontSize:11, fontWeight:700, textTransform:"uppercase", letterSpacing:0.5}}>Volume AGL</div>
+          <div style={{fontSize:22, fontWeight:700, marginTop:4}}>{fmt(summary.aglTonsAll)}</div>
+          <div style={{fontSize:11}}>Tonnes traitees par AGL</div>
+        </div>
+        <div style={{background:"#15803d", color:"white", padding:14, borderRadius:8}}>
+          <div style={{fontSize:11, opacity:0.8, textTransform:"uppercase", letterSpacing:0.5}}>PDM AGL globale</div>
+          <div style={{fontSize:22, fontWeight:700, marginTop:4}}>{summary.pdmGlobal === null ? "—" : fmt(summary.pdmGlobal, 1) + " %"}</div>
+          <div style={{fontSize:11, opacity:0.7}}>Part AGL pondereed (Tonnes)</div>
+        </div>
+        <div style={{background:"#1e293b", color:"white", padding:14, borderRadius:8}}>
+          <div style={{fontSize:11, opacity:0.8, textTransform:"uppercase", letterSpacing:0.5}}>Metiers actifs</div>
+          <div style={{fontSize:22, fontWeight:700, marginTop:4}}>{summary.nbMetiers}</div>
+          <div style={{fontSize:11, opacity:0.7}}>sur {perMetier.length} charges</div>
+        </div>
+      </div>
+
+      {/* Une table par metier : annees en colonnes */}
+      {perMetier.map((m, i) => {
+        const sch = m.schema;
+        const info = m.info;
+        const unit = sch.teuField ? "TEU" : "Tonnes";
+        return (
+          <div key={i} style={{background:"white", padding:16, borderRadius:8, boxShadow:"0 1px 3px rgba(0,0,0,0.06)", marginBottom:16}}>
+            <div style={{fontWeight:700, color:"#0a2540", fontSize:14, marginBottom:8}}>
+              {sch.icon} {sch.label}
+              <span style={{marginLeft:12, fontSize:11, fontWeight:500, color:"#64748b"}}>
+                PDM (toutes annees) : <strong style={{color: info.pdmAll >= 50 ? "#15803d" : info.pdmAll >= 10 ? "#0a2540" : "#dc2626"}}>{fmt(info.pdmAll, 1)} %</strong>
+              </span>
+            </div>
+            <table style={{width:"100%", borderCollapse:"collapse", fontSize:12}}>
+              <thead>
+                <tr style={{background:"#f1f5f9", color:"#0a2540"}}>
+                  <th style={{padding:"6px 8px", textAlign:"left"}}>Annee</th>
+                  <th style={{padding:"6px 8px", textAlign:"right"}}>Total {unit}</th>
+                  {sch.teuField && <th style={{padding:"6px 8px", textAlign:"right"}}>Total Tonnes</th>}
+                  <th style={{padding:"6px 8px", textAlign:"right"}}>AGL {unit}</th>
+                  {sch.teuField && <th style={{padding:"6px 8px", textAlign:"right"}}>AGL Tonnes</th>}
+                  <th style={{padding:"6px 8px", textAlign:"right"}}>PDM AGL</th>
+                  <th style={{padding:"6px 8px", textAlign:"right"}}>Evol. vol N/N-1</th>
+                </tr>
+              </thead>
+              <tbody>
+                {years.map((y, idx) => {
+                  const yb = info.byYear?.[y];
+                  if (!yb) return (
+                    <tr key={y} style={{background: idx % 2 === 0 ? "white" : "#f8fafc"}}>
+                      <td style={{padding:"6px 8px", color:"#94a3b8"}}>{y}</td>
+                      <td colSpan={sch.teuField ? 6 : 4} style={{padding:"6px 8px", textAlign:"center", color:"#cbd5e1", fontStyle:"italic"}}>Aucune donnee</td>
+                    </tr>
+                  );
+                  // Evolution vs annee precedente disponible
+                  const prevY = years[years.indexOf(y) - 1];
+                  const prevYb = prevY ? info.byYear?.[prevY] : null;
+                  const evol = (prevYb && prevYb.totVol > 0) ? ((yb.totVol - prevYb.totVol) / prevYb.totVol * 100) : null;
+                  const evolCol = evol === null ? "#94a3b8" : (evol > 5 ? "#15803d" : (evol < -5 ? "#dc2626" : "#0a2540"));
+                  return (
+                    <tr key={y} style={{background: idx % 2 === 0 ? "white" : "#f8fafc"}}>
+                      <td style={{padding:"6px 8px", fontWeight:600, color:"#0a2540"}}>{y}</td>
+                      <td style={{padding:"6px 8px", textAlign:"right", color:"#475569"}}>{sch.teuField ? fmt(yb.totTeu) : fmt(yb.totWeight)}</td>
+                      {sch.teuField && <td style={{padding:"6px 8px", textAlign:"right", color:"#475569"}}>{fmt(yb.totWeight)}</td>}
+                      <td style={{padding:"6px 8px", textAlign:"right", color:"#0a2540", fontWeight:600}}>{sch.teuField ? fmt(yb.aglTeu) : fmt(yb.aglWeight)}</td>
+                      {sch.teuField && <td style={{padding:"6px 8px", textAlign:"right", color:"#0a2540"}}>{fmt(yb.aglWeight)}</td>}
+                      <td style={{padding:"6px 8px", textAlign:"right", fontWeight:600, color: yb.pdm === null ? "#94a3b8" : (yb.pdm >= 50 ? "#15803d" : (yb.pdm >= 10 ? "#0a2540" : "#dc2626"))}}>
+                        {yb.pdm === null ? "—" : fmt(yb.pdm, 1) + " %"}
+                      </td>
+                      <td style={{padding:"6px 8px", textAlign:"right", fontWeight:600, color:evolCol}}>
+                        {evol === null ? "—" : (evol >= 0 ? "+" : "") + fmt(evol, 1) + " %"}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ============================================================
 // COMPOSANT : Carte stratégique (taille × croissance) — SVG scatter
 // ============================================================
-function StrategicMap({ title, subtitle, points, xUnit, height = 420 }) {
+function StrategicMap({ title, subtitle, points, xUnit, height = 460, entityLabel = "client" }) {
   const [hovered, setHovered] = useState(null);
   const margin = { top: 30, right: 30, bottom: 50, left: 60 };
   const width = 1100;
@@ -2664,7 +2974,7 @@ function StrategicMap({ title, subtitle, points, xUnit, height = 420 }) {
       <div style={{background:"white", padding:16, borderRadius:8, boxShadow:"0 1px 3px rgba(0,0,0,0.06)", marginBottom:16}}>
         <div style={{fontWeight:700, color:"#0a2540", fontSize:14, marginBottom:4}}>{title}</div>
         {subtitle && <div style={{fontSize:11, color:"#64748b", marginBottom:8}}>{subtitle}</div>}
-        <div style={{padding:"30px", textAlign:"center", color:"#94a3b8", fontSize:13, fontStyle:"italic"}}>Aucun client à afficher sur ce périmètre.</div>
+        <div style={{padding:"30px", textAlign:"center", color:"#94a3b8", fontSize:13, fontStyle:"italic"}}>Aucun {entityLabel} à afficher sur ce périmètre.</div>
       </div>
     );
   }
@@ -2681,14 +2991,23 @@ function StrategicMap({ title, subtitle, points, xUnit, height = 420 }) {
   const xScale = (v) => margin.left + ((Math.log10(Math.max(1, v)) - lxMin) / (lxMax - lxMin || 1)) * innerW;
   const yScale = (v) => margin.top + (1 - (yClamp(v) - (-100)) / 400) * innerH;
 
-  // Couleur par quadrant
+  // Taille du rond proportionnelle au volume (zone ~ volume, donc rayon ~ sqrt)
+  const rMin = 4, rMax = 28;
+  const sqrtMax = Math.sqrt(xMax);
+  const sqrtMin = Math.sqrt(Math.max(1, xMin));
+  const rScale = (v) => {
+    if (sqrtMax === sqrtMin) return (rMin + rMax) / 2;
+    const t = (Math.sqrt(Math.max(1, v)) - sqrtMin) / (sqrtMax - sqrtMin);
+    return rMin + t * (rMax - rMin);
+  };
+
+  // Couleur par quadrant (taille n'influence plus la couleur — la couleur ne code que la croissance)
   const colorFor = (p) => {
-    const big = p.x >= xMax * 0.1;
-    if (p.y > 50) return big ? "#14532d" : "#86efac";
-    if (p.y > 10) return big ? "#16a34a" : "#bbf7d0";
-    if (p.y > -10) return "#fde047";
-    if (p.y > -40) return "#fb923c";
-    return "#ef4444";
+    if (p.y > 50) return "#15803d";
+    if (p.y > 10) return "#22c55e";
+    if (p.y > -10) return "#eab308";
+    if (p.y > -40) return "#f97316";
+    return "#dc2626";
   };
 
   // Ticks X (puissances de 10)
@@ -2744,16 +3063,19 @@ function StrategicMap({ title, subtitle, points, xUnit, height = 420 }) {
           {/* Labels axes */}
           <text x={margin.left + innerW / 2} y={height - 10} textAnchor="middle" fontSize={11} fill="#0a2540">Volume — {xUnit}, échelle log</text>
           <text x={15} y={margin.top + innerH / 2} textAnchor="middle" fontSize={11} fill="#0a2540" transform={`rotate(-90, 15, ${margin.top + innerH / 2})`}>Croissance % vs N-1</text>
-          {/* Points */}
-          {valid.map((p, i) => (
+          {/* Points (tries par rayon decroissant pour que les gros ne masquent pas les petits) */}
+          {valid
+            .map((p, i) => ({ p, i, r: rScale(p.x) }))
+            .sort((a, b) => b.r - a.r)
+            .map(({ p, i, r }) => (
             <circle key={i}
               cx={xScale(p.x)}
               cy={yScale(p.y)}
-              r={hovered === i ? 7 : 4}
+              r={hovered === i ? r + 2 : r}
               fill={colorFor(p)}
-              fillOpacity={0.75}
+              fillOpacity={0.65}
               stroke={hovered === i ? "#0a2540" : "white"}
-              strokeWidth={hovered === i ? 2 : 0.5}
+              strokeWidth={hovered === i ? 2 : 0.8}
               onMouseEnter={() => setHovered(i)}
               onMouseLeave={() => setHovered(null)}
               style={{cursor:"pointer"}}
@@ -2761,10 +3083,21 @@ function StrategicMap({ title, subtitle, points, xUnit, height = 420 }) {
           ))}
         </svg>
         {hovered !== null && valid[hovered] && (
-          <div style={{position:"absolute", top:8, right:8, background:"#0a2540", color:"white", padding:"8px 12px", borderRadius:6, fontSize:12, maxWidth:300, pointerEvents:"none", boxShadow:"0 4px 12px rgba(0,0,0,0.2)"}}>
-            <div style={{fontWeight:700, marginBottom:4}}>{valid[hovered].name}</div>
-            <div>Volume : {fmt(valid[hovered].x)} {xUnit}</div>
-            <div>Croissance : {valid[hovered].y >= 0 ? "+" : ""}{fmt(valid[hovered].y, 1)} %</div>
+          <div style={{position:"absolute", top:8, right:8, background:"#0a2540", color:"white", padding:"10px 14px", borderRadius:6, fontSize:12, maxWidth:340, pointerEvents:"none", boxShadow:"0 4px 12px rgba(0,0,0,0.2)"}}>
+            <div style={{fontWeight:700, marginBottom:4, fontSize:13}}>{valid[hovered].name}</div>
+            <div>Volume : <strong>{fmt(valid[hovered].x)} {xUnit}</strong></div>
+            <div>Croissance : <strong>{valid[hovered].y >= 0 ? "+" : ""}{fmt(valid[hovered].y, 1)} %</strong></div>
+            {valid[hovered].breakdown && valid[hovered].breakdown.length > 0 && (
+              <div style={{marginTop:6, paddingTop:6, borderTop:"1px solid rgba(255,255,255,0.2)"}}>
+                <div style={{fontSize:10, opacity:0.7, textTransform:"uppercase", letterSpacing:0.5, marginBottom:2}}>Repartition par metier</div>
+                {valid[hovered].breakdown.map((b, k) => (
+                  <div key={k} style={{display:"flex", justifyContent:"space-between", gap:12, fontSize:11}}>
+                    <span>{b.icon} {b.label}</span>
+                    <span><strong>{fmt(b.vol)}</strong> {b.unit} <span style={{opacity:0.6}}>({fmt(b.pct, 0)} %)</span></span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -2776,71 +3109,112 @@ function StrategicMap({ title, subtitle, points, xUnit, height = 420 }) {
 // COMPOSANT : Onglet "Carte stratégique AGL" — un scatter par métier + multi-métier
 // ============================================================
 function StrategicTab({ analyses, mode }) {
-  // mode: "agl" ou "concurrence"
+  // mode: "agl" (par CLIENT que AGL traite) ou "concurrence" (par TRANSITAIRE concurrent)
   const isAGL = mode === "agl";
   const tabTitle = isAGL ? "🎯 Carte stratégique AGL" : "⚔ Carte stratégique Concurrence";
+  const entityLabel = isAGL ? "client" : "transitaire concurrent";
   const definition = isAGL
-    ? "Périmètre : clients que AGL traite (au moins partiellement, PDM > 0). Volume = volume traité par AGL, croissance = évolution du volume AGL N vs N-1."
-    : "Périmètre : clients que AGL ne traite PAS du tout (PDM AGL = 0 %). Volume = volume traité par la concurrence, croissance = évolution de ce volume N vs N-1.";
+    ? "Périmètre : CLIENTS que AGL traite (PDM > 0). Chaque point = 1 client. X = volume traité par AGL pour ce client (échelle log), Y = croissance N vs N-1. Taille du rond proportionnelle au volume."
+    : "Périmètre : TRANSITAIRES concurrents (hors AGL). Chaque point = 1 transitaire concurrent. X = volume total qu'il a traité (échelle log), Y = croissance N vs N-1. Taille du rond proportionnelle au volume.";
 
-  // Pour chaque analyse (métier), construit les points
+  // Detection AGL (memoisable)
+  const isAGLName = (s) => {
+    const u = String(s||"").toUpperCase();
+    return u.includes("AFRICA GLOBAL LOGISTICS") || u.includes("AGL") || u.includes("BOLLORE TRANSPORT") || u.includes("BOLLORÉ TRANSPORT");
+  };
+
+  // Helper : par-metier accumulation par TRANSITAIRE (exclu AGL)
+  // retourne Map<transitaire, { volCur, volPrev, tonsCur, tonsPrev, teuCur, teuPrev }>
+  function accumByTransitaire(A) {
+    const sch = A.schema;
+    const rows = A.rows || [];
+    const map = new Map();
+    if (A.byYear.length < 2) {
+      // Pas assez d'annees pour cur/prev
+      return map;
+    }
+    const curYear = A.byYear[A.byYear.length-1].year;
+    const prevYear = A.byYear[A.byYear.length-2].year;
+    for (const r of rows) {
+      const trans = safeStr(r[sch.transitaireField]);
+      if (!trans || isAGLName(trans)) continue;
+      const y = safeStr(r[sch.yearField]);
+      const bucket = y === curYear ? "cur" : (y === prevYear ? "prev" : null);
+      if (!bucket) continue;
+      let e = map.get(trans);
+      if (!e) { e = { teuCur:0, teuPrev:0, tonsCur:0, tonsPrev:0 }; map.set(trans, e); }
+      const teu = sch.teuField ? numVal(r[sch.teuField]) : 0;
+      const w = numVal(r[sch.weightField]);
+      if (bucket === "cur") { e.teuCur += teu; e.tonsCur += w; }
+      else { e.teuPrev += teu; e.tonsPrev += w; }
+    }
+    return map;
+  }
+
+  // Per-metier points
   const perMetier = analyses.map(A => {
     const sch = A.schema;
-    const pdmMap = A.aglPdmByClient || new Map();
+    const xUnit = sch.teuField ? "TEU" : "Tonnes";
     const points = [];
-    for (const [name, info] of pdmMap.entries()) {
-      if (isAGL) {
-        // Client traité par AGL : aglVolCur > 0
+    if (isAGL) {
+      const pdmMap = A.aglPdmByClient || new Map();
+      for (const [name, info] of pdmMap.entries()) {
         if ((info.aglVolCur || 0) > 0) {
           const x = info.aglVolCur;
           const prev = info.aglVolPrev || 0;
-          const y = prev > 0 ? ((info.aglVolCur - prev) / prev * 100) : (info.aglVolCur > 0 ? 300 : 0);
-          points.push({ name, x, y });
-        }
-      } else {
-        // Concurrence : aglVolCur === 0 (et totalVolCur > 0)
-        const totCur = info.totalVolCur || 0;
-        const aglCur = info.aglVolCur || 0;
-        if (aglCur === 0 && totCur > 0) {
-          const x = totCur;
-          const prev = info.totalVolPrev || 0;
-          const y = prev > 0 ? ((totCur - prev) / prev * 100) : (totCur > 0 ? 300 : 0);
+          const y = prev > 0 ? ((info.aglVolCur - prev) / prev * 100) : 300;
           points.push({ name, x, y });
         }
       }
+    } else {
+      const tMap = accumByTransitaire(A);
+      for (const [trans, e] of tMap.entries()) {
+        const cur = sch.teuField ? e.teuCur : e.tonsCur;
+        const prev = sch.teuField ? e.teuPrev : e.tonsPrev;
+        if (cur > 0) {
+          const y = prev > 0 ? ((cur - prev) / prev * 100) : 300;
+          points.push({ name: trans, x: cur, y });
+        }
+      }
     }
-    const xUnit = sch.teuField ? "TEU" : "Tonnes";
     return { schema: sch, points, xUnit };
   });
 
-  // Multi-métier : agrégation en Tonnes
+  // Multi-metier : agregation Tonnes + breakdown par metier
+  // multiMap[name] = { tonsCur, tonsPrev, perMetier: { [metierKey]: { tons, schema } } }
   const multiMap = new Map();
   for (const A of analyses) {
-    const pdmMap = A.aglPdmByClient || new Map();
-    for (const [name, info] of pdmMap.entries()) {
-      if (!multiMap.has(name)) multiMap.set(name, { aglTonsCur:0, aglTonsPrev:0, totTonsCur:0, totTonsPrev:0 });
-      const c = multiMap.get(name);
-      c.aglTonsCur += info.aglTonsCur || 0;
-      c.aglTonsPrev += info.aglTonsPrev || 0;
-      c.totTonsCur += info.totalTonsCur || 0;
-      c.totTonsPrev += info.totalTonsPrev || 0;
+    const sch = A.schema;
+    if (isAGL) {
+      const pdmMap = A.aglPdmByClient || new Map();
+      for (const [name, info] of pdmMap.entries()) {
+        if (!multiMap.has(name)) multiMap.set(name, { tonsCur:0, tonsPrev:0, perMetier: {} });
+        const c = multiMap.get(name);
+        const tonsCur = info.aglTonsCur || 0;
+        const tonsPrev = info.aglTonsPrev || 0;
+        c.tonsCur += tonsCur;
+        c.tonsPrev += tonsPrev;
+        if (tonsCur > 0) c.perMetier[sch.key] = { tons: tonsCur, schema: sch };
+      }
+    } else {
+      const tMap = accumByTransitaire(A);
+      for (const [trans, e] of tMap.entries()) {
+        if (!multiMap.has(trans)) multiMap.set(trans, { tonsCur:0, tonsPrev:0, perMetier: {} });
+        const c = multiMap.get(trans);
+        c.tonsCur += e.tonsCur;
+        c.tonsPrev += e.tonsPrev;
+        if (e.tonsCur > 0) c.perMetier[sch.key] = { tons: e.tonsCur, schema: sch };
+      }
     }
   }
   const multiPoints = [];
   for (const [name, c] of multiMap.entries()) {
-    if (isAGL) {
-      if (c.aglTonsCur > 0) {
-        const y = c.aglTonsPrev > 0 ? ((c.aglTonsCur - c.aglTonsPrev) / c.aglTonsPrev * 100) : 300;
-        multiPoints.push({ name, x: c.aglTonsCur, y });
-      }
-    } else {
-      const concCur = c.totTonsCur - c.aglTonsCur;
-      const concPrev = c.totTonsPrev - c.aglTonsPrev;
-      if (c.aglTonsCur === 0 && concCur > 0) {
-        const y = concPrev > 0 ? ((concCur - concPrev) / concPrev * 100) : 300;
-        multiPoints.push({ name, x: concCur, y });
-      }
-    }
+    if (c.tonsCur <= 0) continue;
+    const y = c.tonsPrev > 0 ? ((c.tonsCur - c.tonsPrev) / c.tonsPrev * 100) : 300;
+    const breakdown = Object.values(c.perMetier)
+      .sort((a, b) => b.tons - a.tons)
+      .map(m => ({ icon: m.schema.icon, label: m.schema.label, vol: m.tons, unit: "Tonnes", pct: c.tonsCur > 0 ? (m.tons / c.tonsCur * 100) : 0 }));
+    multiPoints.push({ name, x: c.tonsCur, y, breakdown });
   }
 
   return (
@@ -2853,15 +3227,17 @@ function StrategicTab({ analyses, mode }) {
       {perMetier.map((m, i) => (
         <StrategicMap key={i}
           title={`${m.schema.icon} ${m.schema.label}`}
-          subtitle={`Taille = volume ${m.xUnit} (échelle log) · Croissance % vs N-1 (clampée à [-100 %, +300 %])`}
+          subtitle={`X = volume en ${m.xUnit} (echelle log) · Y = croissance % N vs N-1 (clampee [-100 %, +300 %]) · Taille du rond ∝ volume`}
           points={m.points}
-          xUnit={m.xUnit} />
+          xUnit={m.xUnit}
+          entityLabel={entityLabel} />
       ))}
       <StrategicMap
-        title="🔗 Vue multi-métiers (cumul Tonnes)"
-        subtitle="Cumul des Tonnes du client sur tous les métiers chargés. Permet de comparer la taille business globale d'un client across métiers."
+        title="🔗 Vue multi-metiers (cumul Tonnes)"
+        subtitle={`Cumul Tonnes sur tous les metiers charges. Survolez un point pour voir la repartition par metier.`}
         points={multiPoints}
-        xUnit="Tonnes" />
+        xUnit="Tonnes"
+        entityLabel={entityLabel} />
     </div>
   );
 }
@@ -2912,14 +3288,16 @@ function ReportPreview({ analyses, allMetiers }) {
   const afterHinterland = baseN + (hasMultiMetiers ? 1 : 0) + (hasImpHinterland ? 1 : 0) + (hasExpHinterland ? 1 : 0);
   const idxAGL = afterHinterland;
   const idxConc = afterHinterland + 1;
-  const maxIdx = Math.max(baseN - 1, idxMulti ?? -1, idxImpH ?? -1, idxExpH ?? -1, idxConc);
+  const idxClient = afterHinterland + 2;
+  const maxIdx = Math.max(baseN - 1, idxMulti ?? -1, idxImpH ?? -1, idxExpH ?? -1, idxClient);
 
   const isMultiTab = idxMulti !== null && activeTab === idxMulti;
   const isImpHTab = idxImpH !== null && activeTab === idxImpH;
   const isExpHTab = idxExpH !== null && activeTab === idxExpH;
   const isAGLTab = activeTab === idxAGL;
   const isConcTab = activeTab === idxConc;
-  const showMetierTab = !isMultiTab && !isImpHTab && !isExpHTab && !isAGLTab && !isConcTab;
+  const isClientTab = activeTab === idxClient;
+  const showMetierTab = !isMultiTab && !isImpHTab && !isExpHTab && !isAGLTab && !isConcTab && !isClientTab;
   const A = showMetierTab ? (validAnalyses[activeTab] || validAnalyses[0]) : null;
 
   return (
@@ -2982,6 +3360,14 @@ function ReportPreview({ analyses, allMetiers }) {
           onClick={() => setActiveTab(idxConc)}>
           ⚔ Carte Concurrence
         </button>
+        <button key="client"
+          className="px-4 py-2 text-sm font-semibold transition"
+          style={isClientTab
+            ? {borderBottom: "3px solid #c9a14a", color: "#0a2540", background: "#fef9e7", marginBottom: "-1px"}
+            : {borderBottom: "3px solid transparent", color: "#64748b", background: "transparent"}}
+          onClick={() => setActiveTab(idxClient)}>
+          🔍 Detail client
+        </button>
       </div>
 
       {isMultiTab ? <MultiMetierAnalysis analyses={validAnalyses} hinterland={hinterland} /> :
@@ -2989,6 +3375,7 @@ function ReportPreview({ analyses, allMetiers }) {
        isExpHTab ? <HinterlandPreviewContent A={hinterland.exportHinterland} sens="export" /> :
        isAGLTab ? <StrategicTab analyses={validAnalyses} mode="agl" /> :
        isConcTab ? <StrategicTab analyses={validAnalyses} mode="concurrence" /> :
+       isClientTab ? <ClientDetailTab analyses={validAnalyses} /> :
        (A && (A.schema.key === "HINTERLAND_IMPORT" || A.schema.key === "HINTERLAND_EXPORT"))
          ? <HinterlandPreviewContent A={A} sens={A.schema.sens} />
          : <MetierPreviewContent A={A} />}
@@ -3978,6 +4365,9 @@ function MetierPreviewContent({ A, hideHeader, contextLabel }) {
           })}</tbody>
         </table>
       </>)}
+
+      {/* Tableau Evolution multi-annees (visible si >= 3 annees chargees) */}
+      <MultiYearEvolutionTable A={A} topN={25} />
     </div>
   );
 }
