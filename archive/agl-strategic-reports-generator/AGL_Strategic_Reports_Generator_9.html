@@ -3449,6 +3449,154 @@ function StrategicMap({ title, subtitle, points, xUnit, height = 460, entityLabe
 // ============================================================
 // COMPOSANT : Onglet "Carte stratégique AGL" — un scatter par métier + multi-métier
 // ============================================================
+// ============================================================
+// COMPOSANT : Executive Summary pour les cartes strategiques
+// (style EY/McKinsey/Bloomberg, derive des points + mode)
+// ============================================================
+function CarteExecutiveSummary({ points, mode, perMetierPoints, analyses }) {
+  const isAGL = mode === "agl";
+  if (!points || points.length === 0) return null;
+
+  // Stats globales
+  const totalVol = points.reduce((s, p) => s + (p.x || 0), 0);
+  const sorted = [...points].sort((a, b) => b.x - a.x);
+  const top1 = sorted[0];
+  const top5Sum = sorted.slice(0, 5).reduce((s, p) => s + p.x, 0);
+  const top10Sum = sorted.slice(0, 10).reduce((s, p) => s + p.x, 0);
+  const top5Share = totalVol > 0 ? (top5Sum / totalVol * 100) : 0;
+  const top10Share = totalVol > 0 ? (top10Sum / totalVol * 100) : 0;
+  // HHI : indice de Herfindahl pour mesurer la concentration (sur les parts)
+  const hhi = totalVol > 0 ? sorted.reduce((s, p) => s + Math.pow(p.x / totalVol * 100, 2), 0) : 0;
+
+  // Croissance mediane (median des y)
+  const ys = points.map(p => p.y).filter(v => v !== null && !isNaN(v) && v < 300).sort((a, b) => a - b);
+  const median = ys.length > 0 ? ys[Math.floor(ys.length / 2)] : null;
+  const growing = points.filter(p => p.y > 5).length;
+  const stable = points.filter(p => p.y >= -5 && p.y <= 5).length;
+  const shrinking = points.filter(p => p.y < -5).length;
+
+  // Top gainer (volume significatif et croissance la plus haute)
+  const medianX = sorted.length > 0 ? sorted[Math.floor(sorted.length / 2)].x : 0;
+  const significant = points.filter(p => p.x > medianX);
+  const topGainer = [...significant].sort((a, b) => b.y - a.y)[0];
+  const topLoser = [...significant].sort((a, b) => a.y - b.y)[0];
+
+  // AGL specifique
+  let aglPoint = null;
+  let aglShare = null;
+  if (!isAGL) {
+    aglPoint = points.find(p => p.isAGL);
+    if (aglPoint) aglShare = totalVol > 0 ? (aglPoint.x / totalVol * 100) : null;
+  }
+
+  // Lecture du diagnostic
+  const concentLabel = hhi > 2500 ? "tres concentre" : hhi > 1500 ? "concentre" : hhi > 1000 ? "modere" : "fragmente";
+  const dynLabel = median === null ? "indetermine" : median > 5 ? "expansion" : median < -5 ? "recession" : "stable";
+  const dynColor = median === null ? "#64748b" : median > 5 ? "#86efac" : median < -5 ? "#fca5a5" : "#fde68a";
+
+  // Strategic takeaway
+  let takeawayTitle, takeawayText;
+  if (isAGL) {
+    if (growing > shrinking * 1.5) {
+      takeawayTitle = "Portefeuille AGL en expansion";
+      takeawayText = `${growing} clients en croissance vs ${shrinking} en repli. Top opportunite : ${topGainer ? topGainer.name : "—"} (${topGainer ? (topGainer.y >= 0 ? "+" : "") + fmt(topGainer.y, 1) + " %" : "—"}). Capitaliser : engagements contractuels, cross-sell metiers, programmes KAM dedies aux comptes top.`;
+    } else if (shrinking > growing * 1.5) {
+      takeawayTitle = "Portefeuille AGL sous pression";
+      takeawayText = `${shrinking} clients en repli vs ${growing} en croissance. Risque concentration : ${top1 ? top1.name : "—"} = ${fmt(top5Share, 1)} % du Top 5. Priorite : plan de retention sur le Top 10, identifier les facteurs de defection, accelerer les comptes mid-tier.`;
+    } else {
+      takeawayTitle = "Portefeuille AGL contraste";
+      takeawayText = `Mix de croissance et repli equilibre (${growing} vs ${shrinking}). Marche ${concentLabel} (HHI = ${fmt(hhi, 0)}). Action : segmenter le portefeuille (Stars / Cash cows / Question marks / Dogs) et calibrer les ressources commerciales selon la matrice.`;
+    }
+  } else {
+    if (aglPoint && aglShare !== null) {
+      const aglRank = sorted.findIndex(p => p.isAGL) + 1;
+      if (aglShare > 30) {
+        takeawayTitle = "AGL en position de leader sectoriel";
+        takeawayText = `AGL n°${aglRank}/${points.length} transitaires, ${fmt(aglShare, 1)} % du volume marche. Croissance AGL : ${aglPoint.y >= 0 ? "+" : ""}${fmt(aglPoint.y, 1)} % vs marche median ${median !== null ? (median >= 0 ? "+" : "") + fmt(median, 1) + " %" : "—"}. Defendre par contrats long terme + barrieres a l entree.`;
+      } else if (aglShare > 10) {
+        takeawayTitle = "AGL en challenger";
+        takeawayText = `AGL n°${aglRank}/${points.length} avec ${fmt(aglShare, 1)} % du marche. Leader : ${top1 ? top1.name : "—"} (${top1 ? fmt(top1.x/totalVol*100, 1) + " %" : "—"}). Strategie de challenger : differenciation service, target les comptes du leader, agressivite tarifaire selective.`;
+      } else {
+        takeawayTitle = "AGL entrant a developper";
+        takeawayText = `AGL n°${aglRank}/${points.length} avec seulement ${fmt(aglShare, 1)} % du marche. Marche ${concentLabel}. Gisement majeur : capter les top 10 concurrents, evaluer build vs acquisitions ciblees.`;
+      }
+    } else {
+      takeawayTitle = "Position AGL a documenter";
+      takeawayText = "AGL non identifie sur cette carte. Verifier la base de transitaires et la coherence du libelle AGL/Bollore.";
+    }
+  }
+
+  return (
+    <div style={{
+      background: "linear-gradient(135deg, #0a2540 0%, #1e3a5f 100%)",
+      color: "white", borderRadius: 8, padding: 0,
+      marginBottom: 16, boxShadow: "0 4px 12px rgba(10,37,64,0.15)",
+      overflow: "hidden"
+    }}>
+      <div style={{background: "#c9a14a", color: "#0a2540", padding: "8px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", fontWeight: 700, fontSize: 12, textTransform: "uppercase", letterSpacing: 1}}>
+        <span>📊 Executive Brief — {isAGL ? "Portefeuille AGL" : "Paysage concurrentiel"}</span>
+        <span style={{fontSize: 10, fontWeight: 600, opacity: 0.85}}>{points.length} {isAGL ? "client" : "transitaire"}{points.length > 1 ? "s" : ""} analyse{points.length > 1 ? "s" : ""}</span>
+      </div>
+      <div style={{padding: "12px 18px", borderBottom: "1px solid rgba(255,255,255,0.1)", display:"flex", gap: 22, flexWrap: "wrap", alignItems: "center", fontSize: 12}}>
+        <div><span style={{opacity: 0.65, fontSize: 10, textTransform:"uppercase", letterSpacing: 0.6, display:"block"}}>{isAGL ? "Volume AGL traite" : "Volume marche"}</span><strong style={{fontSize: 16}}>{fmt(totalVol)} T</strong></div>
+        <div><span style={{opacity: 0.65, fontSize: 10, textTransform:"uppercase", letterSpacing: 0.6, display:"block"}}>{isAGL ? "Client #1" : "Leader transit"}</span>
+          <strong style={{fontSize: 14, color: "#c9a14a"}}>{top1 ? top1.name.substring(0, 26) + (top1.name.length > 26 ? "…" : "") : "—"}</strong>
+          <span style={{marginLeft: 6, fontSize: 10, opacity: 0.75}}>({top1 && totalVol > 0 ? fmt(top1.x / totalVol * 100, 1) : "—"} %)</span>
+        </div>
+        <div><span style={{opacity: 0.65, fontSize: 10, textTransform:"uppercase", letterSpacing: 0.6, display:"block"}}>Top 5 / Top 10</span>
+          <strong style={{fontSize: 14}}>{fmt(top5Share, 1)} % / {fmt(top10Share, 1)} %</strong>
+        </div>
+        <div><span style={{opacity: 0.65, fontSize: 10, textTransform:"uppercase", letterSpacing: 0.6, display:"block"}}>HHI</span>
+          <strong style={{fontSize: 14}}>{fmt(hhi, 0)}</strong>
+          <span style={{marginLeft: 6, padding: "2px 6px", background: "rgba(255,255,255,0.15)", borderRadius: 3, fontSize: 9, fontWeight: 700, textTransform: "uppercase"}}>{concentLabel}</span>
+        </div>
+        <div><span style={{opacity: 0.65, fontSize: 10, textTransform:"uppercase", letterSpacing: 0.6, display:"block"}}>Dynamique mediane</span>
+          {median !== null ? (
+            <strong style={{fontSize: 14, color: dynColor}}>{median >= 0 ? "+" : ""}{fmt(median, 1)} %</strong>
+          ) : <strong style={{fontSize: 14}}>—</strong>}
+          <span style={{marginLeft: 6, padding: "2px 6px", background: "rgba(255,255,255,0.15)", borderRadius: 3, fontSize: 9, fontWeight: 700, textTransform: "uppercase"}}>{dynLabel}</span>
+        </div>
+        {!isAGL && aglPoint && (
+          <div><span style={{opacity: 0.65, fontSize: 10, textTransform:"uppercase", letterSpacing: 0.6, display:"block"}}>Position AGL</span>
+            <strong style={{fontSize: 14, color: "#60a5fa"}}>n°{sorted.findIndex(p => p.isAGL) + 1} / {points.length}</strong>
+            <span style={{marginLeft: 6, fontSize: 11, opacity: 0.85}}>({fmt(aglShare, 1)} % · {aglPoint.y >= 0 ? "+" : ""}{fmt(aglPoint.y, 1)} %)</span>
+          </div>
+        )}
+      </div>
+      <div style={{padding: "16px 18px", display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 18}}>
+        <div>
+          <div style={{fontSize: 10, fontWeight: 700, color: "#c9a14a", textTransform: "uppercase", letterSpacing: 1.2, marginBottom: 6, borderBottom: "1px solid rgba(201,161,74,0.4)", paddingBottom: 4}}>
+            📡 Structure du marche
+          </div>
+          <div style={{fontSize: 12, lineHeight: 1.55, opacity: 0.92}}>
+            <strong>{points.length}</strong> {isAGL ? "clients servis par AGL" : "transitaires actifs"} · Top 1 capte <strong>{top1 && totalVol > 0 ? fmt(top1.x/totalVol*100, 1) : "—"} %</strong> · Top 5 = <strong>{fmt(top5Share, 1)} %</strong> · Top 10 = <strong>{fmt(top10Share, 1)} %</strong>.
+            <div style={{marginTop: 6, fontSize: 11, opacity: 0.75, fontStyle: "italic"}}>
+              Marche <strong>{concentLabel}</strong> (HHI = {fmt(hhi, 0)} {hhi > 2500 ? "> 2500 = oligopole" : hhi > 1500 ? "" : "= sain concurrentiellement"}).
+            </div>
+          </div>
+        </div>
+        <div>
+          <div style={{fontSize: 10, fontWeight: 700, color: "#c9a14a", textTransform: "uppercase", letterSpacing: 1.2, marginBottom: 6, borderBottom: "1px solid rgba(201,161,74,0.4)", paddingBottom: 4}}>
+            ⚡ Dynamique
+          </div>
+          <div style={{fontSize: 12, lineHeight: 1.55, opacity: 0.92}}>
+            <strong style={{color: "#86efac"}}>{growing}</strong> en croissance (&gt; +5 %), <strong style={{color: "#fde68a"}}>{stable}</strong> stables, <strong style={{color: "#fca5a5"}}>{shrinking}</strong> en repli (&lt; -5 %).
+            {topGainer && <><br/><span style={{opacity:0.8}}>Top gain :</span> <strong>{topGainer.name.substring(0, 22)}</strong> ({topGainer.y >= 0 ? "+" : ""}{fmt(topGainer.y, 1)} %)</>}
+            {topLoser && topLoser.y < 0 && <><br/><span style={{opacity:0.8}}>Top perte :</span> <strong>{topLoser.name.substring(0, 22)}</strong> ({fmt(topLoser.y, 1)} %)</>}
+          </div>
+        </div>
+        <div style={{background: "rgba(201,161,74,0.08)", padding: 12, borderRadius: 4, borderLeft: "3px solid #c9a14a"}}>
+          <div style={{fontSize: 10, fontWeight: 700, color: "#c9a14a", textTransform: "uppercase", letterSpacing: 1.2, marginBottom: 6}}>
+            🎯 Strategic Takeaway
+          </div>
+          <div style={{fontSize: 13, fontWeight: 700, marginBottom: 6, color: "#fde68a"}}>{takeawayTitle}</div>
+          <div style={{fontSize: 12, lineHeight: 1.55, opacity: 0.92}}>{takeawayText}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function StrategicTab({ analyses, mode }) {
   // mode: "agl" (par CLIENT que AGL traite) ou "concurrence" (par TRANSITAIRE concurrent)
   const isAGL = mode === "agl";
@@ -3613,6 +3761,9 @@ function StrategicTab({ analyses, mode }) {
         </span>
       </div>
 
+      {/* Executive Summary consolide de la carte (style EY/McKinsey/Bloomberg) */}
+      <CarteExecutiveSummary points={multiPoints} mode={mode} />
+
       {(() => {
         // Slice helper : tri par x desc puis topN ; en mode concurrence, on garde toujours AGL meme s'il sort du top
         const sliceTop = (pts) => {
@@ -3667,8 +3818,8 @@ function ReportPreview({ analyses, allMetiers }) {
     const hasImpH = !!hint.importHinterland;
     const hasExpH = !!hint.exportHinterland;
     const baseN = validAnalyses.length;
-    // +2 pour les onglets Carte AGL et Carte Concurrence (toujours presents)
-    const maxValid = baseN - 1 + (hasMulti ? 1 : 0) + (hasImpH ? 1 : 0) + (hasExpH ? 1 : 0) + 2;
+    // +3 pour les onglets Carte AGL, Carte Concurrence et Detail client (toujours presents)
+    const maxValid = baseN - 1 + (hasMulti ? 1 : 0) + (hasImpH ? 1 : 0) + (hasExpH ? 1 : 0) + 3;
     if (activeTab > maxValid) setActiveTab(0);
   }, [validAnalyses.length, activeTab, allMetiers]);
 
