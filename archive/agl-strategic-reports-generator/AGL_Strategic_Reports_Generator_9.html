@@ -5795,6 +5795,7 @@ function App() {
   // Filtre années globaux (cases à cocher)
   const [yearFilter, setYearFilter] = useState(new Set()); // Set des années sélectionnées; vide = TOUTES
   const [exclusions, setExclusions] = useState({ nonApure: false, petroleBrut: false, petroleRaffine: false }); // exclusions globales sur les BL
+  const [monthCutoff, setMonthCutoff] = useState(0); // 0 = aucun filtre, 1-12 = inclure mois <= cutoff (YTD comparable cross-annees)
   // Storage hors-state pour les rows brutes par fichier
   const rawFilesRef = useRef({}); // { metierKey: [{fileId, rows}, ...] }
 
@@ -5814,7 +5815,7 @@ function App() {
   }, []);
 
   // ----- Helper : recalcule analysis + index à partir des fichiers actifs (filtre années + exclusions) -----
-  const recomputeFromFiles = useCallback((metierKey, filesList, yearFilterSet, exclusionsSet) => {
+  const recomputeFromFiles = useCallback((metierKey, filesList, yearFilterSet, exclusionsSet, monthCutoffNum) => {
     const schema = METIER_SCHEMAS[metierKey];
     // Concaténation des rows des fichiers
     let allRows = [];
@@ -5828,6 +5829,39 @@ function App() {
       allRows = allRows.filter(r => {
         const y = String(r[schema.yearField] || "").trim();
         return yearFilterSet.has(y);
+      });
+    }
+    // Filtre YTD comparable : si monthCutoff > 0, ne garde que les rows dont le
+    // mois <= monthCutoff (permet de comparer Jan-Mai 2025 vs Jan-Mai 2026)
+    if (monthCutoffNum && monthCutoffNum > 0 && schema.monthField) {
+      const parseMonth = (v) => {
+        const s = String(v||"").trim().toUpperCase();
+        if (!s) return null;
+        // Numerique direct (1-12 ou "01"-"12")
+        const n = parseInt(s, 10);
+        if (!isNaN(n) && n >= 1 && n <= 12) return n;
+        // Libelle FR
+        const map = {
+          "JANVIER":1, "JAN":1, "JANV":1,
+          "FEVRIER":2, "FÉVRIER":2, "FEV":2, "FÉV":2, "FEVR":2,
+          "MARS":3, "MAR":3,
+          "AVRIL":4, "AVR":4,
+          "MAI":5,
+          "JUIN":6, "JUN":6,
+          "JUILLET":7, "JUIL":7, "JUL":7,
+          "AOUT":8, "AOÛT":8,
+          "SEPTEMBRE":9, "SEPT":9, "SEP":9,
+          "OCTOBRE":10, "OCT":10,
+          "NOVEMBRE":11, "NOV":11,
+          "DECEMBRE":12, "DÉCEMBRE":12, "DEC":12, "DÉC":12
+        };
+        // Match prefix sur les libelles
+        for (const k of Object.keys(map)) { if (s.startsWith(k)) return map[k]; }
+        return null;
+      };
+      allRows = allRows.filter(r => {
+        const m = parseMonth(r[schema.monthField]);
+        return m !== null && m <= monthCutoffNum;
       });
     }
     // Exclusions globales : libelles EXACTS observes dans la base STATCOM
@@ -5991,7 +6025,7 @@ function App() {
       setMetiers(prev => ({ ...prev, [metierKey]: { ...(prev[metierKey] || { files: [] }), progress: "Indexation & calculs…", loading: true } }));
 
       const updatedFiles = [ ...((metiers[metierKey] && metiers[metierKey].files) || []), newFileEntry ];
-      const { rows: allRows, analysis, index } = recomputeFromFiles(metierKey, updatedFiles, yearFilter, exclusions);
+      const { rows: allRows, analysis, index } = recomputeFromFiles(metierKey, updatedFiles, yearFilter, exclusions, monthCutoff);
 
       setMetiers(prev => ({ ...prev, [metierKey]: { files: updatedFiles, rows: allRows, analysis, index, filters: (prev[metierKey] && prev[metierKey].filters) || {}, loading: false, error: null } }));
       if (!activeMetier) setActiveMetier(metierKey);
@@ -6036,7 +6070,7 @@ function App() {
         delete rawFilesRef.current[metierKey];
         return { ...prev, [metierKey]: null };
       }
-      const { rows, analysis, index } = recomputeFromFiles(metierKey, updatedFiles, yearFilter, exclusions);
+      const { rows, analysis, index } = recomputeFromFiles(metierKey, updatedFiles, yearFilter, exclusions, monthCutoff);
       return { ...prev, [metierKey]: { ...cur, files: updatedFiles, rows, analysis, index } };
     });
     idbDeleteFile(metierKey, fileId).catch(e => console.warn("idbDeleteFile:", e));
@@ -6103,7 +6137,7 @@ function App() {
         // Yield au browser (laisse rendre le loading state)
         await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
         try {
-          const { rows, analysis, index } = recomputeFromFiles(k, cur.files, yearFilter, exclusions);
+          const { rows, analysis, index } = recomputeFromFiles(k, cur.files, yearFilter, exclusions, monthCutoff);
           setMetiers(prev => ({ ...prev, [k]: { ...prev[k], rows, analysis, index, loading: false, progress: null, error: null } }));
         } catch (err) {
           console.error("Recompute failed for", k, err);
@@ -6113,7 +6147,7 @@ function App() {
         await new Promise(r => setTimeout(r, 15));
       }
     }, 250);
-  }, [yearFilter, exclusions, recomputeFromFiles]);
+  }, [yearFilter, exclusions, monthCutoff, recomputeFromFiles]);
 
   // ----- Mémorisation manuelle (sauvegarde tous les fichiers actuels) -----
   const saveMemory = useCallback(async (silent = false) => {
@@ -6169,7 +6203,7 @@ function App() {
           // Reconstruit rawFilesRef et files
           rawFilesRef.current[k] = arr.map(e => ({ fileId: e.fileId, rows: e.rows }));
           const filesList = arr.map(e => ({ fileId: e.fileId, fileName: e.fileName, rowCount: (e.rows || []).length, yearsInFile: e.yearsInFile || [] }));
-          const { rows, analysis, index } = recomputeFromFiles(k, filesList, yearFilter, exclusions);
+          const { rows, analysis, index } = recomputeFromFiles(k, filesList, yearFilter, exclusions, monthCutoff);
           setMetiers(prev => ({ ...prev, [k]: { files: filesList, rows, analysis, index, filters: {}, loading: false, error: null } }));
           setSelectedForReport(prev => { const s = new Set(prev); s.add(k); return s; });
           restoredFiles += arr.length;
@@ -6194,7 +6228,7 @@ function App() {
       setGlobalMsg({ type:"error", text:`✗ ${e.message}` });
       setTimeout(()=>setGlobalMsg(null), 6000);
     } finally { setMemSaving(false); }
-  }, [activeMetier, yearFilter, exclusions, recomputeFromFiles]);
+  }, [activeMetier, yearFilter, exclusions, monthCutoff, recomputeFromFiles]);
 
   const clearMemory = useCallback(async () => {
     if (!confirm("Effacer définitivement toutes les données mémorisées ?")) return;
@@ -6515,6 +6549,56 @@ function App() {
               </div>
             </div>
           )}
+
+          {/* PANNEAU FILTRE MOIS YTD (comparable cross-annees) */}
+          <div className="mt-4 bg-gradient-to-r from-emerald-50 to-cyan-50 border border-emerald-200 rounded-lg p-4">
+            <div className="flex items-start justify-between flex-wrap gap-3">
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 mb-1">
+                  <span style={{fontSize:20}}>📆</span>
+                  <h3 className="font-bold navy-text text-sm">Filtre mois — YTD comparable cross-annees</h3>
+                </div>
+                <p className="text-xs text-gray-600 mb-2">
+                  Selectionnez un mois cut-off pour comparer la <strong>meme periode</strong> sur les annees chargees.
+                  Ex : cliquez <strong>Mai</strong> → l etude porte sur <strong>Janvier-Mai 2025 vs Janvier-Mai 2026</strong>.
+                  Utile pour des comparaisons d annees en cours.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={() => setMonthCutoff(0)}
+                    style={{padding:"5px 12px", fontSize:12, fontWeight:600, background: monthCutoff === 0 ? "#0a2540" : "white", color: monthCutoff === 0 ? "white" : "#475569", border:"1px solid #0a2540", borderRadius:6, cursor:"pointer"}}>
+                    Annee complete
+                  </button>
+                  {[
+                    {n:1, lbl:"Jan"}, {n:2, lbl:"Fev"}, {n:3, lbl:"Mar"},
+                    {n:4, lbl:"Avr"}, {n:5, lbl:"Mai"}, {n:6, lbl:"Juin"},
+                    {n:7, lbl:"Jul"}, {n:8, lbl:"Aout"}, {n:9, lbl:"Sep"},
+                    {n:10, lbl:"Oct"}, {n:11, lbl:"Nov"}, {n:12, lbl:"Dec"}
+                  ].map(m => {
+                    const active = monthCutoff === m.n;
+                    return (
+                      <button key={m.n}
+                        onClick={() => setMonthCutoff(m.n)}
+                        title={`YTD : Janvier - ${m.lbl} de chaque annee`}
+                        style={{padding:"5px 10px", fontSize:12, fontWeight:600, background: active ? "#059669" : "white", color: active ? "white" : "#475569", border:`1px solid ${active ? "#059669" : "#cbd5e1"}`, borderRadius:6, cursor:"pointer"}}>
+                        {m.lbl}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="text-xs text-gray-500 mt-2">
+                  {monthCutoff === 0
+                    ? "Annee complete — pas de cut-off (toutes les donnees des annees selectionnees)."
+                    : `Periode active : <strong>Janvier - ${["Jan","Fev","Mar","Avr","Mai","Juin","Jul","Aout","Sep","Oct","Nov","Dec"][monthCutoff-1]}</strong> de chaque annee selectionnee. Les BL des mois posterieurs sont exclus.`}
+                </div>
+              </div>
+              <button className="btn-ghost text-sm"
+                onClick={() => setMonthCutoff(0)}
+                disabled={monthCutoff === 0}>
+                Réinitialiser
+              </button>
+            </div>
+          </div>
 
           {/* PANNEAU EXCLUSIONS */}
           <div className="mt-4 bg-gradient-to-r from-rose-50 to-orange-50 border border-rose-200 rounded-lg p-4">
