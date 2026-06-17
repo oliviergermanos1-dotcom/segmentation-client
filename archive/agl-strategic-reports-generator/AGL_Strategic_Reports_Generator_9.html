@@ -5654,7 +5654,7 @@ function App() {
       requestAnimationFrame(() => setTimeout(() => {
         setMetiers(prev => {
           const cur = prev[metierKey];
-          if (!cur) return prev;
+          if (!cur || !cur.rows) return prev;
           const filtered = applyFilters(cur.rows, cur.filters || {});
           const schema = METIER_SCHEMAS[metierKey];
           const analysis = buildAnalysis(filtered, schema);
