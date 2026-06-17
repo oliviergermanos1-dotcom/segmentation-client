@@ -5186,6 +5186,41 @@ async function idbLoadAll() {
   });
 }
 
+// Variante leger : ne lit QUE les metadata (fileId, fileName, nbRows, savedAt, yearsInFile)
+// sans charger les rows en memoire. Utilisee au demarrage pour eviter OOM.
+async function idbLoadMetadataOnly() {
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([IDB_STORE, IDB_META], "readonly");
+    const result = {};
+    const store = tx.objectStore(IDB_STORE);
+    const req = store.openCursor();
+    req.onsuccess = (e) => {
+      const cursor = e.target.result;
+      if (cursor) {
+        const v = cursor.value;
+        if (v && v.metierKey) {
+          if (!result[v.metierKey]) result[v.metierKey] = [];
+          // On ne garde QUE la metadata, pas les rows
+          result[v.metierKey].push({
+            fileId: v.fileId,
+            fileName: v.fileName,
+            nbRows: (v.rows || []).length,
+            savedAt: v.savedAt,
+            yearsInFile: v.yearsInFile || []
+          });
+          // Hint au GC : libere la reference au record complet
+        }
+        cursor.continue();
+      }
+    };
+    const metaReq = tx.objectStore(IDB_META).get("lastSave");
+    metaReq.onsuccess = () => { if (metaReq.result) result.__meta = metaReq.result; };
+    tx.oncomplete = () => { db.close(); resolve(result); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
+  });
+}
+
 async function idbClearAll() {
   const db = await idbOpen();
   return new Promise((resolve, reject) => {
@@ -5620,16 +5655,17 @@ function App() {
     }
   }, []);
 
-  // Auto-check mémoire au démarrage
+  // Auto-check mémoire au démarrage — version LEGERE (pas de chargement des rows)
   useEffect(() => {
     (async () => {
       try {
-        const data = await idbLoadAll();
+        const data = await idbLoadMetadataOnly();
         const avail = {};
         for (const k of METIER_KEYS) {
           const arr = data[k];
           if (Array.isArray(arr) && arr.length > 0) {
-            avail[k] = arr.map(e => ({ fileId: e.fileId, fileName: e.fileName, nbRows: (e.rows || []).length, savedAt: e.savedAt, yearsInFile: e.yearsInFile || [] }));
+            // arr contient deja la metadata uniquement (fileId, fileName, nbRows, savedAt, yearsInFile)
+            avail[k] = arr;
           }
         }
         setMemAvailable(avail);
