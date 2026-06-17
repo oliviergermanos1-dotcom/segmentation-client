@@ -655,8 +655,12 @@ function buildAnalysis(rows, schema) {
       const aglEvolPct = aglMetricPrev > 0 ? ((aglMetricCur - aglMetricPrev) / aglMetricPrev * 100) : (aglMetricCur > 0 ? null : 0);
       result.set(key, { pdmAll, pdmCur, pdmPrev, pdmDelta: (pdmCur !== null && pdmPrev !== null) ? (pdmCur - pdmPrev) : null, aglEvolPct,
                         aglVolCur: aglMetricCur, aglVolPrev: aglMetricPrev,
+                        totalVolCur: schema.teuField ? e.total.cur.teu : e.total.cur.weight,
+                        totalVolPrev: schema.teuField ? e.total.prev.teu : e.total.prev.weight,
+                        aglTonsCur: e.agl.cur.weight, aglTonsPrev: e.agl.prev.weight,
                         totalTonsAll: e.total.all.weight, totalTeuAll: e.total.all.teu,
-                        totalTonsCur: e.total.cur.weight, totalTeuCur: e.total.cur.teu });
+                        totalTonsCur: e.total.cur.weight, totalTeuCur: e.total.cur.teu,
+                        totalTonsPrev: e.total.prev.weight, totalTeuPrev: e.total.prev.teu });
     }
     return result;
   }
@@ -2644,6 +2648,225 @@ function FiltersPanel({ schema, index, filters, setFilters }) {
 }
 
 // ============================================================
+// COMPOSANT : Carte stratégique (taille × croissance) — SVG scatter
+// ============================================================
+function StrategicMap({ title, subtitle, points, xUnit, height = 420 }) {
+  const [hovered, setHovered] = useState(null);
+  const margin = { top: 30, right: 30, bottom: 50, left: 60 };
+  const width = 1100;
+  const innerW = width - margin.left - margin.right;
+  const innerH = height - margin.top - margin.bottom;
+
+  // Filtre points valides (x > 0 pour log scale)
+  const valid = points.filter(p => p.x > 0 && isFinite(p.x) && isFinite(p.y));
+  if (valid.length === 0) {
+    return (
+      <div style={{background:"white", padding:16, borderRadius:8, boxShadow:"0 1px 3px rgba(0,0,0,0.06)", marginBottom:16}}>
+        <div style={{fontWeight:700, color:"#0a2540", fontSize:14, marginBottom:4}}>{title}</div>
+        {subtitle && <div style={{fontSize:11, color:"#64748b", marginBottom:8}}>{subtitle}</div>}
+        <div style={{padding:"30px", textAlign:"center", color:"#94a3b8", fontSize:13, fontStyle:"italic"}}>Aucun client à afficher sur ce périmètre.</div>
+      </div>
+    );
+  }
+
+  // Clamp Y entre -100 et +300
+  const yClamp = (v) => Math.max(-100, Math.min(300, v));
+  const above300 = valid.filter(p => p.y > 300).length;
+
+  // Échelles
+  const xMin = Math.min(...valid.map(p => p.x));
+  const xMax = Math.max(...valid.map(p => p.x));
+  const lxMin = Math.log10(Math.max(1, xMin));
+  const lxMax = Math.log10(xMax);
+  const xScale = (v) => margin.left + ((Math.log10(Math.max(1, v)) - lxMin) / (lxMax - lxMin || 1)) * innerW;
+  const yScale = (v) => margin.top + (1 - (yClamp(v) - (-100)) / 400) * innerH;
+
+  // Couleur par quadrant
+  const colorFor = (p) => {
+    const big = p.x >= xMax * 0.1;
+    if (p.y > 50) return big ? "#14532d" : "#86efac";
+    if (p.y > 10) return big ? "#16a34a" : "#bbf7d0";
+    if (p.y > -10) return "#fde047";
+    if (p.y > -40) return "#fb923c";
+    return "#ef4444";
+  };
+
+  // Ticks X (puissances de 10)
+  const xTicks = [];
+  for (let p = Math.floor(lxMin); p <= Math.ceil(lxMax); p++) {
+    const v = Math.pow(10, p);
+    if (v >= xMin / 10 && v <= xMax * 10) xTicks.push(v);
+  }
+  const fmtTick = (v) => {
+    if (v >= 1e9) return (v/1e9).toFixed(0) + "B";
+    if (v >= 1e6) return (v/1e6).toFixed(0) + "M";
+    if (v >= 1e3) return (v/1e3).toFixed(0) + "k";
+    return v.toFixed(0);
+  };
+  const yTicks = [-100, -50, 0, 50, 100, 150, 200, 250, 300];
+
+  return (
+    <div style={{background:"white", padding:16, borderRadius:8, boxShadow:"0 1px 3px rgba(0,0,0,0.06)", marginBottom:16}}>
+      <div style={{display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:6}}>
+        <div>
+          <div style={{fontWeight:700, color:"#0a2540", fontSize:14, textTransform:"uppercase", letterSpacing:0.5}}>{title}</div>
+          {subtitle && <div style={{fontSize:11, color:"#64748b", marginTop:2}}>{subtitle}</div>}
+        </div>
+        <div style={{fontSize:11, color:"#64748b"}}>{valid.length} client{valid.length > 1 ? "s" : ""} positionné{valid.length > 1 ? "s" : ""}. Survolez un point pour voir le détail.</div>
+      </div>
+      {above300 > 0 && (
+        <div style={{display:"inline-block", background:"#fef3c7", border:"1px solid #fde68a", color:"#92400e", padding:"3px 8px", borderRadius:4, fontSize:11, marginBottom:4}}>
+          {above300} client(s) avec croissance &gt; +300 % positionnés sur le bord supérieur.
+        </div>
+      )}
+      <div style={{position:"relative"}}>
+        <svg width="100%" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="xMidYMid meet" style={{maxWidth:"100%", display:"block"}}>
+          {/* Bandes de quadrant Y */}
+          <rect x={margin.left} y={yScale(300)} width={innerW} height={yScale(50) - yScale(300)} fill="#dcfce7" fillOpacity={0.35} />
+          <rect x={margin.left} y={yScale(50)} width={innerW} height={yScale(-10) - yScale(50)} fill="#fefce8" fillOpacity={0.35} />
+          <rect x={margin.left} y={yScale(-10)} width={innerW} height={yScale(-100) - yScale(-10)} fill="#fee2e2" fillOpacity={0.35} />
+          {/* Ligne 0 */}
+          <line x1={margin.left} y1={yScale(0)} x2={margin.left + innerW} y2={yScale(0)} stroke="#0a2540" strokeWidth={1.5} />
+          {/* Grille Y */}
+          {yTicks.map(t => (
+            <g key={t}>
+              <line x1={margin.left} y1={yScale(t)} x2={margin.left + innerW} y2={yScale(t)} stroke="#e2e8f0" strokeWidth={0.5} />
+              <text x={margin.left - 8} y={yScale(t) + 4} textAnchor="end" fontSize={10} fill="#64748b">{t} %</text>
+            </g>
+          ))}
+          {/* Grille X */}
+          {xTicks.map(t => (
+            <g key={t}>
+              <line x1={xScale(t)} y1={margin.top} x2={xScale(t)} y2={margin.top + innerH} stroke="#e2e8f0" strokeWidth={0.5} />
+              <text x={xScale(t)} y={height - margin.bottom + 14} textAnchor="middle" fontSize={10} fill="#64748b">{fmtTick(t)}</text>
+            </g>
+          ))}
+          {/* Labels axes */}
+          <text x={margin.left + innerW / 2} y={height - 10} textAnchor="middle" fontSize={11} fill="#0a2540">Volume — {xUnit}, échelle log</text>
+          <text x={15} y={margin.top + innerH / 2} textAnchor="middle" fontSize={11} fill="#0a2540" transform={`rotate(-90, 15, ${margin.top + innerH / 2})`}>Croissance % vs N-1</text>
+          {/* Points */}
+          {valid.map((p, i) => (
+            <circle key={i}
+              cx={xScale(p.x)}
+              cy={yScale(p.y)}
+              r={hovered === i ? 7 : 4}
+              fill={colorFor(p)}
+              fillOpacity={0.75}
+              stroke={hovered === i ? "#0a2540" : "white"}
+              strokeWidth={hovered === i ? 2 : 0.5}
+              onMouseEnter={() => setHovered(i)}
+              onMouseLeave={() => setHovered(null)}
+              style={{cursor:"pointer"}}
+            />
+          ))}
+        </svg>
+        {hovered !== null && valid[hovered] && (
+          <div style={{position:"absolute", top:8, right:8, background:"#0a2540", color:"white", padding:"8px 12px", borderRadius:6, fontSize:12, maxWidth:300, pointerEvents:"none", boxShadow:"0 4px 12px rgba(0,0,0,0.2)"}}>
+            <div style={{fontWeight:700, marginBottom:4}}>{valid[hovered].name}</div>
+            <div>Volume : {fmt(valid[hovered].x)} {xUnit}</div>
+            <div>Croissance : {valid[hovered].y >= 0 ? "+" : ""}{fmt(valid[hovered].y, 1)} %</div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// COMPOSANT : Onglet "Carte stratégique AGL" — un scatter par métier + multi-métier
+// ============================================================
+function StrategicTab({ analyses, mode }) {
+  // mode: "agl" ou "concurrence"
+  const isAGL = mode === "agl";
+  const tabTitle = isAGL ? "🎯 Carte stratégique AGL" : "⚔ Carte stratégique Concurrence";
+  const definition = isAGL
+    ? "Périmètre : clients que AGL traite (au moins partiellement, PDM > 0). Volume = volume traité par AGL, croissance = évolution du volume AGL N vs N-1."
+    : "Périmètre : clients que AGL ne traite PAS du tout (PDM AGL = 0 %). Volume = volume traité par la concurrence, croissance = évolution de ce volume N vs N-1.";
+
+  // Pour chaque analyse (métier), construit les points
+  const perMetier = analyses.map(A => {
+    const sch = A.schema;
+    const pdmMap = A.aglPdmByClient || new Map();
+    const points = [];
+    for (const [name, info] of pdmMap.entries()) {
+      if (isAGL) {
+        // Client traité par AGL : aglVolCur > 0
+        if ((info.aglVolCur || 0) > 0) {
+          const x = info.aglVolCur;
+          const prev = info.aglVolPrev || 0;
+          const y = prev > 0 ? ((info.aglVolCur - prev) / prev * 100) : (info.aglVolCur > 0 ? 300 : 0);
+          points.push({ name, x, y });
+        }
+      } else {
+        // Concurrence : aglVolCur === 0 (et totalVolCur > 0)
+        const totCur = info.totalVolCur || 0;
+        const aglCur = info.aglVolCur || 0;
+        if (aglCur === 0 && totCur > 0) {
+          const x = totCur;
+          const prev = info.totalVolPrev || 0;
+          const y = prev > 0 ? ((totCur - prev) / prev * 100) : (totCur > 0 ? 300 : 0);
+          points.push({ name, x, y });
+        }
+      }
+    }
+    const xUnit = sch.teuField ? "TEU" : "Tonnes";
+    return { schema: sch, points, xUnit };
+  });
+
+  // Multi-métier : agrégation en Tonnes
+  const multiMap = new Map();
+  for (const A of analyses) {
+    const pdmMap = A.aglPdmByClient || new Map();
+    for (const [name, info] of pdmMap.entries()) {
+      if (!multiMap.has(name)) multiMap.set(name, { aglTonsCur:0, aglTonsPrev:0, totTonsCur:0, totTonsPrev:0 });
+      const c = multiMap.get(name);
+      c.aglTonsCur += info.aglTonsCur || 0;
+      c.aglTonsPrev += info.aglTonsPrev || 0;
+      c.totTonsCur += info.totalTonsCur || 0;
+      c.totTonsPrev += info.totalTonsPrev || 0;
+    }
+  }
+  const multiPoints = [];
+  for (const [name, c] of multiMap.entries()) {
+    if (isAGL) {
+      if (c.aglTonsCur > 0) {
+        const y = c.aglTonsPrev > 0 ? ((c.aglTonsCur - c.aglTonsPrev) / c.aglTonsPrev * 100) : 300;
+        multiPoints.push({ name, x: c.aglTonsCur, y });
+      }
+    } else {
+      const concCur = c.totTonsCur - c.aglTonsCur;
+      const concPrev = c.totTonsPrev - c.aglTonsPrev;
+      if (c.aglTonsCur === 0 && concCur > 0) {
+        const y = concPrev > 0 ? ((concCur - concPrev) / concPrev * 100) : 300;
+        multiPoints.push({ name, x: concCur, y });
+      }
+    }
+  }
+
+  return (
+    <div>
+      <div className="section-h" style={{display:"flex", alignItems:"center", gap:8, borderBottom:"2px solid #0a2540"}}>
+        <span style={{background:"#0a2540", color:"#c9a14a", padding:"3px 10px", borderRadius:6, fontSize:11, fontWeight:700}}>{isAGL ? "AGL" : "CONCURRENCE"}</span>
+        {tabTitle}
+      </div>
+      <div className="insight-box" style={{marginTop:8}}>{definition}</div>
+      {perMetier.map((m, i) => (
+        <StrategicMap key={i}
+          title={`${m.schema.icon} ${m.schema.label}`}
+          subtitle={`Taille = volume ${m.xUnit} (échelle log) · Croissance % vs N-1 (clampée à [-100 %, +300 %])`}
+          points={m.points}
+          xUnit={m.xUnit} />
+      ))}
+      <StrategicMap
+        title="🔗 Vue multi-métiers (cumul Tonnes)"
+        subtitle="Cumul des Tonnes du client sur tous les métiers chargés. Permet de comparer la taille business globale d'un client across métiers."
+        points={multiPoints}
+        xUnit="Tonnes" />
+    </div>
+  );
+}
+
+// ============================================================
 // COMPOSANT : Prévisualisation du rapport
 // ============================================================
 function ReportPreview({ analyses, allMetiers }) {
@@ -2658,7 +2881,8 @@ function ReportPreview({ analyses, allMetiers }) {
     const hasImpH = !!hint.importHinterland;
     const hasExpH = !!hint.exportHinterland;
     const baseN = validAnalyses.length;
-    const maxValid = baseN - 1 + (hasMulti ? 1 : 0) + (hasImpH ? 1 : 0) + (hasExpH ? 1 : 0);
+    // +2 pour les onglets Carte AGL et Carte Concurrence (toujours presents)
+    const maxValid = baseN - 1 + (hasMulti ? 1 : 0) + (hasImpH ? 1 : 0) + (hasExpH ? 1 : 0) + 2;
     if (activeTab > maxValid) setActiveTab(0);
   }, [validAnalyses.length, activeTab, allMetiers]);
 
@@ -2680,20 +2904,22 @@ function ReportPreview({ analyses, allMetiers }) {
   const hasExpHinterland = !!hinterland.exportHinterland;
 
   // Construction de la liste des onglets disponibles dans l'ordre :
-  // [0..n-1] = métiers individuels | [n] = multi-métiers | [n+1] = Hinterland Import | [n+2] = Hinterland Export
+  // [0..n-1] = métiers individuels | [n] = multi-métiers | Hinterland Import | Hinterland Export | Carte AGL | Carte Concurrence
   const baseN = validAnalyses.length;
   const idxMulti = hasMultiMetiers ? baseN : null;
   const idxImpH = hasImpHinterland ? baseN + (hasMultiMetiers ? 1 : 0) : null;
   const idxExpH = hasExpHinterland ? baseN + (hasMultiMetiers ? 1 : 0) + (hasImpHinterland ? 1 : 0) : null;
-  const maxIdx = Math.max(baseN - 1, idxMulti ?? -1, idxImpH ?? -1, idxExpH ?? -1);
-
-  // useEffect ajusté
-  // (déjà déclaré plus haut)
+  const afterHinterland = baseN + (hasMultiMetiers ? 1 : 0) + (hasImpHinterland ? 1 : 0) + (hasExpHinterland ? 1 : 0);
+  const idxAGL = afterHinterland;
+  const idxConc = afterHinterland + 1;
+  const maxIdx = Math.max(baseN - 1, idxMulti ?? -1, idxImpH ?? -1, idxExpH ?? -1, idxConc);
 
   const isMultiTab = idxMulti !== null && activeTab === idxMulti;
   const isImpHTab = idxImpH !== null && activeTab === idxImpH;
   const isExpHTab = idxExpH !== null && activeTab === idxExpH;
-  const showMetierTab = !isMultiTab && !isImpHTab && !isExpHTab;
+  const isAGLTab = activeTab === idxAGL;
+  const isConcTab = activeTab === idxConc;
+  const showMetierTab = !isMultiTab && !isImpHTab && !isExpHTab && !isAGLTab && !isConcTab;
   const A = showMetierTab ? (validAnalyses[activeTab] || validAnalyses[0]) : null;
 
   return (
@@ -2740,11 +2966,29 @@ function ReportPreview({ analyses, allMetiers }) {
             🚛 Hinterland Export
           </button>
         )}
+        <button key="agl"
+          className="px-4 py-2 text-sm font-semibold transition"
+          style={isAGLTab
+            ? {borderBottom: "3px solid #c9a14a", color: "#0a2540", background: "#fef9e7", marginBottom: "-1px"}
+            : {borderBottom: "3px solid transparent", color: "#64748b", background: "transparent"}}
+          onClick={() => setActiveTab(idxAGL)}>
+          🎯 Carte AGL
+        </button>
+        <button key="conc"
+          className="px-4 py-2 text-sm font-semibold transition"
+          style={isConcTab
+            ? {borderBottom: "3px solid #c9a14a", color: "#0a2540", background: "#fef9e7", marginBottom: "-1px"}
+            : {borderBottom: "3px solid transparent", color: "#64748b", background: "transparent"}}
+          onClick={() => setActiveTab(idxConc)}>
+          ⚔ Carte Concurrence
+        </button>
       </div>
 
       {isMultiTab ? <MultiMetierAnalysis analyses={validAnalyses} hinterland={hinterland} /> :
        isImpHTab ? <HinterlandPreviewContent A={hinterland.importHinterland} sens="import" /> :
        isExpHTab ? <HinterlandPreviewContent A={hinterland.exportHinterland} sens="export" /> :
+       isAGLTab ? <StrategicTab analyses={validAnalyses} mode="agl" /> :
+       isConcTab ? <StrategicTab analyses={validAnalyses} mode="concurrence" /> :
        (A && (A.schema.key === "HINTERLAND_IMPORT" || A.schema.key === "HINTERLAND_EXPORT"))
          ? <HinterlandPreviewContent A={A} sens={A.schema.sens} />
          : <MetierPreviewContent A={A} />}
