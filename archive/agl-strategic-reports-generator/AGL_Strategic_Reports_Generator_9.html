@@ -6147,22 +6147,31 @@ function App() {
       const yearsInFile = extractYearsFromRows(rows, targetSchema);
       const newFileEntry = { fileId, fileName: file.name, rowCount: rows.length, yearsInFile };
 
-      // Stocker les rows en RAM
+      // Stocker les rows en RAM (ref mutable, sans race)
       if (!rawFilesRef.current[metierKey]) rawFilesRef.current[metierKey] = [];
       rawFilesRef.current[metierKey].push({ fileId, rows });
 
-      // Mise à jour du state : ajoute ce fichier puis recalcule analysis
-      setMetiers(prev => ({ ...prev, [metierKey]: { ...(prev[metierKey] || { files: [] }), progress: "Indexation & calculs…", loading: true } }));
-
-      const updatedFiles = [ ...((metiers[metierKey] && metiers[metierKey].files) || []), newFileEntry ];
-      const { rows: allRows, analysis, index } = recomputeFromFiles(metierKey, updatedFiles, yearFilter, exclusions, monthCutoff);
-
-      setMetiers(prev => ({ ...prev, [metierKey]: { files: updatedFiles, rows: allRows, analysis, index, filters: (prev[metierKey] && prev[metierKey].filters) || {}, loading: false, error: null } }));
-      if (!activeMetier) setActiveMetier(metierKey);
+      // Mise a jour ATOMIQUE du state : on calcule updatedFiles + analysis depuis
+      // le `prev` du setMetiers — JAMAIS depuis la closure `metiers` qui peut etre
+      // stale quand deux uploads se chevauchent (cause du bug "1 fois sur 2").
+      let finalUpdatedFiles = null;
+      let finalAllRows = null;
+      setMetiers(prev => {
+        const cur = prev[metierKey] || { files: [] };
+        // Deduplique par fileId au cas ou une retry double-clic injecterait deux fois
+        const existing = (cur.files || []).filter(f => f.fileId !== fileId);
+        const updatedFiles = [ ...existing, newFileEntry ];
+        const { rows: allRows, analysis, index } = recomputeFromFiles(metierKey, updatedFiles, yearFilter, exclusions, monthCutoff);
+        finalUpdatedFiles = updatedFiles;
+        finalAllRows = allRows;
+        return { ...prev, [metierKey]: { files: updatedFiles, rows: allRows, analysis, index, filters: cur.filters || {}, loading: false, error: null, progress: null } };
+      });
+      setActiveMetier(prev => prev || metierKey);
       setSelectedForReport(prev => { const s = new Set(prev); s.add(metierKey); return s; });
 
       const ystr = yearsInFile.length > 0 ? " (" + yearsInFile.join("/") + ")" : "";
-      setGlobalMsg({ type: "success", text: `✓ ${targetSchema.label} : +${rows.length.toLocaleString("fr-FR")} lignes${ystr} · total ${allRows.length.toLocaleString("fr-FR")} lignes` });
+      const totalCount = (finalAllRows && finalAllRows.length) || rows.length;
+      setGlobalMsg({ type: "success", text: `✓ ${targetSchema.label} : +${rows.length.toLocaleString("fr-FR")} lignes${ystr} · total ${totalCount.toLocaleString("fr-FR")} lignes` });
       setTimeout(() => setGlobalMsg(null), 5000);
 
       // Auto-mémorisation
@@ -6180,11 +6189,11 @@ function App() {
       }
     } catch (e) {
       console.error(e);
-      setMetiers(prev => ({ ...prev, [metierKey]: { ...(prev[metierKey] || { files: [] }), loading: false, error: e.message || "Erreur" } }));
+      setMetiers(prev => ({ ...prev, [metierKey]: { ...(prev[metierKey] || { files: [] }), loading: false, progress: null, error: e.message || "Erreur" } }));
       setGlobalMsg({ type: "error", text: `✗ ${e.message}` });
       setTimeout(() => setGlobalMsg(null), 6000);
     }
-  }, [activeMetier, autoSave, metiers, yearFilter, recomputeFromFiles, extractYearsFromRows]);
+  }, [autoSave, yearFilter, exclusions, monthCutoff, recomputeFromFiles, extractYearsFromRows]);
 
   // ----- Retirer 1 fichier -----
   const handleRemoveFile = useCallback((metierKey, fileId) => {
@@ -6211,7 +6220,7 @@ function App() {
       else next[metierKey] = arr;
       return next;
     });
-  }, [yearFilter, recomputeFromFiles]);
+  }, [yearFilter, exclusions, monthCutoff, recomputeFromFiles]);
 
   // ----- Vider tout un métier -----
   const handleClear = useCallback((metierKey) => {
