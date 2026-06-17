@@ -5160,8 +5160,37 @@ function App() {
           try {
             const wb = XLSX.read(e.data.buf, { type: 'array', cellDates: false, cellNF: false, cellText: false });
             const sheetName = wb.SheetNames.includes('Export') ? 'Export' : wb.SheetNames[0];
-            const rows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { defval: null, raw: true });
-            self.postMessage({ type: 'done', rows: rows, sheetName: sheetName });
+            const keepFields = e.data.keepFields;
+            const sheet = wb.Sheets[sheetName];
+            // Projection : on construit les rows en gardant UNIQUEMENT les colonnes utiles
+            // (massif gain memoire vs sheet_to_json qui copie toutes les colonnes)
+            if (keepFields && keepFields.length > 0) {
+              // Approche par arrays + headers, plus econome
+              const aoa = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null, raw: true });
+              if (aoa.length === 0) {
+                self.postMessage({ type: 'done', rows: [], sheetName: sheetName });
+                return;
+              }
+              const headers = aoa[0];
+              const keepSet = new Set(keepFields);
+              const idxMap = {};
+              headers.forEach((h, i) => { if (keepSet.has(h)) idxMap[h] = i; });
+              const keptHeaders = Object.keys(idxMap);
+              const rows = new Array(aoa.length - 1);
+              for (let i = 1; i < aoa.length; i++) {
+                const row = aoa[i];
+                const obj = {};
+                for (const h of keptHeaders) obj[h] = row[idxMap[h]];
+                rows[i - 1] = obj;
+              }
+              // On libere aoa avant d envoyer
+              aoa.length = 0;
+              self.postMessage({ type: 'done', rows: rows, sheetName: sheetName });
+            } else {
+              // Fallback : ancien comportement (toutes colonnes)
+              const rows = XLSX.utils.sheet_to_json(sheet, { defval: null, raw: true });
+              self.postMessage({ type: 'done', rows: rows, sheetName: sheetName });
+            }
           } catch (err) {
             self.postMessage({ type: 'error', message: err.message || String(err) });
           }
@@ -5177,7 +5206,19 @@ function App() {
           else if (e.data.type === 'error') { reject(new Error(e.data.message)); worker.terminate(); URL.revokeObjectURL(workerUrl); }
         };
         worker.onerror = (err) => { reject(new Error(err.message || "Erreur worker")); worker.terminate(); URL.revokeObjectURL(workerUrl); };
-        worker.postMessage({ buf: buf }, [buf]);
+        // Liste des colonnes utiles pour ce schema (toutes les autres seront filtrees au parsing)
+        // On garde aussi quelques champs utilises pour la detection de schema (I_IMP_E_EXP, Sens, LTA...)
+        const sch = METIER_SCHEMAS[metierKey];
+        const keepFields = [
+          sch.clientField, sch.counterpartField, sch.teuField, sch.weightField, sch.blField,
+          sch.yearField, sch.monthField, sch.portChargementField, sch.portDechargementField,
+          sch.paysOrigineField, sch.paysDestField, sch.lieuLivraisonField, sch.marchandiseField,
+          sch.transitaireField, sch.armateurField, sch.consignataireField, sch.conditField, sch.modeExpField,
+          sch.verticalField, sch.statutField, sch.commercialField, sch.qualifField,
+          // Champs aux pour detection de type/sens de fichier
+          "I_IMP_E_EXP", "Sens", "Numéro LTA", "Numero LTA", "Aéroport", "Aeroport", "Compagnie"
+        ].filter(Boolean);
+        worker.postMessage({ buf: buf, keepFields: keepFields }, [buf]);
       });
 
       if (!rows || rows.length === 0) throw new Error("Feuille vide ou format non reconnu.");
